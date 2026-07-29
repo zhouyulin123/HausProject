@@ -41,6 +41,30 @@
 - `python list_routes.py`：全部 API 路由正常注册
 - GitHub `main` 已核对到提交 `0be6582`
 
+### 第二批：匿名客户会话与刷新恢复
+
+- 新增 `anonymous_sessions`：无需登录的客户会话，默认有效期 30 天
+- 新增 `anonymous_session_images`、`anonymous_session_tasks`：明确图片和设计任务的会话所有权
+- 新增 API：
+  - `POST /api/sessions`
+  - `GET /api/sessions/{session_id}`
+  - `GET /api/sessions/{session_id}/tasks`
+- 创建任务时验证上传图片归属，禁止另一个匿名会话复用图片
+- 图片上传支持 `X-Session-ID` 并自动建立所有权关系
+- 前端使用 localStorage 保存匿名会话、当前任务和上传图片编号
+- 当前生成方案也会本地持久化，刷新结果页或详情页后不再直接丢失
+- 新增 Vitest 前端测试入口
+- 已在当前 MySQL 安全创建 3 张新增表，未删除或修改旧表数据
+
+### 第二批验证
+
+- 后端：`12 passed`
+- 前端：`4 passed`
+- 前端生产构建：通过
+- MySQL 新增会话表存在性检查：通过
+- 剩余风险：任务查询和生成接口还需强制校验 `X-Session-ID`；尚未引入 Alembic
+- 依赖审计发现 8 项前端依赖告警（5 moderate、2 high、1 critical），主要来自旧 Vite、Vitest 和 React Router，需通过受控主版本升级处理，不能直接执行破坏性 `npm audit fix --force`
+
 ## 2026-07-24 一键启动脚本 + 3D 布局（最小验证）
 
 - 施工：Claude Code
