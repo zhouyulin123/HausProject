@@ -63,7 +63,7 @@
 - 前端生产构建：通过
 - MySQL 新增会话表存在性检查：通过
 - 剩余风险：任务查询和生成接口还需强制校验 `X-Session-ID`；尚未引入 Alembic
-- 依赖审计发现 8 项前端依赖告警（5 moderate、2 high、1 critical），主要来自旧 Vite、Vitest 和 React Router，需通过受控主版本升级处理，不能直接执行破坏性 `npm audit fix --force`
+- Vitest 已从 2 升级到 4.1.10，清除测试工具的 critical 告警；当前剩余 4 项（3 moderate、1 high），来自旧 Vite/esbuild 和 React Router，需通过受控主版本升级处理，不能直接执行破坏性 `npm audit fix --force`
 
 ## 2026-07-24 一键启动脚本 + 3D 布局（最小验证）
 
