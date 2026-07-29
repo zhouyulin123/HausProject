@@ -23,6 +23,24 @@
 3. 修复任务失败状态、上传校验和前端静默降级
 4. 设计并实现匿名客户会话与方案持久化
 
+### 第一批工程加固结果
+
+- 已初始化 Git，`main` 已同步至 `zhouyulin123/HausProject`
+- 已配置仓库级 GitHub noreply 提交身份，不修改本机全局 Git 设置
+- 已验证 `.env`、上传文件、Excel 临时文件、模型缓存、依赖和构建产物不会进入 Git
+- 新增 pytest 测试底座和开发依赖文件
+- 图片上传新增大小、MIME、文件签名和扩展名校验，使用检测到的可信格式保存
+- 方案生成发生非预期异常时会回滚并持久化 `failed`、错误原因和归零进度
+- 移除设计结果中的假 PDF 地址，真实 PDF 只由提案接口生成
+- 补齐 `reportlab`、`openpyxl` 运行依赖及 `.env.example` 的模型和上传配置
+
+### 验证
+
+- `python -m pytest tests/integration/test_task_generation_failure.py tests/unit/test_upload_validation.py`：7 passed
+- `python -m compileall -q app`：通过
+- `python list_routes.py`：全部 API 路由正常注册
+- GitHub `main` 已核对到提交 `0be6582`
+
 ## 2026-07-24 一键启动脚本 + 3D 布局（最小验证）
 
 - 施工：Claude Code

@@ -7,6 +7,8 @@ pymysql>=1.1.0 # 本地 MySQL 8
 python-multipart>=0.0.9 # 文件上传
 openai>=1.0.0 # DeepSeek / Qwen-VL 走 OpenAI 兼容接口
 python-dotenv>=1.0.0
+reportlab>=4.0.0 # 品牌提案 PDF
+openpyxl>=3.1.0 # 商品 Excel 模板与导入
 
 # 本地效果图生成（SD1.5 + ControlNet，需 NVIDIA GPU + cu128 版 PyTorch）
 # 注：torch 需按显卡架构单独安装（RTX 50 系需 cu128 构建），故不锁在此处
