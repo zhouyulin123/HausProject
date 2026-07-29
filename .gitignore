@@ -1,0 +1,38 @@
+# 本地环境与密钥
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# IDE 与系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 本地运行产物
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/*.xlsx
+*.log
+
+# 本地模型与缓存
+models/
+hf_cache/
+.cache/
+

@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+@theme {
+  /* 温暖家居色板 */
+  --color-cream-50: #fbf9f4;
+  --color-cream-100: #f6f1e7;
+  --color-cream-200: #ede3d3;
+  --color-cream-300: #e0d0b8;
+
+  --color-wood-200: #e3d2bc;
+  --color-wood-300: #d2b896;
+  --color-wood-400: #be9c74;
+  --color-wood-500: #a98159;
+  --color-wood-600: #8c6845;
+  --color-wood-700: #6f5236;
+
+  --color-sage-50: #f2f5ee;
+  --color-sage-100: #e5ebdd;
+  --color-sage-200: #cfdac2;
+  --color-sage-300: #afc09d;
+  --color-sage-400: #8fa57c;
+  --color-sage-500: #74895f;
+  --color-sage-600: #5f7350;
+  --color-sage-700: #4c5c40;
+
+  --color-terra-50: #fbf0e9;
+  --color-terra-100: #f6e0d2;
+  --color-terra-200: #ebc3ac;
+  --color-terra-300: #de9f7f;
+  --color-terra-400: #d08159;
+  --color-terra-500: #bf6b43;
+  --color-terra-600: #a05837;
+  --color-terra-700: #7f462c;
+
+  --font-display: "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Helvetica Neue", Arial, sans-serif;
+
+  --shadow-soft: 0 12px 40px -12px rgb(140 104 69 / 0.18);
+  --shadow-card: 0 6px 24px -8px rgb(140 104 69 / 0.14);
+  --shadow-lift: 0 20px 50px -16px rgb(140 104 69 / 0.28);
+
+  --animate-float: float 5s ease-in-out infinite;
+  --animate-float-slow: float 7s ease-in-out infinite;
+
+  @keyframes float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-10px);
+    }
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-cream-50 font-sans text-stone-700 antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display text-stone-800;
+  }
+
+  ::selection {
+    @apply bg-sage-200 text-sage-700;
+  }
+}
+
+/* AI 打字点动画 */
+.typing-dot {
+  @apply inline-block h-1.5 w-1.5 rounded-full bg-sage-500;
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* 细滚动条（对话区等） */
+.thin-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-cream-300;
+}
