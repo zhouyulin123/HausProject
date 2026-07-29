@@ -15,7 +15,12 @@ from app.schemas.tasks import (
     TaskResultResponse,
     TaskStatusResponse,
 )
-from app.services import catalog_service, llm_service, task_service
+from app.services import (
+    anonymous_session_service,
+    catalog_service,
+    llm_service,
+    task_service,
+)
 from app.services.llm_service import LLMUnavailable
 
 logger = logging.getLogger(__name__)
@@ -31,6 +36,20 @@ def _get_task(db: Session, task_id: int) -> DesignTask:
 
 @router.post("", response_model=TaskResponse)
 def create_task(task_data: TaskCreate, db: Session = Depends(get_db)):
+    if task_data.session_id:
+        session = anonymous_session_service.get_active_session(
+            db,
+            task_data.session_id,
+        )
+        if not session:
+            raise HTTPException(status_code=404, detail="匿名会话不存在或已过期")
+        if not anonymous_session_service.session_owns_images(
+            db,
+            task_data.session_id,
+            task_data.image_ids,
+        ):
+            raise HTTPException(status_code=403, detail="上传图片不属于当前会话")
+
     task = DesignTask(raw_user_input=task_data.user_input)
     if task_data.requirement:
         # 前端表单已收集结构化需求，直接进入已确认状态
@@ -45,6 +64,8 @@ def create_task(task_data: TaskCreate, db: Session = Depends(get_db)):
     db.add(task)
     db.commit()
     db.refresh(task)
+    if task_data.session_id:
+        anonymous_session_service.attach_task(db, task_data.session_id, task.id)
 
     # 关联已上传的图片
     if task_data.image_ids:

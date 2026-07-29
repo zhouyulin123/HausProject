@@ -2,13 +2,13 @@ import logging
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import UploadedImage
-from app.services import llm_service
+from app.services import anonymous_session_service, llm_service
 from app.services.llm_service import LLMUnavailable
 from app.services.upload_validation import UploadValidationError, validate_image_upload
 
@@ -22,8 +22,16 @@ def _safe_filename(name: str) -> str:
 
 @router.post("/image")
 async def upload_image(
-    file: UploadFile = File(...), db: Session = Depends(get_db)
+    file: UploadFile = File(...),
+    x_session_id: str | None = Header(default=None, alias="X-Session-ID"),
+    db: Session = Depends(get_db),
 ):
+    if x_session_id and not anonymous_session_service.get_active_session(
+        db,
+        x_session_id,
+    ):
+        raise HTTPException(status_code=404, detail="匿名会话不存在或已过期")
+
     content = await file.read()
     try:
         validated = validate_image_upload(
@@ -66,6 +74,8 @@ async def upload_image(
     image.file_url = f"/uploads/{stored_name}"
     image.analysis_json = {**analysis, "source": source}
     db.commit()
+    if x_session_id:
+        anonymous_session_service.attach_image(db, x_session_id, image.id)
 
     return {
         "image_id": image.id,
