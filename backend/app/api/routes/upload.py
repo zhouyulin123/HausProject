@@ -2,7 +2,7 @@ import logging
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -10,6 +10,7 @@ from app.db.database import get_db
 from app.db.models import UploadedImage
 from app.services import llm_service
 from app.services.llm_service import LLMUnavailable
+from app.services.upload_validation import UploadValidationError, validate_image_upload
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -24,6 +25,15 @@ async def upload_image(
     file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
     content = await file.read()
+    try:
+        validated = validate_image_upload(
+            content=content,
+            content_type=file.content_type or "",
+            filename=file.filename or "",
+            max_bytes=settings.max_upload_image_mb * 1024 * 1024,
+        )
+    except UploadValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     image = UploadedImage(
         image_type="floor_plan" if "户型" in (file.filename or "") else "room_photo",
@@ -37,7 +47,8 @@ async def upload_image(
     # 保存到本地 uploads 目录，通过 /uploads 静态路由访问
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
-    stored_name = f"{image.id}_{_safe_filename(file.filename)}"
+    safe_stem = _safe_filename(Path(file.filename or "upload").stem)
+    stored_name = f"{image.id}_{safe_stem}.{validated.extension}"
     (upload_dir / stored_name).write_bytes(content)
 
     # Qwen3-VL 真实空间识别；不可用时降级占位
