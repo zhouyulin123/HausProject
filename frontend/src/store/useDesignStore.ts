@@ -3,7 +3,7 @@ import { persist } from "zustand/middleware";
 import type { DesignPlan, SavedDesign, SavedDesignStatus } from "@/types/design";
 
 interface DesignState {
-  /** 本次会话中 AI 生成的方案（未持久化前的展示数据来源是 mock） */
+  /** 当前匿名会话生成的方案；本地保留一份用于刷新后立即恢复展示。 */
   generatedPlans: DesignPlan[];
   setGeneratedPlans: (plans: DesignPlan[]) => void;
 
@@ -82,6 +82,7 @@ export const useDesignStore = create<DesignState>()(
     {
       name: "ai-home-designs",
       partialize: (state) => ({
+        generatedPlans: state.generatedPlans,
         savedDesigns: state.savedDesigns,
         favoriteFurnitureIds: state.favoriteFurnitureIds,
         pickedFurnitureIds: state.pickedFurnitureIds,

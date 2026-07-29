@@ -4,6 +4,14 @@ import type { ImageAnalysis, UserRequirement } from "@/types/requirement";
 import { mockDesigns } from "@/data/mockDesigns";
 import { mockFurniture } from "@/data/mockFurniture";
 import { getAiReply, uploadAnalysisFindings } from "@/data/mockChat";
+import {
+  readImageIds,
+  readSessionId,
+  readTaskId,
+  writeImageIds,
+  writeSessionId,
+  writeTaskId,
+} from "./sessionStorage";
 
 /**
  * API 层：优先调用真实后端（FastAPI + MySQL + DeepSeek），
@@ -19,21 +27,85 @@ import { getAiReply, uploadAnalysisFindings } from "@/data/mockChat";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// 会话内的任务上下文（刷新后重新创建即可）
-let currentTaskId: number | null = null;
-const uploadedImageIds: number[] = [];
+const browserStorage =
+  typeof window !== "undefined" ? window.localStorage : null;
+
+// 匿名客户上下文会持久化，刷新页面后可继续当前设计任务
+let currentTaskId: number | null = browserStorage
+  ? readTaskId(browserStorage)
+  : null;
+const uploadedImageIds: number[] = browserStorage
+  ? readImageIds(browserStorage)
+  : [];
 const chatHistory: { role: string; content: string }[] = [];
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+async function rawRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!(init?.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
   const resp = await fetch(path, {
-    headers:
-      init?.body instanceof FormData
-        ? undefined
-        : { "Content-Type": "application/json" },
     ...init,
+    headers,
   });
-  if (!resp.ok) throw new Error(`${path} -> ${resp.status}`);
+  if (!resp.ok) throw new ApiError(`${path} -> ${resp.status}`, resp.status);
   return resp.json() as Promise<T>;
+}
+
+let sessionPromise: Promise<string> | null = null;
+let activeSessionId: string | null = null;
+
+async function ensureAnonymousSession(): Promise<string> {
+  if (!browserStorage) throw new Error("当前环境不支持匿名会话存储");
+  if (activeSessionId) return activeSessionId;
+  const storedId = readSessionId(browserStorage);
+  if (storedId) {
+    try {
+      await rawRequest(`/api/sessions/${storedId}`);
+      activeSessionId = storedId;
+      return storedId;
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 404) throw error;
+      writeSessionId(browserStorage, null);
+      writeTaskId(browserStorage, null);
+      writeImageIds(browserStorage, []);
+      currentTaskId = null;
+      uploadedImageIds.splice(0);
+    }
+  }
+
+  const created = await rawRequest<{ session_id: string }>("/api/sessions", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  writeSessionId(browserStorage, created.session_id);
+  activeSessionId = created.session_id;
+  return created.session_id;
+}
+
+async function getAnonymousSessionId(): Promise<string> {
+  if (!sessionPromise) {
+    sessionPromise = ensureAnonymousSession().finally(() => {
+      sessionPromise = null;
+    });
+  }
+  return sessionPromise;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const sessionId = await getAnonymousSessionId();
+  const headers = new Headers(init?.headers);
+  headers.set("X-Session-ID", sessionId);
+  return rawRequest<T>(path, { ...init, headers });
 }
 
 // ---------------------------------------------------------------- 视觉装饰
@@ -125,12 +197,14 @@ async function doGenerateDesigns(
     const task = await request<{ task_id: number }>("/api/design/tasks", {
       method: "POST",
       body: JSON.stringify({
+        session_id: await getAnonymousSessionId(),
         user_input: summarizeRequirement(requirement),
         requirement,
         image_ids: uploadedImageIds,
       }),
     });
     currentTaskId = task.task_id;
+    if (browserStorage) writeTaskId(browserStorage, currentTaskId);
 
     await request(`/api/design/tasks/${task.task_id}/generate`, {
       method: "POST",
@@ -174,6 +248,7 @@ export async function analyzeRoomImage(file: File): Promise<ImageAnalysis> {
       };
     }>("/api/upload/image", { method: "POST", body: form });
     uploadedImageIds.push(data.image_id);
+    if (browserStorage) writeImageIds(browserStorage, uploadedImageIds);
     return {
       fileName: file.name,
       fileSize: sizeText,

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   readImageIds,
+  readSessionId,
   readTaskId,
   writeImageIds,
+  writeSessionId,
   writeTaskId,
   type KeyValueStorage,
 } from "./sessionStorage";
@@ -17,6 +19,17 @@ function createMemoryStorage(): KeyValueStorage {
 }
 
 describe("匿名设计上下文存储", () => {
+  it("只恢复合法的匿名会话编号", () => {
+    const storage = createMemoryStorage();
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+
+    writeSessionId(storage, sessionId);
+    expect(readSessionId(storage)).toBe(sessionId);
+
+    storage.setItem("haus-anonymous-session-id", "invalid");
+    expect(readSessionId(storage)).toBeNull();
+  });
+
   it("可以保存并恢复当前设计任务", () => {
     const storage = createMemoryStorage();
 
