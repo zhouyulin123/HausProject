@@ -167,3 +167,50 @@ class RenderedImage(Base):
     image_url = Column(String(255))
     mode = Column(String(20))  # controlnet / text2img
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnonymousSession(Base):
+    """无需登录的客户会话，承载上传图片、设计任务和后续方案版本。"""
+
+    __tablename__ = "anonymous_sessions"
+    id = Column(String(36), primary_key=True)
+    status = Column(String(20), nullable=False, default="active", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    last_seen_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class AnonymousSessionImage(Base):
+    """匿名会话与上传图片的所有权关系。"""
+
+    __tablename__ = "anonymous_session_images"
+    session_id = Column(
+        String(36),
+        ForeignKey("anonymous_sessions.id"),
+        primary_key=True,
+    )
+    image_id = Column(
+        Integer,
+        ForeignKey("uploaded_images.id"),
+        primary_key=True,
+        unique=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnonymousSessionTask(Base):
+    """匿名会话与设计任务的所有权关系。"""
+
+    __tablename__ = "anonymous_session_tasks"
+    session_id = Column(
+        String(36),
+        ForeignKey("anonymous_sessions.id"),
+        primary_key=True,
+    )
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id"),
+        primary_key=True,
+        unique=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
