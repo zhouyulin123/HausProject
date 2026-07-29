@@ -120,50 +120,66 @@ def generate_design(task_id: int, db: Session = Depends(get_db)):
     task = _get_task(db, task_id)
     task.status = "generating"
     task.progress = 60
+    task.error_message = None
     db.commit()
 
-    requirement = task.confirmed_requirement_json or task_service.parse_requirement(
-        task.raw_user_input or ""
-    )
-
-    # 若有上传图片的 VL 分析结果，作为空间上下文一并喂给方案生成
-    image_context = []
-    for img in db.scalars(
-        select(UploadedImage).where(UploadedImage.task_id == task.id)
-    ):
-        analysis = img.analysis_json or {}
-        if analysis.get("findings"):
-            image_context.extend(analysis["findings"])
-    requirement_for_llm = dict(requirement)
-    if image_context:
-        requirement_for_llm["image_analysis"] = image_context
-
-    # 商品库上下文：家具与定制报价只能从自家库里选
-    catalog_context = catalog_service.build_catalog_context(db)
-
-    generator = "llm"
     try:
-        plans = llm_service.generate_plans(requirement_for_llm, catalog_context)
-    except LLMUnavailable as exc:
-        logger.warning("LLM 方案生成降级到模板: %s", exc)
-        generator = "template"
-        plans = task_service.build_template_plans(requirement)
+        requirement = task.confirmed_requirement_json or task_service.parse_requirement(
+            task.raw_user_input or ""
+        )
 
-    # 统一校验回填：SKU 有效性、真实价格、本店产品报价单（AI 不能编价格）
-    catalog_service.verify_and_enrich_plans(db, plans)
+        # 若有上传图片的 VL 分析结果，作为空间上下文一并喂给方案生成
+        image_context = []
+        for img in db.scalars(
+            select(UploadedImage).where(UploadedImage.task_id == task.id)
+        ):
+            analysis = img.analysis_json or {}
+            if analysis.get("findings"):
+                image_context.extend(analysis["findings"])
+        requirement_for_llm = dict(requirement)
+        if image_context:
+            requirement_for_llm["image_analysis"] = image_context
 
-    result = DesignResult(
-        task_id=task.id,
-        plans_json=plans,
-        generator=generator,
-        pdf_url=f"https://mock-storage.com/reports/{task.id}.pdf",
-    )
-    db.add(result)
-    task.status = "completed"
-    task.progress = 100
-    db.commit()
+        # 商品库上下文：家具与定制报价只能从自家库里选
+        catalog_context = catalog_service.build_catalog_context(db)
 
-    return GenerateResponse(task_id=task.id, status="completed", generator=generator)
+        generator = "llm"
+        try:
+            plans = llm_service.generate_plans(requirement_for_llm, catalog_context)
+        except LLMUnavailable as exc:
+            logger.warning("LLM 方案生成降级到模板: %s", exc)
+            generator = "template"
+            plans = task_service.build_template_plans(requirement)
+
+        # 统一校验回填：SKU 有效性、真实价格、本店产品报价单（AI 不能编价格）
+        catalog_service.verify_and_enrich_plans(db, plans)
+
+        result = DesignResult(
+            task_id=task.id,
+            plans_json=plans,
+            generator=generator,
+            pdf_url=None,
+        )
+        db.add(result)
+        task.status = "completed"
+        task.progress = 100
+        db.commit()
+
+        return GenerateResponse(
+            task_id=task.id,
+            status="completed",
+            generator=generator,
+        )
+    except Exception as exc:
+        db.rollback()
+        failed_task = db.get(DesignTask, task_id)
+        if failed_task:
+            failed_task.status = "failed"
+            failed_task.progress = 0
+            failed_task.error_message = str(exc)[:2000]
+            db.commit()
+        logger.exception("方案生成任务失败: task_id=%s", task_id)
+        raise HTTPException(status_code=500, detail="方案生成失败，请稍后重试") from exc
 
 
 @router.get("/{task_id}", response_model=TaskStatusResponse)
