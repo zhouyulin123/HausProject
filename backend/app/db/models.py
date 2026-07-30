@@ -311,3 +311,63 @@ class QuoteSnapshot(Base):
         "DesignPlanVersion",
         back_populates="quote_snapshot",
     )
+
+
+class GenerationRun(Base):
+    """一次可恢复、可查询的后台方案生成任务。"""
+
+    __tablename__ = "generation_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "attempt",
+            name="uq_generation_runs_task_attempt",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id"),
+        nullable=False,
+        index=True,
+    )
+    attempt = Column(Integer, nullable=False, default=1)
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    progress = Column(Integer, nullable=False, default=0)
+    current_node = Column(String(50), nullable=True)
+    generator = Column(String(20), nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    events = relationship(
+        "GenerationRunEvent",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="GenerationRunEvent.id",
+    )
+
+
+class GenerationRunEvent(Base):
+    """后台生成任务的单个 LangGraph 节点事件。"""
+
+    __tablename__ = "generation_run_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(
+        Integer,
+        ForeignKey("generation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    node = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False)
+    progress = Column(Integer, nullable=False)
+    source = Column(String(30), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    detail_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    run = relationship("GenerationRun", back_populates="events")
