@@ -112,3 +112,42 @@ def test_workflow_rejects_plan_without_server_quote():
             image_context=[],
             catalog_context="",
         )
+
+
+def test_workflow_emits_each_completed_node_for_live_progress():
+    emitted: list[dict] = []
+
+    def enrich(plans):
+        plans[0]["furnitureSuggestions"] = [{"id": "CHAIR-001"}]
+        plans[0]["shopQuote"] = {
+            "furnitureTotal": 1000,
+            "customTotal": 0,
+            "total": 1000,
+        }
+
+    workflow = DesignWorkflow(
+        generate_plans=lambda *_: [
+            {
+                "id": "plan-a",
+                "name": "实时进度方案",
+                "style": "现代简约",
+                "furnitureSuggestions": [{"sku": "CHAIR-001"}],
+            }
+        ],
+        build_template_plans=lambda _: [],
+        enrich_plans=enrich,
+        on_step=emitted.append,
+    )
+
+    workflow.run(
+        requirement={"area": 60},
+        image_context=[],
+        catalog_context="CHAIR-001|单椅",
+    )
+
+    assert [step["node"] for step in emitted] == [
+        "prepare_context",
+        "generate_plans",
+        "calculate_quote",
+        "validate_quality",
+    ]
