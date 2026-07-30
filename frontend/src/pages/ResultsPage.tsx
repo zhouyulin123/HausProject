@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDesignStore } from "@/store/useDesignStore";
 import { useRequirementStore } from "@/store/useRequirementStore";
-import { generateDesigns } from "@/api/designApi";
+import { generateDesigns, restoreCurrentDesigns } from "@/api/designApi";
 import DesignCard from "@/components/design/DesignCard";
 import LoadingAI from "@/components/chat/LoadingAI";
 
@@ -17,11 +17,28 @@ export default function ResultsPage() {
   useEffect(() => {
     if (generatedPlans.length > 0) return;
     let cancelled = false;
-    void generateDesigns(requirement).then((plans) => {
-      if (cancelled) return;
-      setGeneratedPlans(plans);
-      setLoading(false);
-    });
+    void (async () => {
+      try {
+        const restoredPlans = await restoreCurrentDesigns();
+        if (cancelled) return;
+        if (restoredPlans?.length) {
+          setGeneratedPlans(restoredPlans);
+          setLoading(false);
+          return;
+        }
+
+        const generated = await generateDesigns(requirement);
+        if (cancelled) return;
+        setGeneratedPlans(generated);
+      } catch (error) {
+        console.warn("[ResultsPage] 历史方案恢复失败，尝试生成可用方案", error);
+        const generated = await generateDesigns(requirement);
+        if (cancelled) return;
+        setGeneratedPlans(generated);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
     return () => {
       cancelled = true;
     };

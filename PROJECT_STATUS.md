@@ -88,12 +88,39 @@
 - 当前 MySQL `alembic current`：`3e9d6b1a7c42 (head)`
 - `alembic check`：`No new upgrade operations detected`
 
+### 第四批：方案版本、报价快照与可信提案
+
+- 新增 `design_revisions`、`design_plan_versions`、`quote_snapshots`：
+  - 每次方案生成形成递增版本，保存当时的确认需求、图片分析上下文、生成器和完整方案
+  - 每个方案保存独立报价快照，历史版本不随商品或报价规则变化而漂移
+  - 数据库外键和唯一约束保证任务版本、方案编号与报价一一对应
+- 方案生成在同一事务内同时写入旧结果兼容记录和新版快照，失败时整体回滚
+- 新增客户会话内的版本查询：
+  - `GET /api/design/tasks/{task_id}/versions`
+  - `GET /api/design/tasks/{task_id}/versions/{version}`
+- 原结果接口优先读取最新正式版本；旧任务没有版本快照时仍兼容旧结果
+- 结果页刷新后优先从服务端恢复当前任务，不再依赖浏览器缓存中的完整方案
+- 提案 PDF 改为只接收 `task_id + plan_id`：
+  - 方案名称、家具明细和报价从服务端最新快照读取
+  - 客户端提交的伪造方案内容不会进入 PDF
+  - 导出文件名使用数据库方案版本 ID，不使用外部方案字符串拼接路径
+- 当前 MySQL 已升级至 `6c4679cf9722 (head)`
+
+### 第四批验证
+
+- 后端：`29 passed`
+- 前端：`5 passed`
+- 前端 TypeScript 检查与生产构建：通过
+- 空 SQLite 从零迁移到最新 head：通过
+- 当前 MySQL `alembic current`：`6c4679cf9722 (head)`
+- `alembic check`：`No new upgrade operations detected`
+
 ### 接下来
 
-1. 建立正式的方案版本、需求版本和报价快照表
-2. 后端提供当前会话方案恢复 API，逐步减少对 localStorage 的依赖
-3. PDF 改为按后端持久化方案生成，禁止客户端提交可篡改报价
-4. 进入 LangGraph Agent V1
+1. 进入 LangGraph Agent V1，把需求理解、图像上下文、商品检索和确定性报价串成可追踪工作流
+2. 增加生成任务异步执行与进度事件，避免模型调用占用同步请求
+3. 为方案版本增加前端历史版本查看与“基于此版本继续优化”
+4. 处理前端大包拆分和受控依赖升级（当前构建主包约 1.32 MB）
 
 ## 2026-07-24 一键启动脚本 + 3D 布局（最小验证）
 

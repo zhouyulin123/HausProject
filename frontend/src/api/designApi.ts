@@ -190,6 +190,30 @@ export function generateDesigns(
   return inFlightGeneration;
 }
 
+/**
+ * 从服务端恢复当前匿名会话最近生成的方案。
+ *
+ * 没有历史任务或任务已不存在时返回 null，由调用方决定是否创建新任务；
+ * 网络和服务端错误继续抛出，避免把暂时故障误判成“没有历史方案”。
+ */
+export async function restoreCurrentDesigns(): Promise<DesignPlan[] | null> {
+  if (!currentTaskId) return null;
+
+  try {
+    const result = await request<{ plans: DesignPlan[]; generator: string }>(
+      `/api/design/tasks/${currentTaskId}/result`,
+    );
+    return result.plans.map(decoratePlan);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      currentTaskId = null;
+      if (browserStorage) writeTaskId(browserStorage, null);
+      return null;
+    }
+    throw error;
+  }
+}
+
 async function doGenerateDesigns(
   requirement: UserRequirement,
 ): Promise<DesignPlan[]> {
@@ -471,9 +495,12 @@ export async function renderEffectImage(
 
 /** 生成品牌提案 PDF（方案+效果图+报价单），返回可下载/转发的 URL。失败抛错。 */
 export async function exportProposalPdf(plan: DesignPlan): Promise<string> {
+  if (!currentTaskId) {
+    throw new Error("当前没有可导出的设计任务");
+  }
   const data = await request<{ pdf_url: string }>("/api/design/proposal-pdf", {
     method: "POST",
-    body: JSON.stringify({ plan, task_id: currentTaskId }),
+    body: JSON.stringify({ plan_id: plan.id, task_id: currentTaskId }),
   });
   return data.pdf_url;
 }
