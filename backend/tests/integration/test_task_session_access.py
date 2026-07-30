@@ -15,7 +15,7 @@ from app.services.anonymous_session_service import (
 
 
 @pytest.fixture
-def session_access_context():
+def session_access_context(monkeypatch):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -23,6 +23,13 @@ def session_access_context():
     )
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(
+        tasks.llm_service,
+        "generate_plans",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("越权请求不应进入模型生成")
+        ),
+    )
 
     with factory() as db:
         owner = create_anonymous_session(db)
@@ -84,8 +91,8 @@ def test_task_endpoints_reject_another_anonymous_session(
         json=json_body,
     )
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "设计任务不属于当前会话"
+    assert response.status_code == 404
+    assert response.json()["detail"] == "设计任务不存在或不属于当前会话"
 
 
 @pytest.mark.integration

@@ -4,6 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import (
+    SessionIdHeader,
+    require_active_session,
+    require_owned_design_task,
+)
 from app.db.database import get_db
 from app.db.models import DesignResult, DesignTask, RequirementParseResult, UploadedImage
 from app.schemas.tasks import (
@@ -35,20 +40,20 @@ def _get_task(db: Session, task_id: int) -> DesignTask:
 
 
 @router.post("", response_model=TaskResponse)
-def create_task(task_data: TaskCreate, db: Session = Depends(get_db)):
-    if task_data.session_id:
-        session = anonymous_session_service.get_active_session(
-            db,
-            task_data.session_id,
-        )
-        if not session:
-            raise HTTPException(status_code=404, detail="匿名会话不存在或已过期")
-        if not anonymous_session_service.session_owns_images(
-            db,
-            task_data.session_id,
-            task_data.image_ids,
-        ):
-            raise HTTPException(status_code=403, detail="上传图片不属于当前会话")
+def create_task(
+    task_data: TaskCreate,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_active_session(db, x_session_id)
+    if task_data.session_id and task_data.session_id != x_session_id:
+        raise HTTPException(status_code=400, detail="请求中的会话编号不一致")
+    if not anonymous_session_service.session_owns_images(
+        db,
+        x_session_id,
+        task_data.image_ids,
+    ):
+        raise HTTPException(status_code=403, detail="上传图片不属于当前会话")
 
     task = DesignTask(raw_user_input=task_data.user_input)
     if task_data.requirement:
@@ -64,8 +69,7 @@ def create_task(task_data: TaskCreate, db: Session = Depends(get_db)):
     db.add(task)
     db.commit()
     db.refresh(task)
-    if task_data.session_id:
-        anonymous_session_service.attach_task(db, task_data.session_id, task.id)
+    anonymous_session_service.attach_task(db, x_session_id, task.id)
 
     # 关联已上传的图片
     if task_data.image_ids:
@@ -79,8 +83,16 @@ def create_task(task_data: TaskCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{task_id}/requirement", response_model=RequirementResponse)
-def get_requirement(task_id: int, db: Session = Depends(get_db)):
-    task = _get_task(db, task_id)
+def get_requirement(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    task = require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
     raw_input = task.raw_user_input or ""
 
     parser = "llm"
@@ -126,9 +138,16 @@ def get_requirement(task_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{task_id}/confirm-requirement")
 def confirm_requirement(
-    task_id: int, req: ConfirmRequirementRequest, db: Session = Depends(get_db)
+    task_id: int,
+    req: ConfirmRequirementRequest,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
 ):
-    task = _get_task(db, task_id)
+    task = require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
     task.confirmed_requirement_json = req.confirmed_requirement
     task.status = "confirmed"
     task.progress = 50
@@ -137,8 +156,16 @@ def confirm_requirement(
 
 
 @router.post("/{task_id}/generate", response_model=GenerateResponse)
-def generate_design(task_id: int, db: Session = Depends(get_db)):
-    task = _get_task(db, task_id)
+def generate_design(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    task = require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
     task.status = "generating"
     task.progress = 60
     task.error_message = None
@@ -204,16 +231,32 @@ def generate_design(task_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{task_id}", response_model=TaskStatusResponse)
-def get_task_status(task_id: int, db: Session = Depends(get_db)):
-    task = _get_task(db, task_id)
+def get_task_status(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    task = require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
     return TaskStatusResponse(
         task_id=task.id, status=task.status, progress=task.progress or 0
     )
 
 
 @router.get("/{task_id}/result", response_model=TaskResultResponse)
-def get_task_result(task_id: int, db: Session = Depends(get_db)):
-    _get_task(db, task_id)
+def get_task_result(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
     result = db.scalars(
         select(DesignResult)
         .where(DesignResult.task_id == task_id)
@@ -237,8 +280,16 @@ def get_task_result(task_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{task_id}/export-pdf")
-def export_pdf(task_id: int, db: Session = Depends(get_db)):
-    _get_task(db, task_id)
+def export_pdf(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
     result = db.scalars(
         select(DesignResult)
         .where(DesignResult.task_id == task_id)

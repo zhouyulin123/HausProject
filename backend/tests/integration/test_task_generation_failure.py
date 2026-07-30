@@ -6,6 +6,10 @@ from sqlalchemy.orm import sessionmaker
 from app.api.routes import tasks as task_routes
 from app.db.database import Base
 from app.db.models import DesignTask
+from app.services.anonymous_session_service import (
+    attach_task,
+    create_anonymous_session,
+)
 
 
 @pytest.mark.integration
@@ -15,6 +19,7 @@ def test_generate_design_persists_failed_status(monkeypatch):
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     with session_factory() as db:
+        anonymous_session = create_anonymous_session(db)
         task = DesignTask(
             status="confirmed",
             progress=50,
@@ -26,6 +31,7 @@ def test_generate_design_persists_failed_status(monkeypatch):
         )
         db.add(task)
         db.commit()
+        attach_task(db, anonymous_session.id, task.id)
 
         monkeypatch.setattr(
             task_routes.catalog_service,
@@ -34,7 +40,7 @@ def test_generate_design_persists_failed_status(monkeypatch):
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            task_routes.generate_design(task.id, db)
+            task_routes.generate_design(task.id, anonymous_session.id, db)
 
         db.refresh(task)
         assert exc_info.value.status_code == 500

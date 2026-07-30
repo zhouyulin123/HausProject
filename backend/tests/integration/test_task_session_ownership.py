@@ -37,6 +37,7 @@ def test_create_task_links_owned_images_to_anonymous_session(db):
             image_ids=[image.id],
             requirement={"rooms": ["客厅"], "styles": ["现代简约"]},
         ),
+        session.id,
         db,
     )
 
@@ -61,6 +62,7 @@ def test_create_task_rejects_images_owned_by_another_session(db):
                 image_ids=[image.id],
                 requirement={"rooms": ["客厅"]},
             ),
+            attacker.id,
             db,
         )
 
