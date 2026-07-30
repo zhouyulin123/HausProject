@@ -7,7 +7,9 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from app.db.database import Base
@@ -214,3 +216,97 @@ class AnonymousSessionTask(Base):
         unique=True,
     )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DesignRevision(Base):
+    """一次完整方案生成的不可变版本。"""
+
+    __tablename__ = "design_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "version",
+            name="uq_design_revisions_task_version",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id"),
+        nullable=False,
+        index=True,
+    )
+    version = Column(Integer, nullable=False)
+    requirement_snapshot = Column(JSON, nullable=False)
+    image_context_snapshot = Column(JSON, nullable=True)
+    generator = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="completed")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    plans = relationship(
+        "DesignPlanVersion",
+        back_populates="revision",
+        cascade="all, delete-orphan",
+        order_by="DesignPlanVersion.id",
+    )
+
+
+class DesignPlanVersion(Base):
+    """某次生成中的单套方案快照。"""
+
+    __tablename__ = "design_plan_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "revision_id",
+            "plan_key",
+            name="uq_design_plan_versions_revision_key",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    revision_id = Column(
+        Integer,
+        ForeignKey("design_revisions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    plan_key = Column(String(50), nullable=False)
+    plan_name = Column(String(200), nullable=False)
+    style = Column(String(100), nullable=True)
+    plan_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    revision = relationship("DesignRevision", back_populates="plans")
+    quote_snapshot = relationship(
+        "QuoteSnapshot",
+        back_populates="plan_version",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class QuoteSnapshot(Base):
+    """与单套方案绑定的确定性报价快照。"""
+
+    __tablename__ = "quote_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_version_id = Column(
+        Integer,
+        ForeignKey("design_plan_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    currency = Column(String(10), nullable=False, default="CNY")
+    furniture_total = Column(Integer, nullable=False, default=0)
+    custom_total = Column(Integer, nullable=False, default=0)
+    grand_total = Column(Integer, nullable=False, default=0)
+    quote_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    plan_version = relationship(
+        "DesignPlanVersion",
+        back_populates="quote_snapshot",
+    )
