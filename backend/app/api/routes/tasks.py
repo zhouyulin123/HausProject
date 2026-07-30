@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,13 +10,22 @@ from app.api.dependencies import (
     require_active_session,
     require_owned_design_task,
 )
-from app.db.database import get_db
-from app.db.models import DesignResult, DesignTask, RequirementParseResult, UploadedImage
+from app.db.database import SessionLocal, get_db
+from app.db.models import (
+    DesignResult,
+    DesignTask,
+    GenerationRun,
+    RequirementParseResult,
+    UploadedImage,
+)
 from app.schemas.tasks import (
     ConfirmRequirementRequest,
     DesignRevisionDetailResponse,
     DesignRevisionListResponse,
     DesignRevisionSummary,
+    GenerationEventResponse,
+    GenerationQueuedResponse,
+    GenerationStatusResponse,
     GenerateResponse,
     RequirementResponse,
     TaskCreate,
@@ -28,6 +37,7 @@ from app.services import (
     anonymous_session_service,
     catalog_service,
     design_version_service,
+    generation_run_service,
     llm_service,
     task_service,
 )
@@ -159,17 +169,13 @@ def confirm_requirement(
     return {"status": "ok"}
 
 
-@router.post("/{task_id}/generate", response_model=GenerateResponse)
-def generate_design(
-    task_id: int,
-    x_session_id: SessionIdHeader,
-    db: Session = Depends(get_db),
-):
-    task = require_owned_design_task(
-        db,
-        session_id=x_session_id,
-        task_id=task_id,
-    )
+def _execute_generation(
+    db: Session,
+    *,
+    task: DesignTask,
+    on_step=None,
+) -> GenerateResponse:
+    task_id = task.id
     task.status = "generating"
     task.progress = 60
     task.error_message = None
@@ -198,6 +204,7 @@ def generate_design(
                 db,
                 plans,
             ),
+            on_step=on_step,
         )
         workflow_result = workflow.run(
             requirement=requirement,
@@ -255,6 +262,129 @@ def generate_design(
             db.commit()
         logger.exception("方案生成任务失败: task_id=%s", task_id)
         raise HTTPException(status_code=500, detail="方案生成失败，请稍后重试") from exc
+
+
+@router.post("/{task_id}/generate", response_model=GenerateResponse)
+def generate_design(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    task = require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
+    return _execute_generation(db, task=task)
+
+
+def execute_generation_run(run_id: int) -> None:
+    """执行已入库的后台生成任务；重复调度只允许首个 queued worker 运行。"""
+    with SessionLocal() as db:
+        run = db.get(GenerationRun, run_id)
+        if run is None or run.status != "queued":
+            return
+        generation_run_service.mark_running(db, run=run)
+        task = db.get(DesignTask, run.task_id)
+        if task is None:
+            generation_run_service.mark_failed(
+                db,
+                run=run,
+                error_message="设计任务不存在",
+            )
+            return
+
+        def persist_step(step):
+            generation_run_service.record_step(db, run=run, step=step)
+            task.progress = min(99, 50 + run.progress // 2)
+            db.commit()
+
+        try:
+            response = _execute_generation(
+                db,
+                task=task,
+                on_step=persist_step,
+            )
+            generation_run_service.mark_completed(
+                db,
+                run=run,
+                generator=response.generator,
+            )
+        except Exception as exc:
+            db.rollback()
+            failed_run = db.get(GenerationRun, run_id)
+            if failed_run is not None:
+                generation_run_service.mark_failed(
+                    db,
+                    run=failed_run,
+                    error_message=str(exc),
+                )
+            logger.exception("后台方案生成失败: run_id=%s", run_id)
+
+
+@router.post(
+    "/{task_id}/generate-async",
+    response_model=GenerationQueuedResponse,
+    status_code=202,
+)
+def queue_design_generation(
+    task_id: int,
+    background_tasks: BackgroundTasks,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    task = require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
+    run = generation_run_service.create_run(db, task=task)
+    if run.status == "queued":
+        task.status = "queued"
+        task.progress = 50
+        task.error_message = None
+        db.commit()
+        background_tasks.add_task(execute_generation_run, run.id)
+    return GenerationQueuedResponse(run_id=run.id, status=run.status)
+
+
+@router.get(
+    "/{task_id}/generation",
+    response_model=GenerationStatusResponse,
+)
+def get_generation_status(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
+    run = generation_run_service.get_latest_run(db, task_id=task_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="生成任务不存在")
+    return GenerationStatusResponse(
+        run_id=run.id,
+        attempt=run.attempt,
+        status=run.status,
+        progress=run.progress,
+        current_node=run.current_node,
+        generator=run.generator,
+        error_message=run.error_message,
+        events=[
+            GenerationEventResponse(
+                node=event.node,
+                status=event.status,
+                progress=event.progress,
+                source=event.source,
+                duration_ms=event.duration_ms,
+                details=event.detail_json or {},
+            )
+            for event in run.events
+        ],
+    )
 
 
 @router.get("/{task_id}", response_model=TaskStatusResponse)

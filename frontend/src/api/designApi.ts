@@ -230,10 +230,15 @@ async function doGenerateDesigns(
     currentTaskId = task.task_id;
     if (browserStorage) writeTaskId(browserStorage, currentTaskId);
 
-    await request(`/api/design/tasks/${task.task_id}/generate`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
+    await request<{ run_id: number; status: string }>(
+      `/api/design/tasks/${task.task_id}/generate-async`,
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      },
+    );
+
+    await waitForGeneration(task.task_id);
 
     const result = await request<{ plans: DesignPlan[]; generator: string }>(
       `/api/design/tasks/${task.task_id}/result`,
@@ -249,6 +254,31 @@ async function doGenerateDesigns(
     }
     return plans;
   }
+}
+
+interface GenerationStatus {
+  status: "queued" | "running" | "completed" | "failed";
+  progress: number;
+  current_node: string | null;
+  error_message: string | null;
+}
+
+async function waitForGeneration(
+  taskId: number,
+  timeoutMs = 180_000,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const generation = await request<GenerationStatus>(
+      `/api/design/tasks/${taskId}/generation`,
+    );
+    if (generation.status === "completed") return;
+    if (generation.status === "failed") {
+      throw new Error(generation.error_message || "方案生成失败，请稍后重试");
+    }
+    await delay(1000);
+  }
+  throw new Error("方案生成超时，请稍后在当前任务中继续查看");
 }
 
 // ---------------------------------------------------------------- 图片上传

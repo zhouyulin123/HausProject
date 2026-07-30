@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskCreate(BaseModel):
@@ -32,6 +32,31 @@ class GenerateResponse(BaseModel):
     task_id: int
     status: str
     generator: str  # llm / template
+
+
+class GenerationQueuedResponse(BaseModel):
+    run_id: int
+    status: str
+
+
+class GenerationEventResponse(BaseModel):
+    node: str
+    status: str
+    progress: int
+    source: Optional[str] = None
+    duration_ms: Optional[int] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GenerationStatusResponse(BaseModel):
+    run_id: int
+    attempt: int
+    status: str
+    progress: int
+    current_node: Optional[str] = None
+    generator: Optional[str] = None
+    error_message: Optional[str] = None
+    events: List[GenerationEventResponse] = Field(default_factory=list)
 
 
 class TaskStatusResponse(BaseModel):
