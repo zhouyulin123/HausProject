@@ -16,11 +16,13 @@ def test_alembic_upgrades_empty_database_to_current_schema():
     database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
     config = Config(str(backend_dir / "alembic.ini"))
     config.attributes["database_url"] = database_url
+    inspection_engine = None
 
     try:
         command.upgrade(config, "head")
 
-        tables = set(inspect(create_engine(database_url)).get_table_names())
+        inspection_engine = create_engine(database_url)
+        tables = set(inspect(inspection_engine).get_table_names())
         assert {
             "alembic_version",
             "anonymous_sessions",
@@ -33,4 +35,6 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "custom_quote_rules",
         } <= tables
     finally:
+        if inspection_engine is not None:
+            inspection_engine.dispose()
         database_path.unlink(missing_ok=True)
