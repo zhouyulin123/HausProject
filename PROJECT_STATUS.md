@@ -65,6 +65,36 @@
 - 剩余风险：任务查询和生成接口还需强制校验 `X-Session-ID`；尚未引入 Alembic
 - Vitest 已从 2 升级到 4.1.10，清除测试工具的 critical 告警；当前剩余 4 项（3 moderate、1 high），来自旧 Vite/esbuild 和 React Router，需通过受控主版本升级处理，不能直接执行破坏性 `npm audit fix --force`
 
+### 第三批：匿名会话隔离与数据库迁移
+
+- 所有设计任务读取、需求确认、方案生成和结果查询强制要求 `X-Session-ID`
+- 聊天、效果图和提案 PDF 在携带 `task_id` 时强制验证任务归属
+- 对“不存在的任务”和“其他会话的任务”统一返回 404，避免通过连续编号枚举客户数据
+- 权限校验发生在 DeepSeek、SD 和 PDF 服务调用之前，越权请求不会消耗模型额度
+- smoke test 已升级为：创建匿名会话 → 带会话上传 → 创建任务 → 生成与导出
+- 新增客户主路由注册测试，避免路由模块语法错误漏过服务测试
+- 引入 Alembic 1.18：
+  - 全新数据库可直接 `python -m alembic upgrade head`
+  - 当前 MySQL 已安全接管到 `3e9d6b1a7c42 (head)`
+  - 统一 `design_tasks.customer_id` 索引并补齐客户外键
+  - 应用启动不再隐式 `create_all`，一键启动会先迁移再启动
+
+### 第三批验证
+
+- 后端：`24 passed`
+- 前端：`4 passed`
+- 前端生产构建：通过
+- 空 SQLite 从零迁移到 head：通过
+- 当前 MySQL `alembic current`：`3e9d6b1a7c42 (head)`
+- `alembic check`：`No new upgrade operations detected`
+
+### 接下来
+
+1. 建立正式的方案版本、需求版本和报价快照表
+2. 后端提供当前会话方案恢复 API，逐步减少对 localStorage 的依赖
+3. PDF 改为按后端持久化方案生成，禁止客户端提交可篡改报价
+4. 进入 LangGraph Agent V1
+
 ## 2026-07-24 一键启动脚本 + 3D 布局（最小验证）
 
 - 施工：Claude Code
