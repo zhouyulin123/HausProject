@@ -14,20 +14,26 @@ import time
 import urllib.request
 
 BASE = "http://localhost:8081"
+SESSION_ID = None
 
 
 def post_json(path, data):
+    headers = {"Content-Type": "application/json"}
+    if SESSION_ID:
+        headers["X-Session-ID"] = SESSION_ID
     req = urllib.request.Request(
         BASE + path,
         data=json.dumps(data).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=180) as resp:
         return json.loads(resp.read())
 
 
 def get_json(path):
-    with urllib.request.urlopen(BASE + path, timeout=60) as resp:
+    headers = {"X-Session-ID": SESSION_ID} if SESSION_ID else {}
+    req = urllib.request.Request(BASE + path, headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as resp:
         return json.loads(resp.read())
 
 
@@ -39,18 +45,23 @@ def upload_image():
         b'Content-Disposition: form-data; name="file"; filename="test_floorplan.png"\r\n'
         b"Content-Type: image/png\r\n\r\n"
     )
-    payload.write(b"\x89PNG fake image bytes")
+    payload.write(b"\x89PNG\r\n\x1a\nsmoke-test-image")
     payload.write(f"\r\n--{boundary}--\r\n".encode())
     req = urllib.request.Request(
         BASE + "/api/upload/image",
         data=payload.getvalue(),
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "X-Session-ID": SESSION_ID,
+        },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
 
 def main():
+    global SESSION_ID
+
     def ok(name, cond):
         print(("PASS" if cond else "FAIL"), name)
         return bool(cond)
@@ -58,6 +69,10 @@ def main():
     passed = True
     health = get_json("/health")
     passed &= ok("health", health.get("status") == "ok")
+
+    anonymous_session = post_json("/api/sessions", {})
+    SESSION_ID = anonymous_session["session_id"]
+    passed &= ok("anonymous session", bool(SESSION_ID))
 
     img = upload_image()
     passed &= ok("upload", "image_id" in img and img["analysis"]["findings"])
@@ -72,7 +87,12 @@ def main():
     }
     task = post_json(
         "/api/design/tasks",
-        {"user_input": "smoke test", "requirement": requirement, "image_ids": [img["image_id"]]},
+        {
+            "session_id": SESSION_ID,
+            "user_input": "smoke test",
+            "requirement": requirement,
+            "image_ids": [img["image_id"]],
+        },
     )
     tid = task["task_id"]
     passed &= ok("create task", task["status"] == "confirmed")

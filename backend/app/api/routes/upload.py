@@ -23,8 +23,8 @@ def _safe_filename(name: str) -> str:
 
 @router.post("/image")
 async def upload_image(
-    file: UploadFile = File(...),
     x_session_id: SessionIdHeader,
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
     require_active_session(db, x_session_id)
