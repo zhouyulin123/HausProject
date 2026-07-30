@@ -19,6 +19,7 @@ Plan = dict[str, Any]
 GeneratePlans = Callable[[dict[str, Any], str], list[Plan]]
 BuildTemplatePlans = Callable[[dict[str, Any]], list[Plan]]
 EnrichPlans = Callable[[list[Plan]], None]
+OnStep = Callable[["WorkflowStep"], None]
 
 
 class WorkflowQualityError(ValueError):
@@ -65,10 +66,12 @@ class DesignWorkflow:
         generate_plans: GeneratePlans,
         build_template_plans: BuildTemplatePlans,
         enrich_plans: EnrichPlans,
+        on_step: OnStep | None = None,
     ) -> None:
         self._generate_plans = generate_plans
         self._build_template_plans = build_template_plans
         self._enrich_plans = enrich_plans
+        self._on_step = on_step
         self._graph = self._build_graph()
 
     def _build_graph(self):
@@ -84,8 +87,12 @@ class DesignWorkflow:
         workflow.add_edge("validate_quality", END)
         return workflow.compile()
 
-    @staticmethod
-    def _prepare_context(state: DesignAgentState) -> dict[str, Any]:
+    def _publish(self, step: WorkflowStep) -> WorkflowStep:
+        if self._on_step is not None:
+            self._on_step(deepcopy(step))
+        return step
+
+    def _prepare_context(self, state: DesignAgentState) -> dict[str, Any]:
         started_at = perf_counter()
         requirement_for_llm = deepcopy(state["requirement"])
         if state["image_context"]:
@@ -95,7 +102,9 @@ class DesignWorkflow:
         return {
             "requirement_for_llm": requirement_for_llm,
             "node_trace": [
-                _completed_step("prepare_context", started_at)
+                self._publish(
+                    _completed_step("prepare_context", started_at)
+                )
             ],
         }
 
@@ -107,19 +116,23 @@ class DesignWorkflow:
                 state["catalog_context"],
             )
             generator = "llm"
-            step = _completed_step(
-                "generate_plans",
-                started_at,
-                source=generator,
+            step = self._publish(
+                _completed_step(
+                    "generate_plans",
+                    started_at,
+                    source=generator,
+                )
             )
         except LLMUnavailable as exc:
             plans = self._build_template_plans(state["requirement"])
             generator = "template"
-            step = _completed_step(
-                "generate_plans",
-                started_at,
-                source=generator,
-                fallback_reason=str(exc),
+            step = self._publish(
+                _completed_step(
+                    "generate_plans",
+                    started_at,
+                    source=generator,
+                    fallback_reason=str(exc),
+                )
             )
         return {
             "plans": deepcopy(plans),
@@ -134,16 +147,17 @@ class DesignWorkflow:
         return {
             "plans": plans,
             "node_trace": [
-                _completed_step(
-                    "calculate_quote",
-                    started_at,
-                    source="deterministic",
+                self._publish(
+                    _completed_step(
+                        "calculate_quote",
+                        started_at,
+                        source="deterministic",
+                    )
                 )
             ],
         }
 
-    @staticmethod
-    def _validate_quality(state: DesignAgentState) -> dict[str, Any]:
+    def _validate_quality(self, state: DesignAgentState) -> dict[str, Any]:
         started_at = perf_counter()
         plans = state["plans"]
         if not plans:
@@ -172,10 +186,12 @@ class DesignWorkflow:
 
         return {
             "node_trace": [
-                _completed_step(
-                    "validate_quality",
-                    started_at,
-                    source="deterministic",
+                self._publish(
+                    _completed_step(
+                        "validate_quality",
+                        started_at,
+                        source="deterministic",
+                    )
                 )
             ]
         }
