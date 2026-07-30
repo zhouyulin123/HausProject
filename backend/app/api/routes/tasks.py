@@ -13,6 +13,9 @@ from app.db.database import get_db
 from app.db.models import DesignResult, DesignTask, RequirementParseResult, UploadedImage
 from app.schemas.tasks import (
     ConfirmRequirementRequest,
+    DesignRevisionDetailResponse,
+    DesignRevisionListResponse,
+    DesignRevisionSummary,
     GenerateResponse,
     RequirementResponse,
     TaskCreate,
@@ -23,6 +26,7 @@ from app.schemas.tasks import (
 from app.services import (
     anonymous_session_service,
     catalog_service,
+    design_version_service,
     llm_service,
     task_service,
 )
@@ -209,6 +213,13 @@ def generate_design(
             pdf_url=None,
         )
         db.add(result)
+        design_version_service.persist_generation(
+            db,
+            task=task,
+            plans=plans,
+            generator=generator,
+            image_context=image_context,
+        )
         task.status = "completed"
         task.progress = 100
         db.commit()
@@ -257,12 +268,13 @@ def get_task_result(
         session_id=x_session_id,
         task_id=task_id,
     )
+    revision = design_version_service.get_latest_revision(db, task_id=task_id)
     result = db.scalars(
         select(DesignResult)
         .where(DesignResult.task_id == task_id)
         .order_by(DesignResult.id.desc())
     ).first()
-    if not result:
+    if not result and not revision:
         raise HTTPException(status_code=404, detail="Result not ready")
 
     images = [
@@ -272,10 +284,84 @@ def get_task_result(
         )
     ]
     return TaskResultResponse(
-        plans=result.plans_json or [],
-        generator=result.generator,
+        plans=(
+            [plan.plan_json for plan in revision.plans]
+            if revision
+            else result.plans_json or []
+        ),
+        generator=revision.generator if revision else result.generator,
+        revision_version=revision.version if revision else None,
         images=images,
-        pdf_url=result.pdf_url,
+        pdf_url=result.pdf_url if result else None,
+    )
+
+
+@router.get(
+    "/{task_id}/versions",
+    response_model=DesignRevisionListResponse,
+)
+def get_design_versions(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
+    revisions = design_version_service.list_revisions(db, task_id=task_id)
+    summaries = []
+    for revision in revisions:
+        totals = [
+            plan.quote_snapshot.grand_total
+            for plan in revision.plans
+            if plan.quote_snapshot is not None
+        ]
+        summaries.append(
+            DesignRevisionSummary(
+                version=revision.version,
+                generator=revision.generator,
+                status=revision.status,
+                plan_count=len(revision.plans),
+                quote_min=min(totals, default=0),
+                quote_max=max(totals, default=0),
+                created_at=revision.created_at,
+            )
+        )
+    return DesignRevisionListResponse(revisions=summaries)
+
+
+@router.get(
+    "/{task_id}/versions/{version}",
+    response_model=DesignRevisionDetailResponse,
+)
+def get_design_version(
+    task_id: int,
+    version: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
+    revision = design_version_service.get_revision(
+        db,
+        task_id=task_id,
+        version=version,
+    )
+    if not revision:
+        raise HTTPException(status_code=404, detail="方案版本不存在")
+    return DesignRevisionDetailResponse(
+        version=revision.version,
+        generator=revision.generator,
+        status=revision.status,
+        requirement=revision.requirement_snapshot or {},
+        image_context=revision.image_context_snapshot or [],
+        plans=[plan.plan_json for plan in revision.plans],
+        created_at=revision.created_at,
     )
 
 

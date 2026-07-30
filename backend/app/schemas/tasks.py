@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
@@ -42,8 +43,33 @@ class TaskStatusResponse(BaseModel):
 class TaskResultResponse(BaseModel):
     plans: List[Dict[str, Any]]
     generator: str
+    revision_version: Optional[int] = None
     images: List[Dict[str, Any]] = []
     pdf_url: Optional[str] = None
+
+
+class DesignRevisionSummary(BaseModel):
+    version: int
+    generator: str
+    status: str
+    plan_count: int
+    quote_min: int
+    quote_max: int
+    created_at: Optional[datetime] = None
+
+
+class DesignRevisionListResponse(BaseModel):
+    revisions: List[DesignRevisionSummary]
+
+
+class DesignRevisionDetailResponse(BaseModel):
+    version: int
+    generator: str
+    status: str
+    requirement: Dict[str, Any]
+    image_context: List[str]
+    plans: List[Dict[str, Any]]
+    created_at: Optional[datetime] = None
 
 
 class ChatRequest(BaseModel):

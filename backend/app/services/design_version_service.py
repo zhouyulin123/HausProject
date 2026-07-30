@@ -2,7 +2,7 @@ from copy import deepcopy
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import (
     DesignPlanVersion,
@@ -73,7 +73,13 @@ def get_revision(
     version: int,
 ) -> DesignRevision | None:
     return db.scalars(
-        select(DesignRevision).where(
+        select(DesignRevision)
+        .options(
+            selectinload(DesignRevision.plans).selectinload(
+                DesignPlanVersion.quote_snapshot
+            )
+        )
+        .where(
             DesignRevision.task_id == task_id,
             DesignRevision.version == version,
         )
@@ -83,9 +89,29 @@ def get_revision(
 def get_latest_revision(db: Session, *, task_id: int) -> DesignRevision | None:
     return db.scalars(
         select(DesignRevision)
+        .options(
+            selectinload(DesignRevision.plans).selectinload(
+                DesignPlanVersion.quote_snapshot
+            )
+        )
         .where(DesignRevision.task_id == task_id)
         .order_by(DesignRevision.version.desc())
     ).first()
+
+
+def list_revisions(db: Session, *, task_id: int) -> list[DesignRevision]:
+    return list(
+        db.scalars(
+            select(DesignRevision)
+            .options(
+                selectinload(DesignRevision.plans).selectinload(
+                    DesignPlanVersion.quote_snapshot
+                )
+            )
+            .where(DesignRevision.task_id == task_id)
+            .order_by(DesignRevision.version.desc())
+        )
+    )
 
 
 def get_latest_plan(
