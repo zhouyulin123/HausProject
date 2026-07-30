@@ -10,6 +10,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import (
+    SessionIdHeader,
+    require_active_session,
+    require_owned_design_task,
+)
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import RenderedImage
@@ -25,7 +30,19 @@ class ProposalRequest(BaseModel):
 
 
 @router.post("/proposal-pdf")
-def export_proposal_pdf(req: ProposalRequest, db: Session = Depends(get_db)):
+def export_proposal_pdf(
+    req: ProposalRequest,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_active_session(db, x_session_id)
+    if req.task_id is not None:
+        require_owned_design_task(
+            db,
+            session_id=x_session_id,
+            task_id=req.task_id,
+        )
+
     plan = req.plan
     if not plan.get("name"):
         raise HTTPException(status_code=422, detail="plan.name is required")

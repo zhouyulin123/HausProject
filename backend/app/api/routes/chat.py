@@ -1,6 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import (
+    SessionIdHeader,
+    require_active_session,
+    require_owned_design_task,
+)
 from app.db.database import get_db
 from app.db.models import ChatLog
 from app.schemas.tasks import ChatRequest, ChatResponse
@@ -11,8 +16,20 @@ router = APIRouter()
 
 
 @router.post("", response_model=ChatResponse)
-def chat(req: ChatRequest, db: Session = Depends(get_db)):
+def chat(
+    req: ChatRequest,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
     """对话式需求确认。LLM 不可用时返回 503，前端降级到本地规则回复。"""
+    require_active_session(db, x_session_id)
+    if req.task_id is not None:
+        require_owned_design_task(
+            db,
+            session_id=x_session_id,
+            task_id=req.task_id,
+        )
+
     try:
         reply = llm_service.chat_reply(
             message=req.message,

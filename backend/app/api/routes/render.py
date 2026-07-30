@@ -8,6 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import (
+    SessionIdHeader,
+    require_active_session,
+    require_owned_design_task,
+)
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import DesignTask, RenderedImage, UploadedImage
@@ -63,7 +68,19 @@ def _room_type_from_task(task: DesignTask) -> str:
 
 
 @router.post("", response_model=RenderResponse)
-def render_effect(req: RenderRequest, db: Session = Depends(get_db)):
+def render_effect(
+    req: RenderRequest,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_active_session(db, x_session_id)
+    if req.task_id is not None:
+        require_owned_design_task(
+            db,
+            session_id=x_session_id,
+            task_id=req.task_id,
+        )
+
     if not sd_service.is_available():
         raise HTTPException(status_code=503, detail="效果图生成服务未启用")
 
