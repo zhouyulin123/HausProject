@@ -19,6 +19,7 @@ def persist_generation(
     plans: list[dict[str, Any]],
     generator: str,
     image_context: list[str] | None = None,
+    workflow_trace: list[dict[str, Any]] | None = None,
 ) -> DesignRevision:
     """把一次生成保存为不可变版本；事务由调用方统一提交。"""
     latest_version = db.scalar(
@@ -31,6 +32,7 @@ def persist_generation(
         version=(latest_version or 0) + 1,
         requirement_snapshot=deepcopy(task.confirmed_requirement_json or {}),
         image_context_snapshot=deepcopy(image_context or []),
+        workflow_trace_snapshot=deepcopy(workflow_trace or []),
         generator=generator,
         status="completed",
     )

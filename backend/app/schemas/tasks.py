@@ -68,6 +68,7 @@ class DesignRevisionDetailResponse(BaseModel):
     status: str
     requirement: Dict[str, Any]
     image_context: List[str]
+    workflow_trace: List[Dict[str, Any]]
     plans: List[Dict[str, Any]]
     created_at: Optional[datetime] = None
 

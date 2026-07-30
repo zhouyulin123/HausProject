@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.design_workflow import DesignWorkflow
 from app.api.dependencies import (
     SessionIdHeader,
     require_active_session,
@@ -30,7 +31,6 @@ from app.services import (
     llm_service,
     task_service,
 )
-from app.services.llm_service import LLMUnavailable
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -188,23 +188,38 @@ def generate_design(
             analysis = img.analysis_json or {}
             if analysis.get("findings"):
                 image_context.extend(analysis["findings"])
-        requirement_for_llm = dict(requirement)
-        if image_context:
-            requirement_for_llm["image_analysis"] = image_context
-
         # 商品库上下文：家具与定制报价只能从自家库里选
         catalog_context = catalog_service.build_catalog_context(db)
 
-        generator = "llm"
-        try:
-            plans = llm_service.generate_plans(requirement_for_llm, catalog_context)
-        except LLMUnavailable as exc:
-            logger.warning("LLM 方案生成降级到模板: %s", exc)
-            generator = "template"
-            plans = task_service.build_template_plans(requirement)
-
-        # 统一校验回填：SKU 有效性、真实价格、本店产品报价单（AI 不能编价格）
-        catalog_service.verify_and_enrich_plans(db, plans)
+        workflow = DesignWorkflow(
+            generate_plans=llm_service.generate_plans,
+            build_template_plans=task_service.build_template_plans,
+            enrich_plans=lambda plans: catalog_service.verify_and_enrich_plans(
+                db,
+                plans,
+            ),
+        )
+        workflow_result = workflow.run(
+            requirement=requirement,
+            image_context=image_context,
+            catalog_context=catalog_context,
+        )
+        plans = workflow_result["plans"]
+        generator = workflow_result["generator"]
+        workflow_trace = workflow_result["node_trace"]
+        if generator == "template":
+            generation_step = next(
+                (
+                    step
+                    for step in workflow_trace
+                    if step.get("node") == "generate_plans"
+                ),
+                {},
+            )
+            logger.warning(
+                "LLM 方案生成降级到模板: %s",
+                generation_step.get("fallback_reason", "未知原因"),
+            )
 
         result = DesignResult(
             task_id=task.id,
@@ -219,6 +234,7 @@ def generate_design(
             plans=plans,
             generator=generator,
             image_context=image_context,
+            workflow_trace=workflow_trace,
         )
         task.status = "completed"
         task.progress = 100
@@ -360,6 +376,7 @@ def get_design_version(
         status=revision.status,
         requirement=revision.requirement_snapshot or {},
         image_context=revision.image_context_snapshot or [],
+        workflow_trace=revision.workflow_trace_snapshot or [],
         plans=[plan.plan_json for plan in revision.plans],
         created_at=revision.created_at,
     )

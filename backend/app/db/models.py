@@ -240,6 +240,7 @@ class DesignRevision(Base):
     version = Column(Integer, nullable=False)
     requirement_snapshot = Column(JSON, nullable=False)
     image_context_snapshot = Column(JSON, nullable=True)
+    workflow_trace_snapshot = Column(JSON, nullable=True)
     generator = Column(String(20), nullable=False)
     status = Column(String(20), nullable=False, default="completed")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
