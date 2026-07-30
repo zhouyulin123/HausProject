@@ -59,6 +59,14 @@ def test_persist_generation_creates_immutable_plan_and_quote_snapshots(db):
         plans=_plans(36000),
         generator="llm",
         image_context=["客厅采光良好"],
+        workflow_trace=[
+            {
+                "node": "calculate_quote",
+                "status": "completed",
+                "duration_ms": 8,
+                "source": "deterministic",
+            }
+        ],
     )
     second = persist_generation(
         db,
@@ -77,5 +85,6 @@ def test_persist_generation_creates_immutable_plan_and_quote_snapshots(db):
     restored = get_revision(db, task_id=task.id, version=1)
     assert restored is not None
     assert restored.requirement_snapshot["rooms"] == ["客厅"]
+    assert restored.workflow_trace_snapshot[0]["node"] == "calculate_quote"
     assert restored.plans[0].quote_snapshot.grand_total == 36000
     assert restored.plans[0].plan_json["name"] == "暖居方案"

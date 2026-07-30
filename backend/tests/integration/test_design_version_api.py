@@ -52,6 +52,14 @@ def version_api_context():
                 }
             ],
             generator="llm",
+            workflow_trace=[
+                {
+                    "node": "validate_quality",
+                    "status": "completed",
+                    "duration_ms": 2,
+                    "source": "deterministic",
+                }
+            ],
         )
         db.commit()
         owner_id = owner.id
@@ -83,6 +91,7 @@ def test_owner_can_restore_design_revision(version_api_context):
     body = response.json()
     assert body["version"] == 1
     assert body["requirement"]["rooms"] == ["客厅"]
+    assert body["workflow_trace"][0]["node"] == "validate_quality"
     assert body["plans"][0]["id"] == "plan-a"
     assert body["plans"][0]["shopQuote"]["total"] == 30000
 
