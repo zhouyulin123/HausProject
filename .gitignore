@@ -10,6 +10,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+.test_artifacts/
 .venv/
 venv/
 
@@ -35,4 +36,3 @@ backend/*.xlsx
 models/
 hf_cache/
 .cache/
-
