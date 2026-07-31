@@ -3,19 +3,20 @@
 读接口给前端家具页用，写接口给管理页 /admin 与 Excel 导入用。
 """
 
-import re
-import time
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import CustomQuoteRule, Product
+from app.services.glb_validation import GlbValidationError, validate_glb_upload
+from app.services.upload_validation import UploadValidationError, validate_image_upload
 
 router = APIRouter()
 
@@ -39,6 +40,13 @@ def _product_to_dict(p: Product) -> dict:
         "selling_point": p.selling_point,
         "alternative": p.alternative,
         "image_url": p.image_url,
+        "model_url": p.model_url,
+        "model_status": p.model_status,
+        "model_width_mm": p.model_width_mm,
+        "model_height_mm": p.model_height_mm,
+        "model_depth_mm": p.model_depth_mm,
+        "model_license": p.model_license,
+        "model_source": p.model_source,
     }
 
 
@@ -107,7 +115,7 @@ class ProductCreate(BaseModel):
     category: str
     room: str
     style: str
-    price: int
+    price: int = Field(gt=0)
     sku: Optional[str] = None
     price_max: Optional[int] = None
     material: Optional[str] = None
@@ -115,6 +123,11 @@ class ProductCreate(BaseModel):
     selling_point: Optional[str] = None
     alternative: Optional[str] = None
     image_url: Optional[str] = None
+    model_width_mm: Optional[int] = Field(default=None, gt=0)
+    model_height_mm: Optional[int] = Field(default=None, gt=0)
+    model_depth_mm: Optional[int] = Field(default=None, gt=0)
+    model_license: Optional[str] = Field(default=None, max_length=100)
+    model_source: Optional[str] = Field(default=None, max_length=255)
 
 
 @router.post("")
@@ -131,7 +144,7 @@ class ProductUpdate(BaseModel):
     category: Optional[str] = None
     room: Optional[str] = None
     style: Optional[str] = None
-    price: Optional[int] = None
+    price: Optional[int] = Field(default=None, gt=0)
     sku: Optional[str] = None
     price_max: Optional[int] = None
     material: Optional[str] = None
@@ -139,6 +152,11 @@ class ProductUpdate(BaseModel):
     selling_point: Optional[str] = None
     alternative: Optional[str] = None
     image_url: Optional[str] = None
+    model_width_mm: Optional[int] = Field(default=None, gt=0)
+    model_height_mm: Optional[int] = Field(default=None, gt=0)
+    model_depth_mm: Optional[int] = Field(default=None, gt=0)
+    model_license: Optional[str] = Field(default=None, max_length=100)
+    model_source: Optional[str] = Field(default=None, max_length=255)
 
 
 @router.patch("/{product_id}")
@@ -167,12 +185,62 @@ def deactivate_product(product_id: int, db: Session = Depends(get_db)):
 async def upload_product_image(file: UploadFile = File(...)):
     """上传产品图，返回可访问 URL（供创建/编辑产品时填入 image_url）。"""
     content = await file.read()
+    try:
+        validated = validate_image_upload(
+            content=content,
+            content_type=file.content_type or "",
+            filename=file.filename or "",
+            max_bytes=settings.max_upload_image_mb * 1024 * 1024,
+        )
+    except UploadValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     upload_dir = Path(settings.upload_dir) / "products"
     upload_dir.mkdir(parents=True, exist_ok=True)
-    safe = re.sub(r"[^\w.-]", "_", file.filename or "product.jpg")
-    fname = f"{int(time.time())}_{safe}"
+    fname = f"{uuid4().hex}.{validated.extension}"
     (upload_dir / fname).write_bytes(content)
     return {"image_url": f"/uploads/products/{fname}"}
+
+
+@router.post("/{product_id}/model")
+async def upload_product_model(
+    product_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """上传并绑定商品 GLB；可用模型必须先维护真实物理尺寸。"""
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if not all(
+        (product.model_width_mm, product.model_height_mm, product.model_depth_mm)
+    ):
+        raise HTTPException(status_code=422, detail="请先填写模型宽、高、深尺寸")
+
+    content = await file.read()
+    try:
+        validate_glb_upload(
+            content=content,
+            content_type=file.content_type or "",
+            filename=file.filename or "",
+            max_bytes=settings.max_upload_model_mb * 1024 * 1024,
+        )
+    except GlbValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    upload_dir = Path(settings.upload_dir) / "models"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid4().hex}.glb"
+    stored_path = upload_dir / stored_name
+    stored_path.write_bytes(content)
+    product.model_url = f"/uploads/models/{stored_name}"
+    product.model_status = "ready"
+    try:
+        db.commit()
+    except Exception:
+        stored_path.unlink(missing_ok=True)
+        raise
+    db.refresh(product)
+    return _product_to_dict(product)
 
 
 # ---------------------------------------------------------------- 定制报价规则写接口

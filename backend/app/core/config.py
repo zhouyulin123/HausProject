@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     # 本地文件上传目录（backend/uploads）
     upload_dir: str = str(Path(__file__).resolve().parents[2] / "uploads")
     max_upload_image_mb: int = 10
+    max_upload_model_mb: int = 25
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"

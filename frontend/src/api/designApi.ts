@@ -335,6 +335,7 @@ export async function analyzeRoomImage(file: File): Promise<ImageAnalysis> {
 
 interface BackendProduct {
   id: number;
+  sku: string | null;
   name: string;
   category: string | null;
   room: string | null;
@@ -345,6 +346,13 @@ interface BackendProduct {
   selling_point: string | null;
   alternative: string | null;
   image_url: string | null;
+  model_url: string | null;
+  model_status: "missing" | "ready" | "failed";
+  model_width_mm: number | null;
+  model_height_mm: number | null;
+  model_depth_mm: number | null;
+  model_license: string | null;
+  model_source: string | null;
 }
 
 /** 从后端商品库拉取自家家具；后端不可用时降级到本地 mock 数据。 */
@@ -368,6 +376,14 @@ export async function fetchFurnitureCatalog(): Promise<FurnitureItem[]> {
       alternative: p.alternative ?? "可选同风格系列其他款式",
       gradient: furnitureGradients[i % furnitureGradients.length],
       imageUrl: p.image_url ?? undefined,
+      sku: p.sku ?? undefined,
+      modelUrl: p.model_url ?? undefined,
+      modelStatus: p.model_status,
+      modelDimensionsMm: {
+        width: p.model_width_mm,
+        height: p.model_height_mm,
+        depth: p.model_depth_mm,
+      },
     }));
   } catch (error) {
     console.warn("[designApi] 商品库不可用，降级到本地 mock 家具", error);
@@ -392,6 +408,13 @@ export interface AdminProduct {
   selling_point: string | null;
   alternative: string | null;
   image_url: string | null;
+  model_url: string | null;
+  model_status: "missing" | "ready" | "failed";
+  model_width_mm: number | null;
+  model_height_mm: number | null;
+  model_depth_mm: number | null;
+  model_license: string | null;
+  model_source: string | null;
 }
 
 export interface QuoteRule {
@@ -436,6 +459,18 @@ export async function uploadProductImage(file: File): Promise<string> {
     body: form,
   });
   return data.image_url;
+}
+
+export async function uploadProductModel(
+  productId: number,
+  file: File,
+): Promise<AdminProduct> {
+  const form = new FormData();
+  form.append("file", file);
+  return request<AdminProduct>(`/api/products/${productId}/model`, {
+    method: "POST",
+    body: form,
+  });
 }
 
 export async function fetchQuoteRules(): Promise<QuoteRule[]> {

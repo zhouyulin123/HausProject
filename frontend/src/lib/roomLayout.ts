@@ -89,6 +89,16 @@ function parseSize(text: string | undefined): [number, number] | null {
 }
 
 function footprint(item: FurnitureItem): [number, number] {
+  const model = item.modelDimensionsMm;
+  if (
+    item.modelStatus === "ready" &&
+    model?.width &&
+    model.depth &&
+    model.width > 0 &&
+    model.depth > 0
+  ) {
+    return [model.width / 1000, model.depth / 1000];
+  }
   return (
     parseSize(item.sizeSuggestion) ??
     CATEGORY_FOOTPRINT[item.category] ?? [1.0, 0.8]
@@ -129,7 +139,11 @@ export function computeRoomLayout(
     z: number,
     rotationY: number,
   ) => {
-    const h = CATEGORY_HEIGHT[item.category] ?? 0.8;
+    const modelHeight = item.modelDimensionsMm?.height;
+    const h =
+      item.modelStatus === "ready" && modelHeight && modelHeight > 0
+        ? modelHeight / 1000
+        : CATEGORY_HEIGHT[item.category] ?? 0.8;
     layout.push({
       id: item.sku ?? item.id,
       name: item.name,

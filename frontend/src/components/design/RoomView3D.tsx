@@ -23,6 +23,9 @@ import {
 } from "lucide-react";
 import { Shape, type Group } from "three";
 import { useSceneEditor } from "@/hooks/useSceneEditor";
+import ProductModel3D from "./ProductModel3D";
+import type { ProductModelAsset } from "@/lib/productModel";
+import { getProductModelAsset } from "@/lib/productModel";
 import type { TransformMode } from "@/hooks/useSceneEditor";
 import type { DesignPlan } from "@/types/design";
 import type {
@@ -150,6 +153,7 @@ interface FurnitureBoxProps {
   mode: TransformMode;
   onSelect: () => void;
   onCommit: (transform: SceneTransform) => void;
+  modelAsset: ProductModelAsset | null;
 }
 
 function FurnitureBox({
@@ -159,6 +163,7 @@ function FurnitureBox({
   mode,
   onSelect,
   onCommit,
+  modelAsset,
 }: FurnitureBoxProps) {
   const groupRef = useRef<Group>(null);
   const [hovered, setHovered] = useState(false);
@@ -213,9 +218,7 @@ function FurnitureBox({
         item.transform.scale.z,
       ]}
     >
-      <mesh
-        castShadow
-        receiveShadow
+      <group
         onClick={(event) => {
           event.stopPropagation();
           onSelect();
@@ -226,19 +229,17 @@ function FurnitureBox({
         }}
         onPointerOut={() => setHovered(false)}
       >
-        <boxGeometry args={[dimensions.x, dimensions.y, dimensions.z]} />
-        <meshStandardMaterial
+        <ProductModel3D
+          url={modelAsset?.url}
+          dimensions={dimensions}
           color={
-            selected
-              ? "#70885E"
-              : hovered
-                ? "#93A77E"
-                : CATEGORY_COLOR[item.category ?? ""] ?? "#C3B49A"
+            hovered
+              ? "#93A77E"
+              : CATEGORY_COLOR[item.category ?? ""] ?? "#C3B49A"
           }
-          roughness={0.72}
-          metalness={0.04}
+          selected={selected}
         />
-      </mesh>
+      </group>
       {(selected || hovered) && (
         <Html
           center
@@ -417,6 +418,22 @@ export default function RoomView3D({
       ),
     [plan.furnitureSuggestions, scene.items],
   );
+  const itemModels = useMemo(
+    () =>
+      Object.fromEntries(
+        scene.items.map((sceneItem) => {
+          const furniture = plan.furnitureSuggestions.find(
+            (item) =>
+              item.sku === sceneItem.sku || sceneItem.sku.endsWith(item.id),
+          );
+          return [
+            sceneItem.instanceId,
+            furniture ? getProductModelAsset(furniture) : null,
+          ];
+        }),
+      ),
+    [plan.furnitureSuggestions, scene.items],
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(
@@ -506,6 +523,7 @@ export default function RoomView3D({
             onCommit={(transform) =>
               editor.commitTransform(item.instanceId, transform)
             }
+            modelAsset={itemModels[item.instanceId]}
           />
         ))}
         <OrbitControls

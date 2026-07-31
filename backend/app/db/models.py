@@ -139,6 +139,13 @@ class Product(Base):
     selling_point = Column(Text, nullable=True)  # 卖点 / 推荐语
     alternative = Column(String(200), nullable=True)  # 替代选择说明
     image_url = Column(String(255), nullable=True)
+    model_url = Column(String(255), nullable=True)
+    model_status = Column(String(20), nullable=False, default="missing")
+    model_width_mm = Column(Integer, nullable=True)
+    model_height_mm = Column(Integer, nullable=True)
+    model_depth_mm = Column(Integer, nullable=True)
+    model_license = Column(String(100), nullable=True)
+    model_source = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

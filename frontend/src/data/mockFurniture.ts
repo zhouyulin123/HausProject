@@ -1,6 +1,6 @@
 import type { FurnitureItem } from "@/types/furniture";
 
-export const mockFurniture: FurnitureItem[] = [
+const baseMockFurniture: FurnitureItem[] = [
   {
     id: "f1",
     name: "云朵感三人位布艺沙发",
@@ -170,6 +170,43 @@ export const mockFurniture: FurnitureItem[] = [
     gradient: "bg-gradient-to-br from-[#dfe6d5] via-[#bfceac] to-[#94a87e]",
   },
 ];
+
+const demoModels: Record<
+  string,
+  {
+    sku: string;
+    file: string;
+    dimensions: [number, number, number];
+  }
+> = {
+  f1: { sku: "DEMO-SF-001", file: "sofa.glb", dimensions: [2400, 850, 1050] },
+  f2: { sku: "DEMO-CJ-001", file: "coffee-table.glb", dimensions: [900, 420, 900] },
+  f3: { sku: "DEMO-GZ-001", file: "cabinet.glb", dimensions: [1600, 1900, 400] },
+  f4: { sku: "DEMO-CY-001", file: "chair.glb", dimensions: [520, 900, 520] },
+  f5: { sku: "DEMO-CL-001", file: "cabinet.glb", dimensions: [1600, 2400, 100] },
+  f6: { sku: "DEMO-DG-001", file: "lamp.glb", dimensions: [400, 1500, 400] },
+  f7: { sku: "DEMO-DT-001", file: "rug.glb", dimensions: [2000, 25, 2900] },
+  f8: { sku: "DEMO-GZ-002", file: "cabinet.glb", dimensions: [1400, 1100, 450] },
+  f9: { sku: "DEMO-CH-001", file: "bed.glb", dimensions: [1800, 900, 2000] },
+  f10: { sku: "DEMO-SZ-001", file: "desk.glb", dimensions: [1400, 750, 700] },
+  f11: { sku: "DEMO-ZY-001", file: "dining-table.glb", dimensions: [1300, 750, 1300] },
+  f12: { sku: "DEMO-YZ-001", file: "chair.glb", dimensions: [780, 900, 780] },
+};
+
+export const mockFurniture: FurnitureItem[] = baseMockFurniture.map((item) => {
+  const model = demoModels[item.id];
+  return {
+    ...item,
+    sku: model.sku,
+    modelUrl: `/models/demo/${model.file}`,
+    modelStatus: "ready",
+    modelDimensionsMm: {
+      width: model.dimensions[0],
+      height: model.dimensions[1],
+      depth: model.dimensions[2],
+    },
+  };
+});
 
 export const furnitureRooms = ["全部", "客厅", "卧室", "餐厅", "书房"];
 export const furnitureCategories = [

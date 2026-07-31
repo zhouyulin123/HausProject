@@ -157,6 +157,7 @@ export default function AdminPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-semibold text-stone-800">{p.name}</span>
                       {p.sku && <Tag tone="cream">{p.sku}</Tag>}
+                      {p.model_status === "ready" && <Tag tone="sage">3D</Tag>}
                     </div>
                     <p className="mt-0.5 truncate text-xs text-stone-400">
                       {p.category} · {p.room} · {p.style} · {p.material}

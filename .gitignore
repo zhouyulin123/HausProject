@@ -34,6 +34,6 @@ backend/*.xlsx
 *.log
 
 # 本地模型与缓存
-models/
+/models/
 hf_cache/
 .cache/

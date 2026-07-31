@@ -77,6 +77,43 @@ PRODUCTS = [
          selling_point="圈绒耐压耐磨，冬天脚感温暖", alternative="剑麻编织毯（更透气）"),
 ]
 
+DEMO_MODEL_ASSETS = {
+    "SF-001": ("sofa.glb", 2400, 850, 1050),
+    "SF-002": ("sofa.glb", 2800, 850, 1700),
+    "SF-003": ("chair.glb", 780, 900, 780),
+    "CJ-001": ("coffee-table.glb", 900, 420, 900),
+    "CJ-002": ("coffee-table.glb", 900, 420, 900),
+    "DG-001": ("lamp.glb", 400, 1500, 400),
+    "DG-002": ("lamp.glb", 300, 600, 300),
+    "DG-003": ("lamp.glb", 500, 700, 500),
+    "DT-001": ("rug.glb", 2000, 25, 2900),
+    "DT-002": ("rug.glb", 1600, 25, 2300),
+    "CH-001": ("bed.glb", 1800, 900, 2000),
+    "CH-002": ("bed.glb", 1800, 1000, 2000),
+    "CT-001": ("cabinet.glb", 450, 550, 400),
+    "ZY-001": ("dining-table.glb", 1350, 750, 1350),
+    "ZY-002": ("dining-table.glb", 1600, 750, 850),
+    "CY-001": ("chair.glb", 520, 900, 520),
+    "SZ-001": ("desk.glb", 1400, 750, 700),
+    "YZ-001": ("chair.glb", 650, 1050, 650),
+    "SJ-001": ("cabinet.glb", 800, 1800, 350),
+}
+
+for product in PRODUCTS:
+    asset = DEMO_MODEL_ASSETS.get(product["sku"])
+    if not asset:
+        continue
+    filename, width, height, depth = asset
+    product.update(
+        model_url=f"/models/demo/{filename}",
+        model_status="ready",
+        model_width_mm=width,
+        model_height_mm=height,
+        model_depth_mm=depth,
+        model_license="项目自有演示",
+        model_source="内置参数化模型",
+    )
+
 QUOTE_RULES = [
     # 柜类定制（按投影面积 ㎡）
     dict(project_name="定制衣柜", category="柜类定制", pricing_unit="㎡", material_grade="E0 颗粒板",

@@ -267,7 +267,7 @@ export default function DesignDetailPage() {
               </Suspense>
               <p className="mt-3 px-1 text-xs leading-relaxed text-stone-400">
                 点击家具后可拖动、旋转或使用方向按钮微调；正式方案会自动保存场景版本。
-                当前家具仍以准确尺寸体块表示，后续将逐步替换为商品 GLB 模型。
+                已入库商品会按真实尺寸加载 GLB 模型；模型缺失或加载失败时会自动降级为尺寸体块。
               </p>
             </div>
           )}

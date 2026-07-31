@@ -19,6 +19,14 @@ export interface FurnitureItem {
   gradient: string;
   /** 真实产品图 URL（商品库有图时优先展示） */
   imageUrl?: string;
+  /** 可加载的 glTF 2.0 二进制商品模型。 */
+  modelUrl?: string;
+  modelStatus?: "missing" | "ready" | "failed";
+  modelDimensionsMm?: {
+    width: number | null;
+    height: number | null;
+    depth: number | null;
+  };
   /** 以下字段由后端商品库回填（方案中的家具携带） */
   sku?: string;
   quantity?: number;
