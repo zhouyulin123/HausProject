@@ -39,6 +39,19 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "products",
             "custom_quote_rules",
         } <= tables
+        product_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("products")
+        }
+        assert {
+            "model_url",
+            "model_status",
+            "model_width_mm",
+            "model_height_mm",
+            "model_depth_mm",
+            "model_license",
+            "model_source",
+        } <= product_columns
     finally:
         if inspection_engine is not None:
             inspection_engine.dispose()
