@@ -72,6 +72,21 @@ def test_scene_document_rejects_degenerate_floor_polygon():
 
 
 @pytest.mark.unit
+def test_scene_document_rejects_self_intersecting_floor_polygon():
+    payload = _valid_scene()
+    payload["room"]["floorPolygon"] = [
+        {"x": 0, "z": 0},
+        {"x": 4, "z": 0},
+        {"x": 1, "z": 3},
+        {"x": 2, "z": -1},
+        {"x": 3, "z": 3},
+    ]
+
+    with pytest.raises(ValidationError, match="相交"):
+        SceneDocument.model_validate(payload)
+
+
+@pytest.mark.unit
 def test_scene_document_rejects_duplicate_instance_ids():
     payload = _valid_scene()
     payload["items"].append(
@@ -92,4 +107,3 @@ def test_scene_document_rejects_opening_for_unknown_wall():
 
     with pytest.raises(ValidationError, match="wallIndex"):
         SceneDocument.model_validate(payload)
-

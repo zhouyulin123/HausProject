@@ -6,6 +6,7 @@ from app.api.routes import (
     products,
     proposal,
     render,
+    scenes,
     sessions,
     shop,
     tasks,
@@ -18,6 +19,7 @@ api_router.include_router(upload.router, prefix="/upload", tags=["upload"])
 api_router.include_router(tasks.router, prefix="/design/tasks", tags=["design_tasks"])
 api_router.include_router(chat.router, prefix="/design/chat", tags=["design_chat"])
 api_router.include_router(render.router, prefix="/design/render", tags=["design_render"])
+api_router.include_router(scenes.router, prefix="/design", tags=["design_scenes"])
 api_router.include_router(proposal.router, prefix="/design", tags=["design_proposal"])
 api_router.include_router(products.router, prefix="/products", tags=["products"])
 api_router.include_router(customers.router, prefix="/customers", tags=["customers"])

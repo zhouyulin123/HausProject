@@ -129,6 +129,13 @@ def test_scene_create_read_update_and_version_history(scene_api_context):
     assert body["validation"]["valid"] is True
     scene_id = body["id"]
 
+    restored_by_plan = client.get(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+    )
+    assert restored_by_plan.status_code == 200
+    assert restored_by_plan.json()["id"] == scene_id
+
     restored = client.get(
         f"/api/design/scenes/{scene_id}",
         headers=headers,
@@ -171,11 +178,17 @@ def test_scene_update_rejects_stale_base_version(scene_api_context):
         json={"scene": _scene_payload()},
     )
     scene_id = created.json()["id"]
+    first_update = client.put(
+        f"/api/design/scenes/{scene_id}",
+        headers=headers,
+        json={"base_version": 1, "scene": _scene_payload(sofa_x=2.8)},
+    )
+    assert first_update.status_code == 200
 
     response = client.put(
         f"/api/design/scenes/{scene_id}",
         headers=headers,
-        json={"base_version": 0, "scene": _scene_payload(sofa_x=3)},
+        json={"base_version": 1, "scene": _scene_payload(sofa_x=3)},
     )
 
     assert response.status_code == 409
@@ -213,4 +226,3 @@ def test_scene_rejects_sku_missing_from_product_catalog(scene_api_context):
     assert response.json()["detail"]["validation"]["errors"][0]["code"] == (
         "unknown_sku"
     )
-

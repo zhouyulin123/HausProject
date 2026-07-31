@@ -46,6 +46,8 @@ export interface LightingItem {
 
 export interface DesignPlan {
   id: string;
+  /** 服务端不可变方案版本编号，用于绑定 3D 场景。 */
+  planVersionId?: number;
   name: string;
   style: string;
   /** 封面占位渐变（Tailwind class） */

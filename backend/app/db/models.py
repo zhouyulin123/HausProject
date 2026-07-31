@@ -285,6 +285,70 @@ class DesignPlanVersion(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    scene = relationship(
+        "DesignScene",
+        back_populates="plan_version",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class DesignScene(Base):
+    """一套方案当前正在编辑的 3D 场景。"""
+
+    __tablename__ = "design_scenes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_version_id = Column(
+        Integer,
+        ForeignKey("design_plan_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    current_version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    plan_version = relationship("DesignPlanVersion", back_populates="scene")
+    versions = relationship(
+        "DesignSceneVersion",
+        back_populates="scene",
+        cascade="all, delete-orphan",
+        order_by="DesignSceneVersion.version",
+    )
+
+
+class DesignSceneVersion(Base):
+    """3D 场景的不可变历史快照。"""
+
+    __tablename__ = "design_scene_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "scene_id",
+            "version",
+            name="uq_design_scene_versions_scene_version",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    scene_id = Column(
+        Integer,
+        ForeignKey("design_scenes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version = Column(Integer, nullable=False)
+    scene_json = Column(JSON, nullable=False)
+    validation_json = Column(JSON, nullable=False)
+    source = Column(String(20), nullable=False, default="manual")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    scene = relationship("DesignScene", back_populates="versions")
 
 
 class QuoteSnapshot(Base):

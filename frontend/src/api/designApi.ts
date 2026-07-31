@@ -1,6 +1,13 @@
 import type { DesignPlan } from "@/types/design";
 import type { FurnitureItem } from "@/types/furniture";
 import type { ImageAnalysis, UserRequirement } from "@/types/requirement";
+import type {
+  DesignScene,
+  DesignSceneVersion,
+  SceneDocument,
+  SceneSource,
+  SceneValidationReport,
+} from "@/types/scene";
 import { mockDesigns } from "@/data/mockDesigns";
 import { mockFurniture } from "@/data/mockFurniture";
 import { getAiReply, uploadAnalysisFindings } from "@/data/mockChat";
@@ -533,6 +540,74 @@ export async function exportProposalPdf(plan: DesignPlan): Promise<string> {
     body: JSON.stringify({ plan_id: plan.id, task_id: currentTaskId }),
   });
   return data.pdf_url;
+}
+
+// ---------------------------------------------------------------- 3D 场景
+
+/** 为服务端不可变方案版本创建第一版 3D 场景。 */
+export async function createDesignScene(
+  planVersionId: number,
+  scene: SceneDocument,
+  source: SceneSource = "manual",
+): Promise<DesignScene> {
+  return request<DesignScene>(
+    `/api/design/plan-versions/${planVersionId}/scene`,
+    {
+      method: "POST",
+      body: JSON.stringify({ scene, source }),
+    },
+  );
+}
+
+/** 按方案版本恢复场景，页面刷新时无需预先知道 sceneId。 */
+export async function fetchDesignSceneByPlanVersion(
+  planVersionId: number,
+): Promise<DesignScene> {
+  return request<DesignScene>(
+    `/api/design/plan-versions/${planVersionId}/scene`,
+  );
+}
+
+/** 恢复 3D 场景的当前版本。 */
+export async function fetchDesignScene(sceneId: number): Promise<DesignScene> {
+  return request<DesignScene>(`/api/design/scenes/${sceneId}`);
+}
+
+/** 基于已知版本保存场景；服务端会拒绝过期版本，避免静默覆盖。 */
+export async function updateDesignScene(
+  sceneId: number,
+  baseVersion: number,
+  scene: SceneDocument,
+  source: SceneSource = "manual",
+): Promise<DesignScene> {
+  return request<DesignScene>(`/api/design/scenes/${sceneId}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      base_version: baseVersion,
+      scene,
+      source,
+    }),
+  });
+}
+
+/** 获取场景的不可变历史版本，最新版本排在最前。 */
+export async function fetchDesignSceneVersions(
+  sceneId: number,
+): Promise<DesignSceneVersion[]> {
+  const data = await request<{ versions: DesignSceneVersion[] }>(
+    `/api/design/scenes/${sceneId}/versions`,
+  );
+  return data.versions;
+}
+
+/** 按当前商品库和空间规则重新校验已保存的场景。 */
+export async function validateDesignScene(
+  sceneId: number,
+): Promise<SceneValidationReport> {
+  return request<SceneValidationReport>(
+    `/api/design/scenes/${sceneId}/validate`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
 }
 
 // ---------------------------------------------------------------- 客户跟单

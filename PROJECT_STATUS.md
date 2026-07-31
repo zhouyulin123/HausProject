@@ -1,5 +1,40 @@
 # 项目开发状态记录
 
+## 2026-07-31 Web 3D 场景底座第一批
+
+- 确定客户产品链路：Web 3D 编辑器负责实时交互，Scene Agent 只修改结构化场景，商品模型库提供真实 SKU/GLB，Blender Worker 后续负责高质量渲染。
+- 新增统一 `SceneDocument 1.0` 契约：
+  - 单位固定为米，采用右手坐标系、Y 轴向上。
+  - 支持房间多边形、层高、墙厚、门窗洞口、SKU 家具实例、变换、材质覆盖和相机。
+  - 拒绝零面积户型、重复实例编号、无效墙体引用、异常缩放和额外未知字段。
+- 新增 `design_scenes` 与 `design_scene_versions`：
+  - 一套不可变方案版本对应一个当前 3D 场景。
+  - 每次保存产生不可变历史快照，不覆盖旧版本。
+  - 客户更新必须携带 `base_version`，过期写入返回 409，防止多个页面静默覆盖。
+- 新增匿名会话隔离的场景 API：
+  - `POST /api/design/plan-versions/{plan_version_id}/scene`
+  - `GET/PUT /api/design/scenes/{scene_id}`
+  - `GET /api/design/scenes/{scene_id}/versions`
+  - `POST /api/design/scenes/{scene_id}/validate`
+- 场景语义校验已接商品库：家具必须引用有效 SKU；门窗不得超出墙长或层高；家具中心点在房间外会产生警告。
+- 方案结果新增 `planVersionId`，前端可以把所选 AI 方案准确绑定到服务端 3D 场景。
+- 前端新增同构场景 TypeScript 类型及创建、读取、更新、历史和重新校验 API，为下一批编辑器状态管理和 Scene Agent 工具调用提供稳定边界。
+
+### 验证
+
+- 后端全量测试：`48 passed`
+- 前端全量测试：`11 passed`
+- 空数据库迁移到 `a2b4c6d8e0f1 (head)`：通过，且迁移链只有一个 head
+- Python 编译检查：通过
+- TypeScript 与 Vite 生产构建：通过
+
+### 下一施工批次
+
+1. 将现有 `RoomView3D` 升级为按需加载的正式编辑器，支持选择、移动、旋转、吸附、撤销/重做与自动保存。
+2. 给商品库补充 GLB 地址、真实三维尺寸、模型状态和许可来源，并接入首批可商用模型。
+3. 把规则布局升级为 Scene Agent 工具调用：摆放、移动、删除、碰撞检查与动线检查全部输出结构化操作。
+4. 设计隔离的 Blender Worker 作业协议，禁止客户输入直接成为 Blender Python 代码。
+
 ## 2026-07-31 风格案例图片轮播
 
 - 将 `case_image/` 中 8 种风格、每种 3 张原始 PNG 接入风格案例数据。

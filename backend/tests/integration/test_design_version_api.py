@@ -93,7 +93,21 @@ def test_owner_can_restore_design_revision(version_api_context):
     assert body["requirement"]["rooms"] == ["客厅"]
     assert body["workflow_trace"][0]["node"] == "validate_quality"
     assert body["plans"][0]["id"] == "plan-a"
+    assert body["plans"][0]["planVersionId"] > 0
     assert body["plans"][0]["shopQuote"]["total"] == 30000
+
+
+@pytest.mark.integration
+def test_latest_result_exposes_plan_version_id(version_api_context):
+    client, owner_id, _, task_id = version_api_context
+
+    response = client.get(
+        f"/api/design/tasks/{task_id}/result",
+        headers={"X-Session-ID": owner_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["plans"][0]["planVersionId"] > 0
 
 
 @pytest.mark.integration

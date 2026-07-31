@@ -53,6 +53,14 @@ def _get_task(db: Session, task_id: int) -> DesignTask:
     return task
 
 
+def _plan_version_payload(plan_version) -> dict:
+    """在不修改不可变快照的前提下，把数据库版本编号暴露给 3D 场景 API。"""
+    return {
+        **(plan_version.plan_json or {}),
+        "planVersionId": plan_version.id,
+    }
+
+
 @router.post("", response_model=TaskResponse)
 def create_task(
     task_data: TaskCreate,
@@ -431,7 +439,7 @@ def get_task_result(
     ]
     return TaskResultResponse(
         plans=(
-            [plan.plan_json for plan in revision.plans]
+            [_plan_version_payload(plan) for plan in revision.plans]
             if revision
             else result.plans_json or []
         ),
@@ -507,7 +515,7 @@ def get_design_version(
         requirement=revision.requirement_snapshot or {},
         image_context=revision.image_context_snapshot or [],
         workflow_trace=revision.workflow_trace_snapshot or [],
-        plans=[plan.plan_json for plan in revision.plans],
+        plans=[_plan_version_payload(plan) for plan in revision.plans],
         created_at=revision.created_at,
     )
 
