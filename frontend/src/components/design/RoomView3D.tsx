@@ -13,8 +13,11 @@ import {
   ArrowUp,
   Bot,
   Box,
+  Camera,
   Cloud,
   CloudOff,
+  Cpu,
+  Download,
   Move3D,
   Loader2,
   Redo2,
@@ -489,6 +492,16 @@ export default function RoomView3D({
     ["loading", "saving", "demo", "offline", "conflict"].includes(
       editor.syncState,
     );
+  const renderActive = ["queued", "running"].includes(
+    editor.blenderRenderJob?.status ?? "",
+  );
+  const renderDisabled =
+    editor.blenderRenderPending ||
+    renderActive ||
+    editor.sceneAgentState === "thinking" ||
+    ["loading", "saving", "demo", "offline", "conflict"].includes(
+      editor.syncState,
+    );
 
   return (
     <div className="space-y-3">
@@ -745,6 +758,100 @@ export default function RoomView3D({
             {editor.sceneAgentMessage}
           </p>
         )}
+      </section>
+      <section
+        aria-label="Blender 高质量渲染"
+        className="overflow-hidden rounded-2xl border border-cream-200 bg-white/85 shadow-card"
+      >
+        <div className="grid gap-4 p-4 lg:grid-cols-[1fr_auto] lg:items-center">
+          <div className="flex items-start gap-3">
+            <div className="rounded-xl bg-terra-50 p-2 text-terra-700">
+              <Camera className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-semibold text-stone-800">
+                  Blender 高质量渲染
+                </h3>
+                <span className="inline-flex items-center gap-1 rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-stone-500">
+                  <Cpu className="h-3 w-3" />
+                  独立进程 · 静态可信脚本
+                </span>
+              </div>
+              <p className="mt-1 max-w-2xl text-xs leading-relaxed text-stone-400">
+                将当前不可变场景版本提交给隔离 Worker。预览档使用 Eevee，
+                成片档使用 Cycles，并优先启用 NVIDIA OptiX。
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={renderDisabled}
+              onClick={() => void editor.queueBlenderRender("preview")}
+              className="rounded-xl border border-cream-300 bg-white px-3.5 py-2 text-xs font-medium text-stone-600 transition-colors hover:border-sage-400 hover:text-sage-700 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              快速预览
+            </button>
+            <button
+              type="button"
+              disabled={renderDisabled}
+              onClick={() => void editor.queueBlenderRender("final")}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-terra-600 px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-terra-700 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {editor.blenderRenderPending || renderActive ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Camera className="h-3.5 w-3.5" />
+              )}
+              Cycles 成片
+            </button>
+          </div>
+        </div>
+        {editor.blenderRenderMessage && (
+          <div className="border-t border-cream-100 bg-cream-50/70 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p role="status" className="text-xs text-stone-600">
+                {editor.blenderRenderMessage}
+              </p>
+              {editor.blenderRenderJob?.output_url && (
+                <a
+                  href={editor.blenderRenderJob.output_url}
+                  download
+                  className="inline-flex items-center gap-1 text-xs font-medium text-sage-700 hover:text-sage-800"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  下载 PNG
+                </a>
+              )}
+            </div>
+            {renderActive && (
+              <div
+                role="progressbar"
+                aria-label="Blender 渲染进度"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={editor.blenderRenderJob?.progress ?? 0}
+                className="mt-2 h-1.5 overflow-hidden rounded-full bg-cream-200"
+              >
+                <div
+                  className="h-full rounded-full bg-terra-500 transition-[width]"
+                  style={{
+                    width: `${editor.blenderRenderJob?.progress ?? 0}%`,
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+        {editor.blenderRenderJob?.status === "completed" &&
+          editor.blenderRenderJob.output_url && (
+            <img
+              src={editor.blenderRenderJob.output_url}
+              alt={`场景版本 ${editor.blenderRenderJob.scene_version} 的 Blender 效果图`}
+              className="max-h-[520px] w-full border-t border-cream-100 object-cover"
+            />
+          )}
       </section>
     </div>
   );

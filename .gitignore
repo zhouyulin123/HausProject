@@ -30,6 +30,7 @@ Thumbs.db
 # 本地运行产物
 backend/uploads/*
 !backend/uploads/.gitkeep
+backend/.runtime/
 backend/*.xlsx
 *.log
 

@@ -2,6 +2,8 @@ import type { DesignPlan } from "@/types/design";
 import type { FurnitureItem } from "@/types/furniture";
 import type { ImageAnalysis, UserRequirement } from "@/types/requirement";
 import type {
+  BlenderRenderJob,
+  BlenderRenderProfile,
   DesignScene,
   DesignSceneVersion,
   SceneDocument,
@@ -705,6 +707,34 @@ export async function runSceneAgentCommand(
         instruction,
       }),
     },
+  );
+}
+
+/** 创建独立 Blender Worker 消费的版本化渲染任务。 */
+export async function createBlenderRenderJob(
+  sceneId: number,
+  baseVersion: number,
+  profile: BlenderRenderProfile,
+): Promise<BlenderRenderJob> {
+  return request<BlenderRenderJob>(
+    `/api/design/scenes/${sceneId}/render-jobs`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        baseVersion,
+        profile,
+      }),
+    },
+  );
+}
+
+/** 查询 Blender 渲染任务进度和最终产物。 */
+export async function fetchBlenderRenderJob(
+  sceneId: number,
+  jobId: number,
+): Promise<BlenderRenderJob> {
+  return request<BlenderRenderJob>(
+    `/api/design/scenes/${sceneId}/render-jobs/${jobId}`,
   );
 }
 

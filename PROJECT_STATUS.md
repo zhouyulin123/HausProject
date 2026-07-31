@@ -1,5 +1,49 @@
 # 项目开发状态记录
 
+## 2026-07-31 Blender Worker 高质量渲染第五批
+
+- 新增与不可变 `DesignSceneVersion` 绑定的 `blender_render_jobs`：
+  - `queued / running / completed / failed` 状态、真实进度、尝试次数。
+  - Worker ID、租约过期、崩溃恢复和同版本/同档位幂等去重。
+  - 预览档与成片档独立保存，不会因客户继续编辑场景而改变已提交快照。
+- 新增客户归属隔离的渲染接口：
+  - `POST /api/design/scenes/{scene_id}/render-jobs`
+  - `GET /api/design/scenes/{scene_id}/render-jobs/{job_id}`
+  - 过期场景版本返回 `409`；同会话每小时最多创建 10 个新渲染作业。
+- 新增独立 Blender Worker：
+  - FastAPI 只入库作业，不在请求线程中运行 Blender。
+  - Blender 调用固定使用后台、恢复出厂、禁用自动脚本、离线和 Python 异常退出码参数。
+  - 命令使用 `shell=False`，清除 Python 注入环境，客户输入不能成为脚本或命令参数。
+  - 超时后终止进程；Worker 崩溃后通过数据库租约有限重试。
+- 新增声明式 SceneDocument → Blender 渲染器：
+  - 构建房间地面、带门窗洞口的墙体、商品 GLB/安全体块、室内相机和灯光。
+  - 远程模型 URL、目录穿越和非 GLB 资产全部拒绝。
+  - 默认只导入项目内置模型；员工上传模型在权限和资产审核完成前降级为体块。
+  - PNG 产物经过签名和大小校验后原子发布，并自动进入原有效果图/PDF 数据链路。
+- 前端 3D 编辑器新增 Blender 高质量渲染区：
+  - 可选择 Eevee 快速预览或 Cycles 成片。
+  - 自动轮询排队/运行进度，完成后直接展示和下载 PNG。
+  - 渲染绑定明确的场景版本，保存失败、冲突和限流均有独立反馈。
+- 本机安装 Blender 5.2.0 LTS 便携运行时到 Git 忽略目录 `backend/.runtime/blender`。
+
+### 验证
+
+- Blender 5.2.0 LTS 启动：通过
+- Eevee 真实预览任务：完成并生成 PNG
+- Cycles 真实成片任务：完成，RTX 5060 成功选择 `OPTIX`
+- MySQL 实际迁移到 `d4e6f8a0b2c4 (head)`：通过
+- 后端全量测试：`81 passed`
+- 前端全量测试：`26 passed`
+- 前端覆盖率：语句 63.25%、分支 47.58%、函数 65.65%、行 65.57%
+- TypeScript 与 Vite 生产构建：通过
+- 浏览器实测：3D 布局正确展示 Eevee/Cycles 渲染入口，演示方案权限状态正确，控制台无错误
+
+### 下一施工批次
+
+1. 建立材质库和 HDRI/灯光预设，让商品材质、墙地面和风格方案直接驱动 Blender 成片质量。
+2. 增加多相机机位、缩略图和一套场景多张成片的 artifact manifest。
+3. 完成员工登录、模型审核和共享队列后，再开放上传 GLB 的 Blender 导入权限。
+
 ## 2026-07-31 Scene Agent 空间操作第四批
 
 - 新增基于 LangGraph 的三节点 Scene Agent 工作流：

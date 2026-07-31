@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
+  createBlenderRenderJob,
   fetchDesignScene,
+  fetchBlenderRenderJob,
   loadOrCreateDesignScene,
   runSceneAgentCommand,
   updateDesignScene,
@@ -22,6 +24,8 @@ import {
 } from "@/lib/sceneHistory";
 import type { DesignPlan } from "@/types/design";
 import type {
+  BlenderRenderJob,
+  BlenderRenderProfile,
   SceneTransform,
   SceneValidationReport,
 } from "@/types/scene";
@@ -49,6 +53,9 @@ interface UseSceneEditorResult {
   validation: SceneValidationReport | null;
   sceneAgentState: SceneAgentState;
   sceneAgentMessage: string;
+  blenderRenderJob: BlenderRenderJob | null;
+  blenderRenderMessage: string;
+  blenderRenderPending: boolean;
   selectItem: (instanceId: string | null) => void;
   setTransformMode: (mode: TransformMode) => void;
   commitTransform: (instanceId: string, transform: SceneTransform) => void;
@@ -58,6 +65,7 @@ interface UseSceneEditorResult {
   redo: () => void;
   reload: () => Promise<void>;
   runSceneAgent: (instruction: string) => Promise<void>;
+  queueBlenderRender: (profile: BlenderRenderProfile) => Promise<void>;
 }
 
 export function useSceneEditor(
@@ -82,6 +90,10 @@ export function useSceneEditor(
   const [sceneAgentState, setSceneAgentState] =
     useState<SceneAgentState>("idle");
   const [sceneAgentMessage, setSceneAgentMessage] = useState("");
+  const [blenderRenderJob, setBlenderRenderJob] =
+    useState<BlenderRenderJob | null>(null);
+  const [blenderRenderMessage, setBlenderRenderMessage] = useState("");
+  const [blenderRenderPending, setBlenderRenderPending] = useState(false);
 
   const sceneIdRef = useRef<number | null>(null);
   const serverVersionRef = useRef<number | null>(null);
@@ -89,6 +101,7 @@ export function useSceneEditor(
   const syncStateRef = useRef(syncState);
   const sceneAgentStateRef = useRef<SceneAgentState>("idle");
   const sceneAgentRunInFlightRef = useRef(false);
+  const blenderRenderInFlightRef = useRef(false);
   const lastSavedChangeIdRef = useRef(0);
   const savePromiseRef = useRef<Promise<void> | null>(null);
 
@@ -109,6 +122,9 @@ export function useSceneEditor(
     setValidation(null);
     setSceneAgentState("idle");
     setSceneAgentMessage("");
+    setBlenderRenderJob(null);
+    setBlenderRenderMessage("");
+    setBlenderRenderPending(false);
     setHistory((current) => replaceScene(current, initialScene));
 
     if (!plan.planVersionId || isDemoScene(initialScene)) {
@@ -213,7 +229,12 @@ export function useSceneEditor(
 
   const commitTransform = useCallback(
     (instanceId: string, transform: SceneTransform) => {
-      if (sceneAgentStateRef.current === "thinking") return;
+      if (
+        sceneAgentStateRef.current === "thinking" ||
+        blenderRenderInFlightRef.current
+      ) {
+        return;
+      }
       setHistory((current) => {
         const item = current.present.items.find(
           (candidate) => candidate.instanceId === instanceId,
@@ -275,12 +296,22 @@ export function useSceneEditor(
   );
 
   const undo = useCallback(() => {
-    if (sceneAgentStateRef.current === "thinking") return;
+    if (
+      sceneAgentStateRef.current === "thinking" ||
+      blenderRenderInFlightRef.current
+    ) {
+      return;
+    }
     setHistory((current) => undoScene(current));
   }, []);
 
   const redo = useCallback(() => {
-    if (sceneAgentStateRef.current === "thinking") return;
+    if (
+      sceneAgentStateRef.current === "thinking" ||
+      blenderRenderInFlightRef.current
+    ) {
+      return;
+    }
     setHistory((current) => redoScene(current));
   }, []);
 
@@ -371,6 +402,107 @@ export function useSceneEditor(
     [flushSave],
   );
 
+  useEffect(() => {
+    const sceneId = sceneIdRef.current;
+    const job = blenderRenderJob;
+    if (
+      !sceneId ||
+      !job ||
+      !["queued", "running"].includes(job.status)
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const poll = async () => {
+      try {
+        const refreshed = await fetchBlenderRenderJob(sceneId, job.id);
+        if (cancelled) return;
+        setBlenderRenderJob(refreshed);
+        if (refreshed.status === "completed") {
+          setBlenderRenderMessage(
+            `场景版本 ${refreshed.scene_version} 的高质量效果图已完成`,
+          );
+        } else if (refreshed.status === "failed") {
+          setBlenderRenderMessage(
+            refreshed.error_message ?? "高质量渲染失败，请稍后重试",
+          );
+        } else {
+          setBlenderRenderMessage(
+            refreshed.status === "running"
+              ? `Blender 正在渲染，进度 ${refreshed.progress}%`
+              : "渲染任务已排队，等待独立 Worker",
+          );
+          timer = window.setTimeout(poll, 2000);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        console.warn("[SceneEditor] Blender 渲染状态查询失败", error);
+        setBlenderRenderMessage("暂时无法获取渲染进度，正在自动重试");
+        timer = window.setTimeout(poll, 5000);
+      }
+    };
+    timer = window.setTimeout(poll, 1200);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [blenderRenderJob?.id, blenderRenderJob?.status]);
+
+  const queueBlenderRender = useCallback(
+    async (profile: BlenderRenderProfile) => {
+      if (
+        blenderRenderInFlightRef.current ||
+        sceneAgentRunInFlightRef.current ||
+        ["queued", "running"].includes(blenderRenderJob?.status ?? "")
+      ) {
+        return;
+      }
+      if (!sceneIdRef.current || !serverVersionRef.current) {
+        setBlenderRenderMessage("演示方案不能提交高质量渲染任务");
+        return;
+      }
+      blenderRenderInFlightRef.current = true;
+      setBlenderRenderPending(true);
+      setBlenderRenderMessage("正在保存场景并创建隔离渲染任务…");
+      await flushSave();
+      if (["conflict", "offline"].includes(syncStateRef.current)) {
+        blenderRenderInFlightRef.current = false;
+        setBlenderRenderPending(false);
+        setBlenderRenderMessage("当前场景尚未同步，请恢复连接后再渲染");
+        return;
+      }
+      try {
+        const job = await createBlenderRenderJob(
+          sceneIdRef.current,
+          serverVersionRef.current,
+          profile,
+        );
+        setBlenderRenderJob(job);
+        setBlenderRenderMessage(
+          job.status === "completed"
+            ? `场景版本 ${job.scene_version} 的效果图已存在`
+            : "渲染任务已排队，等待独立 Blender Worker",
+        );
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          syncStateRef.current = "conflict";
+          setSyncState("conflict");
+          setBlenderRenderMessage("场景版本已经变化，请恢复最新版本后重试");
+        } else if (error instanceof ApiError && error.status === 429) {
+          setBlenderRenderMessage("高质量渲染请求过于频繁，请稍后再试");
+        } else {
+          setBlenderRenderMessage("暂时无法创建高质量渲染任务");
+        }
+      } finally {
+        blenderRenderInFlightRef.current = false;
+        setBlenderRenderPending(false);
+      }
+    },
+    [blenderRenderJob?.status, flushSave],
+  );
+
   return {
     history,
     selectedItemId,
@@ -379,6 +511,9 @@ export function useSceneEditor(
     validation,
     sceneAgentState,
     sceneAgentMessage,
+    blenderRenderJob,
+    blenderRenderMessage,
+    blenderRenderPending,
     selectItem: setSelectedItemId,
     setTransformMode,
     commitTransform,
@@ -392,5 +527,6 @@ export function useSceneEditor(
     redo,
     reload,
     runSceneAgent,
+    queueBlenderRender,
   };
 }

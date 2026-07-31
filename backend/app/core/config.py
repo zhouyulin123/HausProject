@@ -47,6 +47,19 @@ class Settings(BaseSettings):
     max_upload_image_mb: int = 10
     max_upload_model_mb: int = 25
     scene_agent_requests_per_minute: int = Field(default=6, ge=1, le=120)
+    blender_executable: str = "blender"
+    blender_work_dir: str = str(
+        Path(__file__).resolve().parents[2] / "worker_data" / "blender"
+    )
+    frontend_public_dir: str = str(
+        Path(__file__).resolve().parents[3] / "frontend" / "public"
+    )
+    blender_render_timeout_seconds: int = Field(default=1200, ge=60, le=7200)
+    blender_render_max_mb: int = Field(default=30, ge=1, le=200)
+    blender_worker_poll_seconds: float = Field(default=2.0, ge=0.2, le=60)
+    blender_worker_max_attempts: int = Field(default=2, ge=1, le=5)
+    blender_render_requests_per_hour: int = Field(default=10, ge=1, le=100)
+    blender_allow_uploaded_models: bool = False
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"

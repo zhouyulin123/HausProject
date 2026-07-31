@@ -128,3 +128,25 @@ export interface SceneAgentCommandResult {
   operations: SceneOperation[];
   scene: DesignScene;
 }
+
+export type BlenderRenderProfile = "preview" | "final";
+export type BlenderRenderStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed";
+
+export interface BlenderRenderJob {
+  id: number;
+  scene_id: number;
+  scene_version: number;
+  profile: BlenderRenderProfile;
+  status: BlenderRenderStatus;
+  progress: number;
+  attempt: number;
+  output_url: string | null;
+  error_message: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+}

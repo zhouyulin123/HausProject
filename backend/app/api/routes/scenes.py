@@ -7,7 +7,11 @@ from app.api.dependencies import SessionIdHeader, require_active_session
 from app.agents.scene_agent import SceneAgentSafetyError, SceneAgentWorkflow
 from app.core.config import settings
 from app.db.database import get_db
-from app.db.models import DesignScene, DesignSceneVersion
+from app.db.models import BlenderRenderJob, DesignScene, DesignSceneVersion
+from app.schemas.blender_render import (
+    BlenderRenderJobResponse,
+    BlenderRenderRequest,
+)
 from app.schemas.scenes import (
     SceneCreateRequest,
     SceneDocument,
@@ -21,14 +25,23 @@ from app.schemas.scene_agent import (
     SceneAgentCommandRequest,
     SceneAgentCommandResponse,
 )
-from app.services import llm_service, scene_service, scene_tools
-from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
+from app.services import (
+    blender_job_service,
+    llm_service,
+    scene_service,
+    scene_tools,
+)
 from app.services.llm_service import LLMUnavailable
+from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
 
 router = APIRouter()
 scene_agent_rate_limiter = SceneAgentRateLimiter(
     max_requests=settings.scene_agent_requests_per_minute,
     window_seconds=60,
+)
+blender_render_rate_limiter = SceneAgentRateLimiter(
+    max_requests=settings.blender_render_requests_per_hour,
+    window_seconds=3600,
 )
 
 
@@ -78,6 +91,23 @@ def _scene_response(
         source=version.source,
         created_at=scene.created_at,
         updated_at=scene.updated_at,
+    )
+
+
+def _render_job_response(job: BlenderRenderJob) -> BlenderRenderJobResponse:
+    return BlenderRenderJobResponse(
+        id=job.id,
+        scene_id=job.scene_id,
+        scene_version=job.scene_version,
+        profile=job.profile,
+        status=job.status,
+        progress=job.progress,
+        attempt=job.attempt,
+        output_url=job.output_url,
+        error_message=job.error_message,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
     )
 
 
@@ -244,6 +274,86 @@ def validate_scene(
     version = scene_service.get_current_version(db, scene)
     document = SceneDocument.model_validate(version.scene_json)
     return scene_service.validate_scene(db, document)
+
+
+@router.post(
+    "/scenes/{scene_id}/render-jobs",
+    response_model=BlenderRenderJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def queue_blender_render(
+    scene_id: int,
+    payload: BlenderRenderRequest,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    """把当前不可变场景版本加入独立 Blender Worker 队列。"""
+    require_active_session(db, x_session_id)
+    scene = scene_service.get_owned_scene(
+        db,
+        session_id=x_session_id,
+        scene_id=scene_id,
+    )
+    if scene is None:
+        raise _not_found("3D 场景")
+    if scene.current_version != payload.base_version:
+        raise HTTPException(
+            status_code=409,
+            detail=f"场景已经更新到版本 {scene.current_version}，请刷新后重试",
+        )
+    version = scene_service.get_current_version(db, scene)
+    existing = blender_job_service.get_existing_job(
+        db,
+        scene_version_id=version.id,
+        profile=payload.profile,
+    )
+    if existing is not None and existing.status != "failed":
+        return _render_job_response(existing)
+    retry_after = blender_render_rate_limiter.retry_after(str(x_session_id))
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="高质量渲染请求过于频繁，请稍后重试",
+            headers={"Retry-After": str(retry_after)},
+        )
+    if existing is not None:
+        job = blender_job_service.requeue_failed_job(db, job=existing)
+    else:
+        job, _ = blender_job_service.create_or_get_job(
+            db,
+            scene=scene,
+            version=version,
+            profile=payload.profile,
+        )
+    return _render_job_response(job)
+
+
+@router.get(
+    "/scenes/{scene_id}/render-jobs/{job_id}",
+    response_model=BlenderRenderJobResponse,
+)
+def get_blender_render_job(
+    scene_id: int,
+    job_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_active_session(db, x_session_id)
+    scene = scene_service.get_owned_scene(
+        db,
+        session_id=x_session_id,
+        scene_id=scene_id,
+    )
+    if scene is None:
+        raise _not_found("3D 场景")
+    job = blender_job_service.get_scene_job(
+        db,
+        scene_id=scene.id,
+        job_id=job_id,
+    )
+    if job is None:
+        raise _not_found("Blender 渲染任务")
+    return _render_job_response(job)
 
 
 @router.post(

@@ -358,6 +358,45 @@ class DesignSceneVersion(Base):
     scene = relationship("DesignScene", back_populates="versions")
 
 
+class BlenderRenderJob(Base):
+    """独立 Worker 消费的不可变场景渲染作业。"""
+
+    __tablename__ = "blender_render_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "scene_version_id",
+            "profile",
+            name="uq_blender_render_jobs_version_profile",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    scene_id = Column(
+        Integer,
+        ForeignKey("design_scenes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    scene_version_id = Column(
+        Integer,
+        ForeignKey("design_scene_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    scene_version = Column(Integer, nullable=False)
+    profile = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    progress = Column(Integer, nullable=False, default=0)
+    attempt = Column(Integer, nullable=False, default=0)
+    worker_id = Column(String(100), nullable=True, index=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    output_url = Column(String(500), nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class QuoteSnapshot(Base):
     """与单套方案绑定的确定性报价快照。"""
 
