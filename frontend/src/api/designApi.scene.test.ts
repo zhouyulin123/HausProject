@@ -212,4 +212,60 @@ describe("3D 场景 API", () => {
       }),
     );
   });
+
+  it("创建并轮询绑定场景版本的 Blender 渲染任务", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const queued = {
+      id: 12,
+      scene_id: 9,
+      scene_version: 3,
+      profile: "final" as const,
+      status: "queued" as const,
+      progress: 0,
+      attempt: 0,
+      output_url: null,
+      error_message: null,
+    };
+    const completed = {
+      ...queued,
+      status: "completed" as const,
+      progress: 100,
+      output_url: "/uploads/blender_renders/scene_9_v3_final.png",
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(jsonResponse(queued))
+      .mockResolvedValueOnce(jsonResponse(completed));
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { createBlenderRenderJob, fetchBlenderRenderJob } =
+      await import("./designApi");
+    const created = await createBlenderRenderJob(9, 3, "final");
+    const restored = await fetchBlenderRenderJob(9, created.id);
+
+    expect(restored.output_url).toContain("scene_9_v3_final.png");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/design/scenes/9/render-jobs",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          baseVersion: 3,
+          profile: "final",
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/design/scenes/9/render-jobs/12",
+      expect.objectContaining({
+        headers: expect.any(Headers),
+      }),
+    );
+  });
 });
