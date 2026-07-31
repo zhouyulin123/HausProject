@@ -34,6 +34,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "design_plan_versions",
             "design_scenes",
             "design_scene_versions",
+            "blender_render_jobs",
             "quote_snapshots",
             "uploaded_images",
             "products",
@@ -52,6 +53,24 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "model_license",
             "model_source",
         } <= product_columns
+        render_job_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "blender_render_jobs"
+            )
+        }
+        assert {
+            "scene_id",
+            "scene_version_id",
+            "profile",
+            "status",
+            "progress",
+            "attempt",
+            "worker_id",
+            "lease_expires_at",
+            "output_url",
+            "error_message",
+        } <= render_job_columns
     finally:
         if inspection_engine is not None:
             inspection_engine.dispose()

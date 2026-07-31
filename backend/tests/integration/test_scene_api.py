@@ -387,3 +387,64 @@ def test_scene_agent_rate_limit_rejects_before_calling_model(
     assert response.status_code == 429
     assert response.headers["Retry-After"] == "12"
     assert called is False
+
+
+@pytest.mark.integration
+def test_owner_can_queue_and_query_versioned_blender_render(
+    scene_api_context,
+):
+    client, owner_id, stranger_id, plan_version_id = scene_api_context
+    headers = {"X-Session-ID": owner_id}
+    created = client.post(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+        json={"scene": _scene_payload()},
+    )
+    scene_id = created.json()["id"]
+
+    queued = client.post(
+        f"/api/design/scenes/{scene_id}/render-jobs",
+        headers=headers,
+        json={"baseVersion": 1, "profile": "preview"},
+    )
+    duplicate = client.post(
+        f"/api/design/scenes/{scene_id}/render-jobs",
+        headers=headers,
+        json={"baseVersion": 1, "profile": "preview"},
+    )
+    restored = client.get(
+        f"/api/design/scenes/{scene_id}/render-jobs/{queued.json()['id']}",
+        headers=headers,
+    )
+    forbidden = client.get(
+        f"/api/design/scenes/{scene_id}/render-jobs/{queued.json()['id']}",
+        headers={"X-Session-ID": stranger_id},
+    )
+
+    assert queued.status_code == 202
+    assert queued.json()["status"] == "queued"
+    assert queued.json()["scene_version"] == 1
+    assert duplicate.status_code == 202
+    assert duplicate.json()["id"] == queued.json()["id"]
+    assert restored.status_code == 200
+    assert restored.json()["profile"] == "preview"
+    assert forbidden.status_code == 404
+
+
+@pytest.mark.integration
+def test_blender_render_rejects_stale_scene_version(scene_api_context):
+    client, owner_id, _, plan_version_id = scene_api_context
+    headers = {"X-Session-ID": owner_id}
+    created = client.post(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+        json={"scene": _scene_payload()},
+    )
+
+    response = client.post(
+        f"/api/design/scenes/{created.json()['id']}/render-jobs",
+        headers=headers,
+        json={"baseVersion": 99, "profile": "final"},
+    )
+
+    assert response.status_code == 409
