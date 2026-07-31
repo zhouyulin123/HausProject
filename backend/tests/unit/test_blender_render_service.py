@@ -68,7 +68,7 @@ def test_manifest_resolves_only_allowlisted_local_model_assets(tmp_path):
     )
 
     assert manifest["schemaVersion"] == "1.0"
-    assert manifest["profile"]["engine"] == "BLENDER_EEVEE_NEXT"
+    assert manifest["profile"]["engine"] == "BLENDER_EEVEE"
     assert manifest["scene"]["items"][0]["modelPath"] == str(
         uploaded_model.resolve()
     )
