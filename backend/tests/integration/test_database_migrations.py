@@ -32,6 +32,8 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "design_results",
             "design_revisions",
             "design_plan_versions",
+            "design_scenes",
+            "design_scene_versions",
             "quote_snapshots",
             "uploaded_images",
             "products",

@@ -17,3 +17,6 @@ def test_core_customer_routes_are_registered():
     assert ("/api/design/chat", "POST") in routes
     assert ("/api/design/render", "POST") in routes
     assert ("/api/design/proposal-pdf", "POST") in routes
+    assert ("/api/design/plan-versions/{plan_version_id}/scene", "POST") in routes
+    assert ("/api/design/scenes/{scene_id}", "GET") in routes
+    assert ("/api/design/scenes/{scene_id}", "PUT") in routes
