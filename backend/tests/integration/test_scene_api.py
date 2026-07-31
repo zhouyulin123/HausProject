@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api.routes import scenes
+from app.schemas.scene_agent import SceneOperationBatch
 from app.db.database import Base, get_db
 from app.db.models import DesignTask, Product
 from app.services.anonymous_session_service import (
@@ -226,3 +227,78 @@ def test_scene_rejects_sku_missing_from_product_catalog(scene_api_context):
     assert response.json()["detail"]["validation"]["errors"][0]["code"] == (
         "unknown_sku"
     )
+
+
+@pytest.mark.integration
+def test_scene_agent_command_updates_owned_scene_as_new_version(
+    scene_api_context,
+    monkeypatch,
+):
+    client, owner_id, _, plan_version_id = scene_api_context
+    headers = {"X-Session-ID": owner_id}
+    created = client.post(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+        json={"scene": _scene_payload()},
+    )
+    monkeypatch.setattr(
+        scenes.llm_service,
+        "plan_scene_operations",
+        lambda **_: SceneOperationBatch.model_validate(
+            {
+                "message": "已将沙发向左移动 50 厘米",
+                "operations": [
+                    {
+                        "type": "move",
+                        "instanceId": "sofa-main",
+                        "position": {"x": 2, "z": 3.2},
+                    }
+                ],
+            }
+        ),
+    )
+
+    response = client.post(
+        f"/api/design/scenes/{created.json()['id']}/agent-command",
+        headers=headers,
+        json={"baseVersion": 1, "instruction": "把沙发向左移动50厘米"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["scene"]["current_version"] == 2
+    assert response.json()["scene"]["source"] == "scene_agent"
+    assert (
+        response.json()["scene"]["scene"]["items"][0]["transform"]["position"]["x"]
+        == 2
+    )
+    assert response.json()["message"] == "已将沙发向左移动 50 厘米"
+
+
+@pytest.mark.integration
+def test_scene_agent_checks_version_before_calling_model(
+    scene_api_context,
+    monkeypatch,
+):
+    client, owner_id, _, plan_version_id = scene_api_context
+    headers = {"X-Session-ID": owner_id}
+    created = client.post(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+        json={"scene": _scene_payload()},
+    )
+    called = False
+
+    def planner(**_):
+        nonlocal called
+        called = True
+        raise AssertionError("不应调用模型")
+
+    monkeypatch.setattr(scenes.llm_service, "plan_scene_operations", planner)
+    response = client.post(
+        f"/api/design/scenes/{created.json()['id']}/agent-command",
+        headers=headers,
+        json={"baseVersion": 99, "instruction": "移动沙发"},
+    )
+
+    assert response.status_code == 409
+    assert called is False

@@ -163,4 +163,53 @@ describe("3D 场景 API", () => {
       expect.objectContaining({ method: "POST" }),
     );
   });
+
+  it("提交自然语言场景命令并返回新的场景版本", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          message: "已将沙发向左移动",
+          operations: [
+            {
+              type: "move",
+              instanceId: "sofa-main",
+              position: { x: 1.5, z: 0 },
+            },
+          ],
+          scene: {
+            id: 9,
+            plan_version_id: 5,
+            current_version: 2,
+            scene,
+            validation: { valid: true, errors: [], warnings: [] },
+            source: "scene_agent",
+          },
+        }),
+      );
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { runSceneAgentCommand } = await import("./designApi");
+    const result = await runSceneAgentCommand(9, 1, "把沙发向左移动");
+
+    expect(result.scene.current_version).toBe(2);
+    expect(result.message).toContain("向左移动");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/design/scenes/9/agent-command",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          baseVersion: 1,
+          instruction: "把沙发向左移动",
+        }),
+      }),
+    );
+  });
 });
