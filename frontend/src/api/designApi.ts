@@ -5,6 +5,7 @@ import type {
   DesignScene,
   DesignSceneVersion,
   SceneDocument,
+  SceneAgentCommandResult,
   SceneSource,
   SceneValidationReport,
 } from "@/types/scene";
@@ -686,6 +687,24 @@ export async function validateDesignScene(
   return request<SceneValidationReport>(
     `/api/design/scenes/${sceneId}/validate`,
     { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+/** 让 Scene Agent 把自然语言转换成白名单操作，并返回新场景版本。 */
+export async function runSceneAgentCommand(
+  sceneId: number,
+  baseVersion: number,
+  instruction: string,
+): Promise<SceneAgentCommandResult> {
+  return request<SceneAgentCommandResult>(
+    `/api/design/scenes/${sceneId}/agent-command`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        baseVersion,
+        instruction,
+      }),
+    },
   );
 }
 

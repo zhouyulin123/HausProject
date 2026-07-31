@@ -302,3 +302,88 @@ def test_scene_agent_checks_version_before_calling_model(
 
     assert response.status_code == 409
     assert called is False
+
+
+@pytest.mark.integration
+def test_scene_agent_rejects_unsafe_operation_without_creating_version(
+    scene_api_context,
+    monkeypatch,
+):
+    client, owner_id, _, plan_version_id = scene_api_context
+    headers = {"X-Session-ID": owner_id}
+    created = client.post(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+        json={"scene": _scene_payload()},
+    )
+    scene_id = created.json()["id"]
+    monkeypatch.setattr(
+        scenes.llm_service,
+        "plan_scene_operations",
+        lambda **_: SceneOperationBatch.model_validate(
+            {
+                "message": "尝试把沙发移出房间",
+                "operations": [
+                    {
+                        "type": "move",
+                        "instanceId": "sofa-main",
+                        "position": {"x": 8, "z": 3.2},
+                    }
+                ],
+            }
+        ),
+    )
+
+    response = client.post(
+        f"/api/design/scenes/{scene_id}/agent-command",
+        headers=headers,
+        json={"baseVersion": 1, "instruction": "把沙发移到房间外"},
+    )
+    restored = client.get(
+        f"/api/design/scenes/{scene_id}",
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+    assert restored.json()["current_version"] == 1
+    assert (
+        restored.json()["scene"]["items"][0]["transform"]["position"]["x"]
+        == 2.5
+    )
+
+
+@pytest.mark.integration
+def test_scene_agent_rate_limit_rejects_before_calling_model(
+    scene_api_context,
+    monkeypatch,
+):
+    client, owner_id, _, plan_version_id = scene_api_context
+    headers = {"X-Session-ID": owner_id}
+    created = client.post(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+        json={"scene": _scene_payload()},
+    )
+    called = False
+
+    def planner(**_):
+        nonlocal called
+        called = True
+        raise AssertionError("限流后不应调用模型")
+
+    monkeypatch.setattr(
+        scenes.scene_agent_rate_limiter,
+        "retry_after",
+        lambda *_args, **_kwargs: 12,
+    )
+    monkeypatch.setattr(scenes.llm_service, "plan_scene_operations", planner)
+
+    response = client.post(
+        f"/api/design/scenes/{created.json()['id']}/agent-command",
+        headers=headers,
+        json={"baseVersion": 1, "instruction": "把沙发稍微向左移动"},
+    )
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "12"
+    assert called is False

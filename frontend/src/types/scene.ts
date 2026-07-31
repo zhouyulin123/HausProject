@@ -100,3 +100,31 @@ export interface DesignSceneVersion {
   source: SceneSource;
   created_at?: string | null;
 }
+
+export type SceneOperation =
+  | {
+      type: "move";
+      instanceId: string;
+      position: ScenePoint;
+    }
+  | {
+      type: "rotate";
+      instanceId: string;
+      rotationY: number;
+    }
+  | {
+      type: "remove";
+      instanceId: string;
+    }
+  | {
+      type: "add";
+      sku: string;
+      position: ScenePoint;
+      rotationY: number;
+    };
+
+export interface SceneAgentCommandResult {
+  message: string;
+  operations: SceneOperation[];
+  scene: DesignScene;
+}

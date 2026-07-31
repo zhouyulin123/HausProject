@@ -1,6 +1,7 @@
 """3D 场景的归属校验、语义验证与版本持久化。"""
 
-from math import hypot
+from itertools import combinations
+from math import cos, hypot, sin
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -30,6 +31,10 @@ class SceneValidationError(ValueError):
     def __init__(self, report: SceneValidationReport):
         super().__init__("3D 场景语义校验失败")
         self.report = report
+
+
+_NON_BLOCKING_CATEGORIES = {"地毯", "窗帘"}
+_DOOR_CLEARANCE_DEPTH = 0.9
 
 
 def get_owned_plan_version(
@@ -132,6 +137,115 @@ def _point_in_polygon(
     return inside
 
 
+def _item_footprint(item) -> list[tuple[float, float]] | None:
+    if item.dimensions is None:
+        return None
+    half_x = item.dimensions.x * item.transform.scale.x / 2
+    half_z = item.dimensions.z * item.transform.scale.z / 2
+    angle = item.transform.rotation.y
+    cosine = cos(angle)
+    sine = sin(angle)
+    center_x = item.transform.position.x
+    center_z = item.transform.position.z
+    return [
+        (
+            center_x + local_x * cosine + local_z * sine,
+            center_z - local_x * sine + local_z * cosine,
+        )
+        for local_x, local_z in (
+            (-half_x, -half_z),
+            (half_x, -half_z),
+            (half_x, half_z),
+            (-half_x, half_z),
+        )
+    ]
+
+
+def _project_polygon(
+    polygon: list[tuple[float, float]],
+    axis: tuple[float, float],
+) -> tuple[float, float]:
+    values = [point[0] * axis[0] + point[1] * axis[1] for point in polygon]
+    return min(values), max(values)
+
+
+def _polygons_overlap(
+    first: list[tuple[float, float]],
+    second: list[tuple[float, float]],
+    epsilon: float = 1e-6,
+) -> bool:
+    for polygon in (first, second):
+        for start, end in zip(polygon, polygon[1:] + polygon[:1]):
+            axis = (-(end[1] - start[1]), end[0] - start[0])
+            first_range = _project_polygon(first, axis)
+            second_range = _project_polygon(second, axis)
+            if (
+                first_range[1] <= second_range[0] + epsilon
+                or second_range[1] <= first_range[0] + epsilon
+            ):
+                return False
+    return True
+
+
+def _vertical_ranges_overlap(first, second, epsilon: float = 1e-6) -> bool:
+    if first.dimensions is None or second.dimensions is None:
+        return False
+    first_half = first.dimensions.y * first.transform.scale.y / 2
+    second_half = second.dimensions.y * second.transform.scale.y / 2
+    return (
+        first.transform.position.y + first_half
+        > second.transform.position.y - second_half + epsilon
+        and second.transform.position.y + second_half
+        > first.transform.position.y - first_half + epsilon
+    )
+
+
+def _door_clearance_polygon(
+    polygon: list[tuple[float, float]],
+    *,
+    wall_index: int,
+    offset: float,
+    width: float,
+) -> list[tuple[float, float]]:
+    start = polygon[wall_index]
+    end = polygon[(wall_index + 1) % len(polygon)]
+    wall_length = hypot(end[0] - start[0], end[1] - start[1])
+    tangent = (
+        (end[0] - start[0]) / wall_length,
+        (end[1] - start[1]) / wall_length,
+    )
+    door_center = (
+        start[0] + tangent[0] * (offset + width / 2),
+        start[1] + tangent[1] * (offset + width / 2),
+    )
+    left_normal = (-tangent[1], tangent[0])
+    probe_distance = 1e-4
+    left_probe = (
+        door_center[0] + left_normal[0] * probe_distance,
+        door_center[1] + left_normal[1] * probe_distance,
+    )
+    inward = (
+        left_normal
+        if _point_in_polygon(left_probe, polygon)
+        else (-left_normal[0], -left_normal[1])
+    )
+    half_width = width / 2
+    depth = _DOOR_CLEARANCE_DEPTH
+    inner_center = (
+        door_center[0] + inward[0] * depth / 2,
+        door_center[1] + inward[1] * depth / 2,
+    )
+    return [
+        (
+            inner_center[0] + tangent[0] * side * half_width
+            + inward[0] * direction * depth / 2,
+            inner_center[1] + tangent[1] * side * half_width
+            + inward[1] * direction * depth / 2,
+        )
+        for side, direction in ((-1, -1), (1, -1), (1, 1), (-1, 1))
+    ]
+
+
 def validate_scene(
     db: Session,
     scene: SceneDocument,
@@ -169,11 +283,54 @@ def validate_scene(
                     path=f"items.{item.instance_id}.transform.position",
                 )
             )
+        footprint = _item_footprint(item)
+        if footprint and not all(
+            _point_in_polygon(point, polygon) for point in footprint
+        ):
+            warnings.append(
+                SceneValidationIssue(
+                    code="item_exceeds_room",
+                    message=f"家具 {item.instance_id} 的完整占地超出房间",
+                    path=f"items.{item.instance_id}.transform",
+                )
+            )
+
+    physical_items = [
+        item
+        for item in scene.items
+        if item.category not in _NON_BLOCKING_CATEGORIES
+        and _item_footprint(item) is not None
+    ]
+    for first, second in combinations(physical_items, 2):
+        if not _vertical_ranges_overlap(first, second):
+            continue
+        first_footprint = _item_footprint(first)
+        second_footprint = _item_footprint(second)
+        if _polygons_overlap(first_footprint, second_footprint):
+            warnings.append(
+                SceneValidationIssue(
+                    code="item_collision",
+                    message=(
+                        f"家具 {first.instance_id} 与 {second.instance_id} "
+                        "发生占地碰撞"
+                    ),
+                    path=f"items.{first.instance_id},items.{second.instance_id}",
+                )
+            )
 
     for opening in scene.openings:
         start = polygon[opening.wall_index]
         end = polygon[(opening.wall_index + 1) % len(polygon)]
         wall_length = hypot(end[0] - start[0], end[1] - start[1])
+        if wall_length <= 1e-8:
+            errors.append(
+                SceneValidationIssue(
+                    code="invalid_wall_length",
+                    message=f"洞口 {opening.id} 所在墙体长度无效",
+                    path=f"openings.{opening.id}.wallIndex",
+                )
+            )
+            continue
         if opening.offset + opening.width > wall_length + 1e-6:
             errors.append(
                 SceneValidationIssue(
@@ -190,6 +347,26 @@ def validate_scene(
                     path=f"openings.{opening.id}",
                 )
             )
+        if opening.type in {"door", "passage"}:
+            clearance = _door_clearance_polygon(
+                polygon,
+                wall_index=opening.wall_index,
+                offset=opening.offset,
+                width=opening.width,
+            )
+            for item in physical_items:
+                footprint = _item_footprint(item)
+                if footprint and _polygons_overlap(clearance, footprint):
+                    warnings.append(
+                        SceneValidationIssue(
+                            code="door_clearance_blocked",
+                            message=(
+                                f"家具 {item.instance_id} 占用了洞口 "
+                                f"{opening.id} 内侧 {_DOOR_CLEARANCE_DEPTH:g} 米动线"
+                            ),
+                            path=f"items.{item.instance_id}.transform",
+                        )
+                    )
 
     return SceneValidationReport(
         valid=not errors,

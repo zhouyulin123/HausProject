@@ -50,7 +50,12 @@ def get_vl_client() -> OpenAI:
     return _vl_client
 
 
-def _chat_json(system: str, user: str, max_tokens: int = 4096) -> Dict[str, Any]:
+def _chat_json(
+    system: str,
+    user: str,
+    max_tokens: int = 4096,
+    temperature: float = 0.7,
+) -> Dict[str, Any]:
     """调用 DeepSeek 并解析 JSON 输出。"""
     try:
         resp = get_client().chat.completions.create(
@@ -61,7 +66,7 @@ def _chat_json(system: str, user: str, max_tokens: int = 4096) -> Dict[str, Any]
             ],
             response_format={"type": "json_object"},
             max_tokens=max_tokens,
-            temperature=0.7,
+            temperature=temperature,
         )
         return json.loads(resp.choices[0].message.content)
     except LLMUnavailable:
@@ -251,6 +256,53 @@ def generate_plans(
     if len(plans) < 2:
         raise LLMUnavailable(f"LLM 有效方案不足（{len(plans)} 套）")
     return plans
+
+
+# ---------------------------------------------------------------- Scene Agent
+
+_SCENE_AGENT_SYSTEM = """你是坐标计算器。必须执行明确指令，禁止追问。
+输出 JSON 且 operations 不能为空，只允许 move、rotate、remove、add，最多12项。
+move/rotate/remove 只能使用 scene 已有 instanceId；add 只能使用 catalog 已有 sku。
+左=x减小，右=x增加，前=z增加，后=z减小；厘米除以100换算成米。
+move 输出绝对 position{x,z}，rotate 输出绝对 rotationY，不能输出Y坐标或代码。
+示例：sofa-main 当前 x=0,z=-1，向左移动30厘米，应输出
+{"message":"已移动","operations":[{"type":"move","instanceId":"sofa-main","position":{"x":-0.3,"z":-1}}]}。
+只输出 JSON。"""
+
+
+def plan_scene_operations(
+    *,
+    instruction: str,
+    context: Dict[str, Any],
+):
+    """把自然语言转换为受 Pydantic 鉴别联合约束的场景操作。"""
+    from app.schemas.scene_agent import SceneOperationBatch
+
+    user_prompt = (
+        "指令："
+        + instruction
+        + "\n数据："
+        + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+    )
+    data = _chat_json(
+        _SCENE_AGENT_SYSTEM,
+        user_prompt,
+        max_tokens=2000,
+        temperature=0.2,
+    )
+    if isinstance(data.get("operations"), list) and not data["operations"]:
+        data = _chat_json(
+            _SCENE_AGENT_SYSTEM,
+            user_prompt
+            + "\n\n上一次返回了空 operations。该指令信息充分，请严格按坐标约定"
+            "计算至少一个白名单操作；不要返回解释性空结果。",
+            max_tokens=2000,
+            temperature=0.1,
+        )
+    try:
+        return SceneOperationBatch.model_validate(data)
+    except Exception as exc:
+        raise LLMUnavailable("Scene Agent 返回的操作结构无效") from exc
 
 
 # ---------------------------------------------------------------- 图片分析（Qwen3-VL）

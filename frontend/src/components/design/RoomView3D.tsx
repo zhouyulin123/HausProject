@@ -11,14 +11,18 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Bot,
   Box,
   Cloud,
   CloudOff,
   Move3D,
+  Loader2,
   Redo2,
   RefreshCw,
   Rotate3D,
   Save,
+  Send,
+  ShieldCheck,
   Undo2,
 } from "lucide-react";
 import { Shape, type Group } from "three";
@@ -390,6 +394,7 @@ export default function RoomView3D({
   roomType: string;
 }) {
   const editor = useSceneEditor(plan, roomType);
+  const [agentInstruction, setAgentInstruction] = useState("");
   const scene = editor.history.present;
   const selectedItem = scene.items.find(
     (item) => item.instanceId === editor.selectedItemId,
@@ -479,7 +484,14 @@ export default function RoomView3D({
     }
   };
 
+  const agentDisabled =
+    editor.sceneAgentState === "thinking" ||
+    ["loading", "saving", "demo", "offline", "conflict"].includes(
+      editor.syncState,
+    );
+
   return (
+    <div className="space-y-3">
     <div
       role="application"
       aria-label="3D 空间编辑器"
@@ -659,6 +671,81 @@ export default function RoomView3D({
           </div>
         </aside>
       )}
+    </div>
+      <section
+        aria-label="Scene Agent 空间优化"
+        className="rounded-2xl border border-cream-200 bg-white/85 p-4 shadow-card"
+      >
+        <div className="flex items-start gap-3">
+          <div className="rounded-xl bg-sage-50 p-2 text-sage-700">
+            <Bot className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold text-stone-800">
+                Scene Agent
+              </h3>
+              <span className="inline-flex items-center gap-1 rounded-full bg-cream-100 px-2 py-0.5 text-[10px] text-stone-500">
+                <ShieldCheck className="h-3 w-3" />
+                碰撞 · 越界 · 门口动线检查
+              </span>
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-stone-400">
+              用自然语言调整当前空间，例如“把沙发向左移 30 厘米”或“增加一把餐椅”。
+              AI 只生成白名单操作，通过安全检查后才会保存新版本。
+            </p>
+          </div>
+        </div>
+        <form
+          className="mt-3 flex flex-col gap-2 sm:flex-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void editor.runSceneAgent(agentInstruction);
+          }}
+        >
+          <input
+            value={agentInstruction}
+            onChange={(event) => setAgentInstruction(event.target.value)}
+            maxLength={1000}
+            disabled={agentDisabled}
+            placeholder={
+              editor.syncState === "demo"
+                ? "生成正式方案后可使用 Scene Agent"
+                : "描述你想怎样调整家具布局"
+            }
+            aria-label="Scene Agent 调整指令"
+            className="min-w-0 flex-1 rounded-xl border border-cream-300 bg-white px-3.5 py-2.5 text-sm text-stone-700 outline-none placeholder:text-stone-300 focus:border-sage-500 focus:ring-2 focus:ring-sage-100 disabled:cursor-not-allowed disabled:bg-cream-50"
+          />
+          <button
+            type="submit"
+            disabled={agentDisabled || agentInstruction.trim().length < 2}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-sage-700 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-sage-800 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {editor.sceneAgentState === "thinking" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+            {editor.sceneAgentState === "thinking" ? "正在规划" : "执行调整"}
+          </button>
+        </form>
+        {editor.sceneAgentMessage && (
+          <p
+            role="status"
+            className={`mt-2 rounded-xl px-3 py-2 text-xs ${
+              editor.sceneAgentState === "done"
+                ? "bg-sage-50 text-sage-800"
+                : editor.sceneAgentState === "blocked"
+                  ? "bg-amber-50 text-amber-800"
+                  : editor.sceneAgentState === "error"
+                    ? "bg-red-50 text-red-700"
+                    : "bg-cream-50 text-stone-500"
+            }`}
+          >
+            {editor.sceneAgentMessage}
+          </p>
+        )}
+      </section>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # .env 放在项目根目录（backend 的上一级），无论从哪里启动都能找到
@@ -45,6 +46,7 @@ class Settings(BaseSettings):
     upload_dir: str = str(Path(__file__).resolve().parents[2] / "uploads")
     max_upload_image_mb: int = 10
     max_upload_model_mb: int = 25
+    scene_agent_requests_per_minute: int = Field(default=6, ge=1, le=120)
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"
