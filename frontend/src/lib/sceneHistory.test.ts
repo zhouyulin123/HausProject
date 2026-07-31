@@ -34,7 +34,10 @@ describe("3D 场景编辑历史", () => {
   it("撤销后产生新修改会清空重做分支", () => {
     const initial = buildSceneDocument(mockDesigns[0], "客厅");
     const first = { ...initial, camera: null };
-    const second = { ...initial, openings: [] };
+    const second = {
+      ...initial,
+      room: { ...initial.room, name: "客厅新布局" },
+    };
     const branched = commitScene(
       undoScene(commitScene(createSceneHistory(initial), first)),
       second,
@@ -54,5 +57,14 @@ describe("3D 场景编辑历史", () => {
 
     expect(replaced.canUndo).toBe(false);
     expect(replaced.changeId).toBe(0);
+  });
+
+  it("无可用历史时撤销、重做和重复提交均保持原状态", () => {
+    const initial = buildSceneDocument(mockDesigns[0], "客厅");
+    const history = createSceneHistory(initial);
+
+    expect(undoScene(history)).toBe(history);
+    expect(redoScene(history)).toBe(history);
+    expect(commitScene(history, initial)).toBe(history);
   });
 });

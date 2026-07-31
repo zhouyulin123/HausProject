@@ -3,6 +3,7 @@ import { mockDesigns } from "@/data/mockDesigns";
 import {
   buildSceneDocument,
   clampItemTransform,
+  isDemoScene,
   updateSceneItemTransform,
 } from "./sceneDocument";
 
@@ -50,5 +51,31 @@ describe("方案到 3D 场景转换", () => {
     expect(clamped.position.x).toBeLessThan(halfWidth);
     expect(clamped.position.z).toBeGreaterThan(-halfDepth);
     expect(clamped.position.y).toBe(item.dimensions!.y / 2);
+  });
+
+  it("明确识别仅供本地展示的 DEMO SKU", () => {
+    const scene = buildSceneDocument(mockDesigns[0], "客厅");
+    const productionScene = {
+      ...scene,
+      items: scene.items.map((item, index) => ({
+        ...item,
+        sku: `SKU-${index + 1}`,
+      })),
+    };
+
+    expect(isDemoScene(scene)).toBe(true);
+    expect(isDemoScene(productionScene)).toBe(false);
+  });
+
+  it("找不到家具实例时保持原场景引用", () => {
+    const scene = buildSceneDocument(mockDesigns[0], "客厅");
+
+    const unchanged = updateSceneItemTransform(
+      scene,
+      "missing-item",
+      scene.items[0].transform,
+    );
+
+    expect(unchanged).toBe(scene);
   });
 });

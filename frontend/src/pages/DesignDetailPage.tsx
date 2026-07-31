@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -20,13 +20,32 @@ import ColorPalette from "@/components/design/ColorPalette";
 import MaterialBoard from "@/components/design/MaterialBoard";
 import EffectImage from "@/components/design/EffectImage";
 import ShopQuoteCard from "@/components/design/ShopQuoteCard";
-import RoomView3D from "@/components/design/RoomView3D";
 import EmptyState from "@/components/common/EmptyState";
 import Button from "@/components/common/Button";
 import Tag from "@/components/common/Tag";
 
 const tabs = ["总览", "3D 布局", "布局", "家具", "色彩材质", "预算", "AI 建议"] as const;
 type Tab = (typeof tabs)[number];
+
+const RoomView3D = lazy(
+  () => import("@/components/design/RoomView3D"),
+);
+
+function SceneEditorFallback() {
+  return (
+    <div className="flex min-h-[620px] items-center justify-center overflow-hidden rounded-[28px] border border-cream-200 bg-gradient-to-br from-[#e9e1d3] via-[#dcd3c3] to-[#c9bca8]">
+      <div className="text-center">
+        <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-white/60 border-t-sage-700" />
+        <p className="mt-4 text-sm font-medium text-stone-600">
+          正在加载 3D 空间编辑器
+        </p>
+        <p className="mt-1 text-xs text-stone-500">
+          只在需要时载入三维引擎
+        </p>
+      </div>
+    </div>
+  );
+}
 
 export default function DesignDetailPage() {
   const { id } = useParams();
@@ -243,10 +262,12 @@ export default function DesignDetailPage() {
 
           {tab === "3D 布局" && (
             <div>
-              <RoomView3D plan={plan} roomType={primaryRoom} />
+              <Suspense fallback={<SceneEditorFallback />}>
+                <RoomView3D plan={plan} roomType={primaryRoom} />
+              </Suspense>
               <p className="mt-3 px-1 text-xs leading-relaxed text-stone-400">
-                根据方案家具的尺寸与类别自动摆位的 3D 示意（家具以体块表示，悬停查看名称）。
-                实际摆放以现场测量与设计师调整为准。
+                点击家具后可拖动、旋转或使用方向按钮微调；正式方案会自动保存场景版本。
+                当前家具仍以准确尺寸体块表示，后续将逐步替换为商品 GLB 模型。
               </p>
             </div>
           )}

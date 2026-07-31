@@ -1,72 +1,383 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import { Html, OrbitControls } from "@react-three/drei";
-import { RotateCcw } from "lucide-react";
+import {
+  Html,
+  OrbitControls,
+  TransformControls,
+} from "@react-three/drei";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Box,
+  Cloud,
+  CloudOff,
+  Move3D,
+  Redo2,
+  RefreshCw,
+  Rotate3D,
+  Save,
+  Undo2,
+} from "lucide-react";
+import { Shape, type Group } from "three";
+import { useSceneEditor } from "@/hooks/useSceneEditor";
+import type { TransformMode } from "@/hooks/useSceneEditor";
 import type { DesignPlan } from "@/types/design";
-import { computeRoomLayout } from "@/lib/roomLayout";
-import type { LayoutItem } from "@/lib/roomLayout";
+import type {
+  SceneDocument,
+  SceneItem,
+  SceneTransform,
+} from "@/types/scene";
+
+const CATEGORY_COLOR: Record<string, string> = {
+  沙发: "#D8C7A8",
+  茶几: "#A6835B",
+  柜子: "#CDB68F",
+  床: "#DAC9AC",
+  餐桌: "#A6835B",
+  餐椅: "#B89A6D",
+  书桌: "#B08F63",
+  书椅: "#9C8467",
+  灯具: "#E8D9A8",
+  窗帘: "#E5DCC6",
+  地毯: "#B7A98C",
+};
+
+function SceneRoom({ scene }: { scene: SceneDocument }) {
+  const floorShape = useMemo(() => {
+    const shape = new Shape();
+    scene.room.floorPolygon.forEach((point, index) => {
+      const method = index === 0 ? "moveTo" : "lineTo";
+      shape[method](point.x, -point.z);
+    });
+    shape.closePath();
+    return shape;
+  }, [scene.room.floorPolygon]);
+
+  const walls = useMemo(() => {
+    const points = scene.room.floorPolygon;
+    const center = points.reduce(
+      (current, point) => ({
+        x: current.x + point.x / points.length,
+        z: current.z + point.z / points.length,
+      }),
+      { x: 0, z: 0 },
+    );
+    const camera = scene.camera?.position ?? { x: 6, y: 5, z: 7 };
+    return points
+      .map((start, index) => {
+        const end = points[(index + 1) % points.length];
+        const deltaX = end.x - start.x;
+        const deltaZ = end.z - start.z;
+        const centerSide =
+          deltaX * (center.z - start.z) -
+          deltaZ * (center.x - start.x);
+        const cameraSide =
+          deltaX * (camera.z - start.z) -
+          deltaZ * (camera.x - start.x);
+        return {
+          id: `wall-${index}`,
+          visible: centerSide * cameraSide >= 0,
+          length: Math.hypot(deltaX, deltaZ),
+          position: [
+            (start.x + end.x) / 2,
+            scene.room.ceilingHeight / 2,
+            (start.z + end.z) / 2,
+          ] as [number, number, number],
+          rotationY: -Math.atan2(deltaZ, deltaX),
+        };
+      })
+      .filter((wall) => wall.visible);
+  }, [
+    scene.camera?.position,
+    scene.room.ceilingHeight,
+    scene.room.floorPolygon,
+  ]);
+
+  const xs = scene.room.floorPolygon.map((point) => point.x);
+  const zs = scene.room.floorPolygon.map((point) => point.z);
+  const gridSize = Math.max(
+    Math.max(...xs) - Math.min(...xs),
+    Math.max(...zs) - Math.min(...zs),
+  );
+
+  return (
+    <group>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, -0.002, 0]}
+        receiveShadow
+      >
+        <shapeGeometry args={[floorShape]} />
+        <meshStandardMaterial color="#E4D3B8" roughness={0.92} />
+      </mesh>
+      {walls.map((wall) => (
+        <mesh
+          key={wall.id}
+          position={wall.position}
+          rotation={[0, wall.rotationY, 0]}
+          receiveShadow
+        >
+          <planeGeometry args={[wall.length, scene.room.ceilingHeight]} />
+          <meshStandardMaterial
+            color="#F3ECDD"
+            roughness={1}
+            side={2}
+            transparent
+            opacity={0.82}
+          />
+        </mesh>
+      ))}
+      <gridHelper
+        args={[
+          Math.ceil(gridSize),
+          Math.ceil(gridSize * 10),
+          "#B9AA8E",
+          "#D8CDB7",
+        ]}
+        position={[0, 0.004, 0]}
+      />
+    </group>
+  );
+}
+
+interface FurnitureBoxProps {
+  item: SceneItem;
+  name: string;
+  selected: boolean;
+  mode: TransformMode;
+  onSelect: () => void;
+  onCommit: (transform: SceneTransform) => void;
+}
 
 function FurnitureBox({
   item,
-  onHover,
-}: {
-  item: LayoutItem;
-  onHover: (name: string | null) => void;
-}) {
+  name,
+  selected,
+  mode,
+  onSelect,
+  onCommit,
+}: FurnitureBoxProps) {
+  const groupRef = useRef<Group>(null);
   const [hovered, setHovered] = useState(false);
-  return (
-    <group position={item.position} rotation={[0, item.rotationY, 0]}>
+  const dimensions = item.dimensions ?? { x: 1, y: 0.8, z: 1 };
+
+  useEffect(() => {
+    if (!hovered) return;
+    document.body.style.cursor = "pointer";
+    return () => {
+      document.body.style.cursor = "";
+    };
+  }, [hovered]);
+
+  const commitCurrentTransform = () => {
+    const object = groupRef.current;
+    if (!object) return;
+    onCommit({
+      position: {
+        x: object.position.x,
+        y: object.position.y,
+        z: object.position.z,
+      },
+      rotation: {
+        x: object.rotation.x,
+        y: object.rotation.y,
+        z: object.rotation.z,
+      },
+      scale: {
+        x: object.scale.x,
+        y: object.scale.y,
+        z: object.scale.z,
+      },
+    });
+  };
+
+  const furniture = (
+    <group
+      ref={groupRef}
+      position={[
+        item.transform.position.x,
+        item.transform.position.y,
+        item.transform.position.z,
+      ]}
+      rotation={[
+        item.transform.rotation.x,
+        item.transform.rotation.y,
+        item.transform.rotation.z,
+      ]}
+      scale={[
+        item.transform.scale.x,
+        item.transform.scale.y,
+        item.transform.scale.z,
+      ]}
+    >
       <mesh
         castShadow
-        onPointerOver={(e) => {
-          e.stopPropagation();
+        receiveShadow
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect();
+        }}
+        onPointerOver={(event) => {
+          event.stopPropagation();
           setHovered(true);
-          onHover(item.name);
         }}
-        onPointerOut={() => {
-          setHovered(false);
-          onHover(null);
-        }}
+        onPointerOut={() => setHovered(false)}
       >
-        <boxGeometry args={item.size} />
+        <boxGeometry args={[dimensions.x, dimensions.y, dimensions.z]} />
         <meshStandardMaterial
-          color={hovered ? "#8FA47A" : item.color}
-          roughness={0.75}
-          metalness={0.05}
+          color={
+            selected
+              ? "#70885E"
+              : hovered
+                ? "#93A77E"
+                : CATEGORY_COLOR[item.category ?? ""] ?? "#C3B49A"
+          }
+          roughness={0.72}
+          metalness={0.04}
         />
       </mesh>
-      {hovered && (
-        <Html center distanceFactor={8} position={[0, item.size[1] / 2 + 0.3, 0]}>
-          <div className="whitespace-nowrap rounded-lg bg-stone-800/90 px-2 py-1 text-xs text-white">
-            {item.name}
+      {(selected || hovered) && (
+        <Html
+          center
+          distanceFactor={8}
+          position={[0, dimensions.y / 2 + 0.28, 0]}
+        >
+          <div
+            className={`whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-medium shadow-sm ${
+              selected
+                ? "bg-sage-700 text-white"
+                : "bg-stone-800/90 text-white"
+            }`}
+          >
+            {name}
           </div>
         </Html>
       )}
     </group>
   );
+
+  if (!selected) return furniture;
+
+  return (
+    <TransformControls
+      mode={mode}
+      space="world"
+      size={0.8}
+      translationSnap={0.1}
+      rotationSnap={Math.PI / 12}
+      showX={mode === "translate"}
+      showY={mode === "rotate"}
+      showZ={mode === "translate"}
+      onMouseUp={commitCurrentTransform}
+    >
+      {furniture}
+    </TransformControls>
+  );
 }
 
-function Room({ width, depth, height }: { width: number; depth: number; height: number }) {
+function ToolButton({
+  active = false,
+  disabled = false,
+  label,
+  onClick,
+  children,
+}: {
+  active?: boolean;
+  disabled?: boolean;
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
   return (
-    <group>
-      {/* 地面 */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
-        <planeGeometry args={[width, depth]} />
-        <meshStandardMaterial color="#E4D3B8" roughness={0.9} />
-      </mesh>
-      {/* 后墙 */}
-      <mesh position={[0, height / 2, -depth / 2]}>
-        <planeGeometry args={[width, height]} />
-        <meshStandardMaterial color="#F3ECDD" roughness={1} side={2} />
-      </mesh>
-      {/* 左墙 */}
-      <mesh position={[-width / 2, height / 2, 0]} rotation={[0, Math.PI / 2, 0]}>
-        <planeGeometry args={[depth, height]} />
-        <meshStandardMaterial color="#EDE4D2" roughness={1} side={2} />
-      </mesh>
-      {/* 网格辅助线 */}
-      <gridHelper args={[Math.max(width, depth), Math.max(width, depth) * 2, "#CBBfa6", "#DBCFB6"]} />
-    </group>
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={active || undefined}
+      disabled={disabled}
+      onClick={onClick}
+      className={`inline-flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-all ${
+        active
+          ? "bg-sage-700 text-white shadow-sm"
+          : "text-stone-600 hover:bg-cream-100"
+      } disabled:cursor-not-allowed disabled:opacity-35`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SyncBadge({
+  state,
+  warningCount,
+  onReload,
+}: {
+  state: ReturnType<typeof useSceneEditor>["syncState"];
+  warningCount: number;
+  onReload: () => void;
+}) {
+  const content = {
+    loading: {
+      icon: RefreshCw,
+      label: "正在恢复云端场景",
+      classes: "bg-white/90 text-stone-600",
+    },
+    demo: {
+      icon: Box,
+      label: "本地演示 · 不会保存",
+      classes: "bg-amber-50/95 text-amber-800",
+    },
+    saved: {
+      icon: Cloud,
+      label: "已保存到方案",
+      classes: "bg-sage-50/95 text-sage-800",
+    },
+    dirty: {
+      icon: Save,
+      label: "等待自动保存",
+      classes: "bg-white/95 text-stone-600",
+    },
+    saving: {
+      icon: RefreshCw,
+      label: "正在自动保存",
+      classes: "bg-white/95 text-stone-600",
+    },
+    conflict: {
+      icon: AlertTriangle,
+      label: "版本冲突 · 点击恢复",
+      classes: "bg-red-50/95 text-red-700",
+    },
+    offline: {
+      icon: CloudOff,
+      label: "本地编辑 · 暂未同步",
+      classes: "bg-amber-50/95 text-amber-800",
+    },
+  }[state];
+  const Icon = content.icon;
+  const actionable = state === "conflict";
+
+  return (
+    <button
+      type="button"
+      disabled={!actionable}
+      onClick={onReload}
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium shadow-sm backdrop-blur ${content.classes} disabled:cursor-default`}
+    >
+      <Icon
+        className={`h-3.5 w-3.5 ${
+          state === "loading" || state === "saving" ? "animate-spin" : ""
+        }`}
+      />
+      {content.label}
+      {warningCount > 0 && (
+        <span className="rounded-full bg-amber-200/70 px-1.5 text-[10px]">
+          {warningCount} 条提醒
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -77,56 +388,258 @@ export default function RoomView3D({
   plan: DesignPlan;
   roomType: string;
 }) {
-  const scene = useMemo(() => computeRoomLayout(plan, roomType), [plan, roomType]);
-  const [hoverName, setHoverName] = useState<string | null>(null);
+  const editor = useSceneEditor(plan, roomType);
+  const scene = editor.history.present;
+  const selectedItem = scene.items.find(
+    (item) => item.instanceId === editor.selectedItemId,
+  );
+  const selectedFurniture = selectedItem
+    ? plan.furnitureSuggestions.find(
+        (item) =>
+          item.sku === selectedItem.sku ||
+          selectedItem.sku.endsWith(item.id),
+      )
+    : null;
 
-  // Canvas 在 tab 切换动画中挂载时初次测量可能失败，挂载后触发一次 resize 兜底
+  const itemNames = useMemo(
+    () =>
+      Object.fromEntries(
+        scene.items.map((sceneItem) => {
+          const furniture = plan.furnitureSuggestions.find(
+            (item) =>
+              item.sku === sceneItem.sku || sceneItem.sku.endsWith(item.id),
+          );
+          return [
+            sceneItem.instanceId,
+            furniture?.name ?? sceneItem.category ?? sceneItem.sku,
+          ];
+        }),
+      ),
+    [plan.furnitureSuggestions, scene.items],
+  );
+
   useEffect(() => {
-    const t = setTimeout(() => window.dispatchEvent(new Event("resize")), 60);
-    return () => clearTimeout(t);
+    const timer = window.setTimeout(
+      () => window.dispatchEvent(new Event("resize")),
+      60,
+    );
+    return () => window.clearTimeout(timer);
   }, []);
 
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const modifier = event.ctrlKey || event.metaKey;
+    if (modifier && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) editor.redo();
+      else editor.undo();
+      return;
+    }
+    if (modifier && event.key.toLowerCase() === "y") {
+      event.preventDefault();
+      editor.redo();
+      return;
+    }
+    if (!editor.selectedItemId) return;
+    const directions: Record<string, [number, number]> = {
+      ArrowLeft: [-1, 0],
+      ArrowRight: [1, 0],
+      ArrowUp: [0, -1],
+      ArrowDown: [0, 1],
+    };
+    const direction = directions[event.key];
+    if (direction) {
+      event.preventDefault();
+      const multiplier = event.shiftKey ? 5 : 1;
+      editor.nudgeSelected(
+        direction[0] * multiplier,
+        direction[1] * multiplier,
+      );
+    } else if (event.key.toLowerCase() === "r") {
+      event.preventDefault();
+      editor.rotateSelected();
+    } else if (event.key === "Escape") {
+      editor.selectItem(null);
+    }
+  };
+
   return (
-    <div className="relative h-[460px] overflow-hidden rounded-3xl border border-cream-200 bg-gradient-to-b from-[#f2ece0] to-[#e6dcc8]">
+    <div
+      role="application"
+      aria-label="3D 空间编辑器"
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      className="relative h-[620px] overflow-hidden rounded-[28px] border border-cream-200 bg-[#ded5c5] shadow-[0_24px_70px_rgba(86,70,47,0.16)] outline-none focus-visible:ring-2 focus-visible:ring-sage-500"
+    >
       <Canvas
         shadows
         frameloop="demand"
-        gl={{ preserveDrawingBuffer: true }}
-        camera={{ position: [scene.width * 0.9, scene.height * 1.6, scene.depth * 1.1], fov: 45 }}
+        gl={{ preserveDrawingBuffer: true, antialias: true }}
+        camera={{
+          position: [
+            scene.camera?.position.x ?? 6,
+            scene.camera?.position.y ?? 5,
+            scene.camera?.position.z ?? 7,
+          ],
+          fov: scene.camera?.fov ?? 45,
+        }}
+        onPointerMissed={() => editor.selectItem(null)}
       >
-        <ambientLight intensity={0.75} />
+        <color attach="background" args={["#DED5C5"]} />
+        <fog attach="fog" args={["#DED5C5", 11, 23]} />
+        <ambientLight intensity={0.82} />
         <directionalLight
           position={[4, 8, 5]}
-          intensity={1.1}
+          intensity={1.15}
           castShadow
           shadow-mapSize-width={1024}
           shadow-mapSize-height={1024}
         />
-        <Room width={scene.width} depth={scene.depth} height={scene.height} />
+        <SceneRoom scene={scene} />
         {scene.items.map((item) => (
-          <FurnitureBox key={item.id} item={item} onHover={setHoverName} />
+          <FurnitureBox
+            key={item.instanceId}
+            item={item}
+            name={itemNames[item.instanceId]}
+            selected={editor.selectedItemId === item.instanceId}
+            mode={editor.transformMode}
+            onSelect={() => editor.selectItem(item.instanceId)}
+            onCommit={(transform) =>
+              editor.commitTransform(item.instanceId, transform)
+            }
+          />
         ))}
         <OrbitControls
-          enablePan={false}
+          makeDefault
+          enablePan
           minDistance={3}
-          maxDistance={16}
-          maxPolarAngle={Math.PI / 2.1}
-          target={[0, 0.5, 0]}
+          maxDistance={18}
+          maxPolarAngle={Math.PI / 2.05}
+          target={[
+            scene.camera?.target.x ?? 0,
+            scene.camera?.target.y ?? 0.5,
+            scene.camera?.target.z ?? 0,
+          ]}
         />
       </Canvas>
 
-      {/* 覆盖信息条 */}
-      <div className="pointer-events-none absolute top-3 left-4 rounded-full bg-white/85 px-3 py-1 text-xs font-medium text-stone-600 backdrop-blur">
-        {scene.roomType} · {scene.width}m × {scene.depth}m · {scene.items.length} 件家具
+      <div className="absolute top-16 left-4 sm:top-4">
+        <SyncBadge
+          state={editor.syncState}
+          warningCount={editor.validation?.warnings.length ?? 0}
+          onReload={() => void editor.reload()}
+        />
       </div>
-      <div className="pointer-events-none absolute right-4 bottom-3 flex items-center gap-1.5 rounded-full bg-white/85 px-3 py-1 text-xs text-stone-500 backdrop-blur">
-        <RotateCcw className="h-3 w-3" />
-        拖动旋转 · 滚轮缩放
+
+      <div className="absolute top-4 left-4 flex items-center gap-1 rounded-2xl border border-white/60 bg-white/90 p-1 shadow-lg backdrop-blur-md sm:left-1/2 sm:-translate-x-1/2">
+        <ToolButton
+          label="移动家具"
+          active={editor.transformMode === "translate"}
+          onClick={() => editor.setTransformMode("translate")}
+        >
+          <Move3D className="h-4 w-4" />
+          <span className="hidden sm:inline">移动</span>
+        </ToolButton>
+        <ToolButton
+          label="旋转家具"
+          active={editor.transformMode === "rotate"}
+          onClick={() => editor.setTransformMode("rotate")}
+        >
+          <Rotate3D className="h-4 w-4" />
+          <span className="hidden sm:inline">旋转</span>
+        </ToolButton>
+        <span className="mx-0.5 h-5 w-px bg-stone-200" />
+        <ToolButton
+          label="撤销（Ctrl+Z）"
+          disabled={!editor.history.canUndo}
+          onClick={editor.undo}
+        >
+          <Undo2 className="h-4 w-4" />
+        </ToolButton>
+        <ToolButton
+          label="重做（Ctrl+Y）"
+          disabled={!editor.history.canRedo}
+          onClick={editor.redo}
+        >
+          <Redo2 className="h-4 w-4" />
+        </ToolButton>
       </div>
-      {hoverName && (
-        <div className="pointer-events-none absolute bottom-3 left-4 rounded-full bg-sage-600 px-3 py-1 text-xs font-medium text-white">
-          {hoverName}
-        </div>
+
+      <div className="pointer-events-none absolute bottom-4 left-4 rounded-full border border-white/50 bg-stone-900/72 px-3 py-1.5 text-[11px] text-white/90 backdrop-blur">
+        点击家具开始编辑 · 拖动画布查看空间 · 滚轮缩放
+      </div>
+
+      {selectedItem && (
+        <aside className="absolute right-4 bottom-4 w-[min(250px,calc(100%-2rem))] rounded-2xl border border-white/70 bg-white/92 p-4 shadow-xl backdrop-blur-md">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-semibold tracking-[0.16em] text-sage-700 uppercase">
+                Selected
+              </p>
+              <h3 className="mt-1 line-clamp-2 text-sm font-semibold text-stone-800">
+                {selectedFurniture?.name ??
+                  selectedItem.category ??
+                  selectedItem.sku}
+              </h3>
+              <p className="mt-1 font-mono text-[10px] text-stone-400">
+                {selectedItem.sku}
+              </p>
+            </div>
+            <Box className="h-5 w-5 shrink-0 text-wood-500" />
+          </div>
+
+          <div className="mt-3 grid grid-cols-3 gap-1 text-center font-mono text-[10px] text-stone-500">
+            <span className="rounded-lg bg-cream-50 px-1 py-1.5">
+              X {selectedItem.transform.position.x.toFixed(2)}
+            </span>
+            <span className="rounded-lg bg-cream-50 px-1 py-1.5">
+              Z {selectedItem.transform.position.z.toFixed(2)}
+            </span>
+            <span className="rounded-lg bg-cream-50 px-1 py-1.5">
+              R{" "}
+              {Math.round(
+                (selectedItem.transform.rotation.y * 180) / Math.PI,
+              )}
+              °
+            </span>
+          </div>
+
+          <div className="mt-3 grid grid-cols-3 gap-1">
+            <span />
+            <ToolButton
+              label="向后移动 10 厘米"
+              onClick={() => editor.nudgeSelected(0, -1)}
+            >
+              <ArrowUp className="h-4 w-4" />
+            </ToolButton>
+            <span />
+            <ToolButton
+              label="向左移动 10 厘米"
+              onClick={() => editor.nudgeSelected(-1, 0)}
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </ToolButton>
+            <ToolButton
+              label="顺时针旋转 15 度"
+              onClick={() => editor.rotateSelected()}
+            >
+              <Rotate3D className="h-4 w-4" />
+            </ToolButton>
+            <ToolButton
+              label="向右移动 10 厘米"
+              onClick={() => editor.nudgeSelected(1, 0)}
+            >
+              <ArrowRight className="h-4 w-4" />
+            </ToolButton>
+            <span />
+            <ToolButton
+              label="向前移动 10 厘米"
+              onClick={() => editor.nudgeSelected(0, 1)}
+            >
+              <ArrowDown className="h-4 w-4" />
+            </ToolButton>
+            <span />
+          </div>
+        </aside>
       )}
     </div>
   );

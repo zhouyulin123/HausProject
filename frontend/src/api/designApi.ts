@@ -46,7 +46,7 @@ const uploadedImageIds: number[] = browserStorage
   : [];
 const chatHistory: { role: string; content: string }[] = [];
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
@@ -566,6 +566,50 @@ export async function fetchDesignSceneByPlanVersion(
   return request<DesignScene>(
     `/api/design/plan-versions/${planVersionId}/scene`,
   );
+}
+
+const sceneLoadRequests = new Map<number, Promise<DesignScene>>();
+
+async function doLoadOrCreateDesignScene(
+  planVersionId: number,
+  initialScene: SceneDocument,
+): Promise<DesignScene> {
+  try {
+    return await fetchDesignSceneByPlanVersion(planVersionId);
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 404) throw error;
+  }
+
+  try {
+    return await createDesignScene(planVersionId, initialScene);
+  } catch (error) {
+    // React StrictMode 或其他设备可能已在 GET 与 POST 之间创建成功。
+    if (error instanceof ApiError && error.status === 409) {
+      return fetchDesignSceneByPlanVersion(planVersionId);
+    }
+    throw error;
+  }
+}
+
+/**
+ * 恢复方案场景；不存在时用确定性初始布局创建。
+ * 同一页面的并发调用共享请求，避免 StrictMode 重复创建。
+ */
+export function loadOrCreateDesignScene(
+  planVersionId: number,
+  initialScene: SceneDocument,
+): Promise<DesignScene> {
+  const existing = sceneLoadRequests.get(planVersionId);
+  if (existing) return existing;
+
+  const requestPromise = doLoadOrCreateDesignScene(
+    planVersionId,
+    initialScene,
+  ).finally(() => {
+    sceneLoadRequests.delete(planVersionId);
+  });
+  sceneLoadRequests.set(planVersionId, requestPromise);
+  return requestPromise;
 }
 
 /** 恢复 3D 场景的当前版本。 */
