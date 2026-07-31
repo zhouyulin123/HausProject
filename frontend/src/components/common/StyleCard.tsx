@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { StyleCase } from "@/types/design";
 import Tag from "./Tag";
 import Button from "./Button";
+import StyleImageCarousel from "./StyleImageCarousel";
 
 export default function StyleCard({
   style,
@@ -17,36 +18,34 @@ export default function StyleCard({
 
   return (
     <div className="group flex flex-col overflow-hidden rounded-3xl border border-cream-200 bg-white/80 transition-all duration-300 hover:-translate-y-1 hover:shadow-soft">
-      <button
-        type="button"
-        onClick={() => onOpen(style)}
-        className={`relative h-40 cursor-pointer ${style.gradient}`}
-      >
-        <span className="absolute bottom-3 left-4 font-display text-xs tracking-widest text-white/85 uppercase">
-          {style.english}
-        </span>
-        <span
-          role="button"
-          tabIndex={0}
-          onClick={(e) => {
-            e.stopPropagation();
-            setFavorite((v) => !v);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.stopPropagation();
-              setFavorite((v) => !v);
-            }
-          }}
-          className={`absolute top-3 right-3 flex h-8 w-8 items-center justify-center rounded-full backdrop-blur transition-all ${
-            favorite
-              ? "bg-terra-500 text-white"
-              : "bg-white/85 text-stone-400 hover:text-terra-500"
-          }`}
-        >
-          <Heart className={`h-4 w-4 ${favorite ? "fill-current" : ""}`} />
-        </span>
-      </button>
+      <StyleImageCarousel
+        images={style.images}
+        label={style.name}
+        onOpen={() => onOpen(style)}
+        caption={
+          <span className="font-display text-xs tracking-widest text-white/90 uppercase drop-shadow-sm">
+            {style.english}
+          </span>
+        }
+        topRight={
+          <button
+            type="button"
+            aria-label={favorite ? `取消收藏${style.name}` : `收藏${style.name}`}
+            aria-pressed={favorite}
+            onClick={(event) => {
+              event.stopPropagation();
+              setFavorite((value) => !value);
+            }}
+            className={`flex h-8 w-8 items-center justify-center rounded-full backdrop-blur transition-all ${
+              favorite
+                ? "bg-terra-500 text-white"
+                : "bg-white/85 text-stone-400 hover:text-terra-500"
+            }`}
+          >
+            <Heart className={`h-4 w-4 ${favorite ? "fill-current" : ""}`} />
+          </button>
+        }
+      />
       <div className="flex flex-1 flex-col p-5">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-semibold text-stone-800">{style.name}</h3>

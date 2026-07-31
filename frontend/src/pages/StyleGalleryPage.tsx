@@ -9,6 +9,7 @@ import StyleCard from "@/components/common/StyleCard";
 import PageTitle from "@/components/common/PageTitle";
 import Button from "@/components/common/Button";
 import Tag from "@/components/common/Tag";
+import StyleImageCarousel from "@/components/common/StyleImageCarousel";
 
 /** 风格名 → 定制表单中的风格选项映射 */
 const styleNameMap: Record<string, string> = {
@@ -91,22 +92,33 @@ export default function StyleGalleryPage() {
               transition={{ duration: 0.25 }}
               className="thin-scrollbar max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-3xl bg-cream-50 shadow-lift"
               onClick={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-label={`${detail.name}风格详情`}
             >
-              <div className={`relative h-40 ${detail.gradient}`}>
-                <button
-                  type="button"
-                  onClick={() => setDetail(null)}
-                  className="absolute top-3 right-3 flex h-8 w-8 items-center justify-center rounded-full bg-white/85 text-stone-500 hover:text-stone-800"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-                <span className="absolute bottom-4 left-5 font-display text-xl font-semibold text-white drop-shadow-sm">
-                  {detail.name}
-                  <span className="ml-2 text-xs font-normal tracking-widest uppercase opacity-80">
-                    {detail.english}
+              <StyleImageCarousel
+                images={detail.images}
+                label={detail.name}
+                className="h-52 sm:h-60"
+                caption={
+                  <span className="font-display text-xl font-semibold text-white drop-shadow-sm">
+                    {detail.name}
+                    <span className="ml-2 text-xs font-normal tracking-widest uppercase opacity-80">
+                      {detail.english}
+                    </span>
                   </span>
-                </span>
-              </div>
+                }
+                topRight={
+                  <button
+                    type="button"
+                    onClick={() => setDetail(null)}
+                    className="flex h-8 w-8 items-center justify-center rounded-full bg-white/85 text-stone-500 backdrop-blur hover:text-stone-800"
+                    aria-label="关闭风格详情"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                }
+              />
               <div className="space-y-5 p-6">
                 <p className="text-sm leading-relaxed text-stone-600">
                   {detail.description}

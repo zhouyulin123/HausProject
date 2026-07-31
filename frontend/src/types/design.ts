@@ -88,6 +88,8 @@ export interface StyleCase {
   name: string;
   english: string;
   gradient: string;
+  /** 风格案例轮播图，按展示顺序排列。 */
+  images: string[];
   audience: string;
   colorKeywords: string[];
   budgetTendency: string;
