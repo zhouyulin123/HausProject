@@ -16,9 +16,11 @@
 
 ### 本地运行补充
 
-- Web 服务继续使用项目根目录现有启动脚本启动。
+- Web 服务使用项目根目录 `startHaus.bat` 启动；旧的乱码中文启动脚本已经移除。
 - Blender Worker 使用 `backend/start_blender_worker.bat` 单独启动；API 服务与 Worker 应保持为两个独立进程。
 - Blender 便携运行时、渲染缓存和成片文件位于 Git 忽略目录，不上传到代码仓库。
+- `case_image/` 中 8 种风格、每种 3 张的 24 张原始案例图已纳入仓库，前端优化版仍用于网页实际加载。
+- 真实 `.env` 只保存在部署机器；仓库使用 `.env.example` 维护完整变量清单，避免 API Key 和数据库凭据进入 Git 历史。
 
 ## 2026-07-31 Blender Worker 高质量渲染第五批
 
