@@ -1,5 +1,25 @@
 # 项目开发状态记录
 
+## 2026-08-17 最新代码同步说明
+
+- 当前稳定代码基线：`ac357e5 feat: 建立隔离Blender Worker高质量渲染链路`。
+- 当前 GitHub 仓库：`zhouyulin123/HausProject`，功能代码已经与远端 `main` 对齐。
+- 客户侧完整主链路已经具备：
+  - AI 需求理解、户型/图片分析、方案生成、家具推荐和规则化报价。
+  - 风格案例真实图片轮播、方案详情、效果图生成和 PDF 提案导出。
+  - Web 3D 场景编辑、商品 GLB 模型、场景不可变版本和自动保存。
+  - Scene Agent 自然语言空间调整，以及越界、碰撞和门口动线安全校验。
+  - 独立 Blender Worker，支持 Eevee 预览、Cycles 成片、任务轮询和 PNG 下载。
+- 最近一次完整验证基线：后端 `81 passed`，前端 `26 passed`，TypeScript 与 Vite 生产构建通过；RTX 5060 已真实验证 Blender `OPTIX` 渲染。
+- 数据库最新迁移版本：`d4e6f8a0b2c4 (head)`。
+- 下一主施工方向：材质库、HDRI/灯光预设、多相机成片清单，以及员工登录、模型审核和共享 Worker 队列。
+
+### 本地运行补充
+
+- Web 服务继续使用项目根目录现有启动脚本启动。
+- Blender Worker 使用 `backend/start_blender_worker.bat` 单独启动；API 服务与 Worker 应保持为两个独立进程。
+- Blender 便携运行时、渲染缓存和成片文件位于 Git 忽略目录，不上传到代码仓库。
+
 ## 2026-07-31 Blender Worker 高质量渲染第五批
 
 - 新增与不可变 `DesignSceneVersion` 绑定的 `blender_render_jobs`：
