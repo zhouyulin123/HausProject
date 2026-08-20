@@ -48,6 +48,8 @@ export interface DesignPlan {
   id: string;
   /** 服务端不可变方案版本编号，用于绑定 3D 场景。 */
   planVersionId?: number;
+  /** 方案所属设计任务编号，用于后续精修/发布。 */
+  task_id?: number;
   name: string;
   style: string;
   /** 封面占位渐变（Tailwind class） */
@@ -75,6 +77,8 @@ export type SavedDesignStatus = "草稿" | "已生成" | "已优化" | "已导�
 export interface SavedDesign {
   id: string;
   planId: string;
+  /** 服务端不可变方案版本编号；有值时详情页按它精确定位，避免多任务同名方案串号 */
+  planVersionId?: number;
   name: string;
   style: string;
   budget: number;

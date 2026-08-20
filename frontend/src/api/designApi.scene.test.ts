@@ -128,7 +128,7 @@ describe("3D 场景 API", () => {
     );
   });
 
-  it("方案尚无场景时自动创建，避免调用方处理 404 分支", async () => {
+  it("方案尚无场景时优先由后端 auto-layout 自动创建", async () => {
     const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
     const storage = createLocalStorage({
       "haus-anonymous-session-id": sessionId,
@@ -143,7 +143,7 @@ describe("3D 场景 API", () => {
       current_version: 1,
       scene,
       validation: { valid: true, errors: [], warnings: [] },
-      source: "manual" as const,
+      source: "auto_layout" as const,
     };
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -159,6 +159,47 @@ describe("3D 场景 API", () => {
     expect(result).toEqual(created);
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
+      "/api/design/plan-versions/7/auto-layout",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("auto-layout 不可用时回退前端初始布局创建场景", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const notFound = new Response(JSON.stringify({ detail: "不存在" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+    const unsupported = new Response(
+      JSON.stringify({ detail: "方案没有可用于布局的商品" }),
+      { status: 422, headers: { "Content-Type": "application/json" } },
+    );
+    const created = {
+      id: 9,
+      plan_version_id: 7,
+      current_version: 1,
+      scene,
+      validation: { valid: true, errors: [], warnings: [] },
+      source: "manual" as const,
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(notFound)
+      .mockResolvedValueOnce(unsupported)
+      .mockResolvedValueOnce(jsonResponse(created));
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { loadOrCreateDesignScene } = await import("./designApi");
+    const result = await loadOrCreateDesignScene(7, scene);
+
+    expect(result).toEqual(created);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
       "/api/design/plan-versions/7/scene",
       expect.objectContaining({ method: "POST" }),
     );

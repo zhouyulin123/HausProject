@@ -1,26 +1,31 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink, useLocation } from "react-router-dom";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { Home, Menu, Sparkles, X } from "lucide-react";
+import { Home, LogOut, Menu, Sparkles, X } from "lucide-react";
 import Button from "@/components/common/Button";
 import { useShopStore } from "@/store/useShopStore";
+import { roleLabel, useAuthStore } from "@/store/useAuthStore";
+import { fetchUnreadQuoteCount } from "@/api/orderApi";
 
-const navItems = [
+const commonNavItems = [
   { label: "首页", to: "/" },
   { label: "AI 定制", to: "/customize" },
   { label: "风格案例", to: "/styles" },
   { label: "家具推荐", to: "/furniture" },
-  { label: "我的方案", to: "/my-designs" },
-  { label: "客户跟单", to: "/customers" },
-  { label: "商品库", to: "/admin" },
 ];
 
 export default function Header() {
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   const shop = useShopStore((s) => s.shop);
+  const user = useAuthStore((s) => s.user);
+  const isFactory = useAuthStore((s) => s.isFactory);
+  const isAdmin = useAuthStore((s) => s.isAdmin);
+  const logout = useAuthStore((s) => s.logout);
   const shopName = shop?.shop_name || "AI 家装定制助手";
+  const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
@@ -30,6 +35,49 @@ export default function Header() {
 
   // 路由变化时收起移动端菜单
   useEffect(() => setMenuOpen(false), [location.pathname]);
+
+  // 普通用户每 30 秒轮询一次未读报价数，用于「我的订单」角标
+  useEffect(() => {
+    if (!user || user.role === "factory" || user.role === "admin") {
+      setUnreadCount(0);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      fetchUnreadQuoteCount()
+        .then((count) => {
+          if (!cancelled) setUnreadCount(count);
+        })
+        .catch(() => {
+          /* 忽略轮询失败，下次再试 */
+        });
+    };
+    load();
+    const timer = setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [user]);
+
+  const navItems = isFactory()
+    ? [
+        ...commonNavItems,
+        { label: "工作台", to: "/workspace" },
+        { label: "客户跟单", to: "/customers" },
+        { label: "商品库", to: "/admin" },
+        ...(isAdmin() ? [{ label: "用户管理", to: "/admin/users" }] : []),
+      ]
+    : [
+        ...commonNavItems,
+        { label: "我的方案", to: "/my-designs" },
+        { label: "我的订单", to: "/orders" },
+      ];
+
+  const handleLogout = () => {
+    logout();
+    navigate("/");
+  };
 
   return (
     <header
@@ -71,16 +119,36 @@ export default function Header() {
               }
             >
               {item.label}
+              {item.to === "/orders" && unreadCount > 0 && (
+                <span className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-terra-500 px-1.5 text-xs font-semibold text-white">
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>
 
         <div className="hidden items-center gap-2 lg:flex">
-          <Link to="/login">
-            <Button variant="ghost" size="sm">
-              登录 / 注册
-            </Button>
-          </Link>
+          {user ? (
+            <>
+              <span className="max-w-[160px] truncate text-sm text-stone-500">
+                {user.nickname || user.phone}
+                <span className="ml-1.5 rounded bg-sage-100 px-1.5 py-0.5 text-xs text-sage-700">
+                  {roleLabel(user.role)}
+                </span>
+              </span>
+              <Button variant="ghost" size="sm" onClick={handleLogout}>
+                <LogOut className="h-4 w-4" />
+                退出
+              </Button>
+            </>
+          ) : (
+            <Link to="/login">
+              <Button variant="ghost" size="sm">
+                登录 / 注册
+              </Button>
+            </Link>
+          )}
           <Link to="/customize">
             <Button size="sm">
               <Sparkles className="h-4 w-4" />
@@ -121,14 +189,29 @@ export default function Header() {
                   }
                 >
                   {item.label}
+                  {item.to === "/orders" && unreadCount > 0 && (
+                    <span className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-terra-500 px-1.5 text-xs font-semibold text-white">
+                      {unreadCount > 99 ? "99+" : unreadCount}
+                    </span>
+                  )}
                 </NavLink>
               ))}
               <div className="mt-2 flex gap-2 border-t border-cream-200 pt-3">
-                <Link to="/login" className="flex-1">
-                  <Button variant="outline" className="w-full">
-                    登录 / 注册
+                {user ? (
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={handleLogout}
+                  >
+                    退出登录
                   </Button>
-                </Link>
+                ) : (
+                  <Link to="/login" className="flex-1">
+                    <Button variant="outline" className="w-full">
+                      登录 / 注册
+                    </Button>
+                  </Link>
+                )}
                 <Link to="/customize" className="flex-1">
                   <Button className="w-full">开始定制</Button>
                 </Link>

@@ -1,3 +1,4 @@
+import json
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.agents.design_workflow import DesignWorkflow
 from app.api.dependencies import (
     SessionIdHeader,
+    get_current_user,
     require_active_session,
     require_owned_design_task,
 )
@@ -17,6 +19,7 @@ from app.db.models import (
     GenerationRun,
     RequirementParseResult,
     UploadedImage,
+    User,
 )
 from app.schemas.tasks import (
     ConfirmRequirementRequest,
@@ -27,6 +30,8 @@ from app.schemas.tasks import (
     GenerationQueuedResponse,
     GenerationStatusResponse,
     GenerateResponse,
+    RefinePlanRequest,
+    RefinePlanResponse,
     RequirementResponse,
     TaskCreate,
     TaskResponse,
@@ -39,6 +44,8 @@ from app.services import (
     design_version_service,
     generation_run_service,
     llm_service,
+    plan_refine_service,
+    profile_service,
     task_service,
 )
 
@@ -59,6 +66,15 @@ def _plan_version_payload(plan_version) -> dict:
         **(plan_version.plan_json or {}),
         "planVersionId": plan_version.id,
     }
+
+
+@router.get("/mine")
+def my_designs(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """登录用户的历史方案列表，每个任务附带最新版本方案快照。"""
+    return {"designs": design_version_service.list_user_designs(db, user_id=user.id)}
 
 
 @router.post("", response_model=TaskResponse)
@@ -174,6 +190,18 @@ def confirm_requirement(
     task.status = "confirmed"
     task.progress = 50
     db.commit()
+
+    # 登录用户：从确认的需求中提取长期画像（不阻断主流程）
+    if task.user_id:
+        try:
+            profile_service.extract_and_merge(
+                db,
+                user_id=task.user_id,
+                text=json.dumps(req.confirmed_requirement, ensure_ascii=False),
+            )
+        except Exception:
+            logger.exception("画像提取失败: task_id=%s", task.id)
+
     return {"status": "ok"}
 
 
@@ -182,6 +210,7 @@ def _execute_generation(
     *,
     task: DesignTask,
     on_step=None,
+    on_meta=None,
 ) -> GenerateResponse:
     task_id = task.id
     task.status = "generating"
@@ -193,6 +222,16 @@ def _execute_generation(
         requirement = task.confirmed_requirement_json or task_service.parse_requirement(
             task.raw_user_input or ""
         )
+
+        # 登录用户：注入长期画像，让方案贴合其偏好
+        if task.user_id:
+            profile = profile_service.get_or_create_profile(
+                db,
+                user_id=task.user_id,
+            )
+            profile_context = profile_service.build_profile_context(profile)
+            if profile_context:
+                requirement = {**(requirement or {}), "profile_context": profile_context}
 
         # 若有上传图片的 VL 分析结果，作为空间上下文一并喂给方案生成
         image_context = []
@@ -255,6 +294,31 @@ def _execute_generation(
         task.progress = 100
         db.commit()
 
+        # 收集方案生成元数据（模型/Prompt/输入/输出/成本），由后台执行器写入 generation_run
+        if on_meta is not None and generator == "llm":
+            meta = llm_service.last_generation_meta()
+            if meta:
+                on_meta(
+                    {
+                        "meta": meta,
+                        "output_snapshot": {
+                            "plan_count": len(plans),
+                            "plans": [
+                                {
+                                    "name": plan.get("name"),
+                                    "style": plan.get("style"),
+                                    "budget": plan.get("budget"),
+                                    "score": plan.get("score"),
+                                    "furniture_count": len(
+                                        plan.get("furnitureSuggestions") or []
+                                    ),
+                                }
+                                for plan in plans
+                            ],
+                        },
+                    }
+                )
+
         return GenerateResponse(
             task_id=task.id,
             status="completed",
@@ -307,11 +371,20 @@ def execute_generation_run(run_id: int) -> None:
             task.progress = min(99, 50 + run.progress // 2)
             db.commit()
 
+        def persist_meta(payload):
+            generation_run_service.record_generation_meta(
+                db,
+                run=run,
+                meta=payload["meta"],
+                output_snapshot=payload["output_snapshot"],
+            )
+
         try:
             response = _execute_generation(
                 db,
                 task=task,
                 on_step=persist_step,
+                on_meta=persist_meta,
             )
             generation_run_service.mark_completed(
                 db,
@@ -439,7 +512,10 @@ def get_task_result(
     ]
     return TaskResultResponse(
         plans=(
-            [_plan_version_payload(plan) for plan in revision.plans]
+            [
+                {**_plan_version_payload(plan), "task_id": task_id}
+                for plan in revision.plans
+            ]
             if revision
             else result.plans_json or []
         ),
@@ -448,6 +524,34 @@ def get_task_result(
         images=images,
         pdf_url=result.pdf_url if result else None,
     )
+
+
+@router.post(
+    "/{task_id}/plans/{plan_id}/refine",
+    response_model=RefinePlanResponse,
+)
+def refine_plan(
+    task_id: int,
+    plan_id: str,
+    req: RefinePlanRequest,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    """按自然语言指令在现有方案上精准修改，写入新的不可变版本。"""
+    task = require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
+    try:
+        return plan_refine_service.refine_plan_version(
+            db,
+            task=task,
+            plan_id=plan_id,
+            instruction=req.instruction,
+        )
+    except plan_refine_service.PlanRefineError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get(

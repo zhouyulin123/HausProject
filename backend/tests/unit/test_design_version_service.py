@@ -5,7 +5,9 @@ from sqlalchemy.orm import sessionmaker
 from app.db.database import Base
 from app.db.models import DesignPlanVersion, QuoteSnapshot, DesignTask
 from app.services.design_version_service import (
+    get_plan_version_for_user,
     get_revision,
+    list_user_designs,
     persist_generation,
 )
 
@@ -88,3 +90,61 @@ def test_persist_generation_creates_immutable_plan_and_quote_snapshots(db):
     assert restored.workflow_trace_snapshot[0]["node"] == "calculate_quote"
     assert restored.plans[0].quote_snapshot.grand_total == 36000
     assert restored.plans[0].plan_json["name"] == "暖居方案"
+
+
+@pytest.mark.unit
+def test_list_user_designs_returns_latest_plans_for_owner(db):
+    task = DesignTask(
+        status="completed",
+        user_id=42,
+        style="奶油风",
+        space_type="客厅",
+    )
+    db.add(task)
+    db.commit()
+    persist_generation(db, task=task, plans=_plans(36000), generator="llm")
+    db.commit()
+
+    designs = list_user_designs(db, user_id=42)
+    assert len(designs) == 1
+    assert designs[0]["task_id"] == task.id
+    assert designs[0]["style"] == "奶油风"
+    assert designs[0]["space_type"] == "客厅"
+    assert len(designs[0]["plans"]) == 2
+    assert designs[0]["plans"][0]["planKey"] == "plan-a"
+    assert designs[0]["plans"][0]["planVersionId"] is not None
+
+    # 其他用户看不到
+    assert list_user_designs(db, user_id=999) == []
+
+
+@pytest.mark.unit
+def test_get_plan_version_for_user_checks_ownership(db):
+    task = DesignTask(status="completed", user_id=42)
+    db.add(task)
+    db.commit()
+    persist_generation(db, task=task, plans=_plans(36000), generator="llm")
+    db.commit()
+
+    plan_version = db.scalar(
+        select(DesignPlanVersion).where(DesignPlanVersion.plan_key == "plan-a")
+    )
+    assert plan_version is not None
+
+    found = get_plan_version_for_user(
+        db,
+        plan_version_id=plan_version.id,
+        user_id=42,
+    )
+    assert found is not None
+    assert found.id == plan_version.id
+
+    # 其他用户查不到，避免越权
+    assert (
+        get_plan_version_for_user(
+            db,
+            plan_version_id=plan_version.id,
+            user_id=999,
+        )
+        is None
+    )

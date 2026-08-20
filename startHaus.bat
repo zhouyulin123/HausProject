@@ -4,6 +4,9 @@ chcp 65001 >nul
 cd /d "%~dp0"
 title 豪斯 AI 家装 - 启动器
 
+REM 项目后端依赖安装在 Python 3.14（本机 D:\software\py314），默认 PATH 里的 python 无依赖
+set "PYTHON=D:\software\py314\python.exe"
+
 if /i "%~1"=="--check" goto check
 
 echo ============================================
@@ -19,7 +22,7 @@ if not exist "frontend\node_modules" (
 )
 
 echo [1/2] 启动后端服务 ^(端口 8081^)...
-start "豪斯-后端" cmd /k "cd /d backend && python -m alembic upgrade head && python -m uvicorn app.main:app --port 8081"
+start "豪斯-后端" cmd /k "cd /d backend && %PYTHON% -m alembic upgrade head && %PYTHON% -m uvicorn app.main:app --port 8081"
 
 echo [2/2] 启动前端服务 ^(端口 8080^)...
 start "豪斯-前端" cmd /k "npm --prefix frontend run dev"
@@ -42,8 +45,8 @@ exit /b 0
 
 :check
 echo [自检] 当前目录: %CD%
-where python >nul 2>nul || (
-    echo [失败] 未找到 Python，请先安装或加入 PATH。
+if not exist "%PYTHON%" (
+    echo [失败] 未找到 Python（%PYTHON%），请修改 startHaus.bat 中的 PYTHON 路径。
     exit /b 1
 )
 where npm >nul 2>nul || (
@@ -51,7 +54,7 @@ where npm >nul 2>nul || (
     exit /b 1
 )
 pushd backend
-python -m alembic current
+"%PYTHON%" -m alembic current
 set "CHECK_EXIT=%ERRORLEVEL%"
 popd
 if not "%CHECK_EXIT%"=="0" (

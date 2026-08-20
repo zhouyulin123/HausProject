@@ -1,11 +1,48 @@
 import { describe, expect, it } from "vitest";
 import { mockDesigns } from "@/data/mockDesigns";
+import type { RoomModel } from "@/types/roomModel";
 import {
   buildSceneDocument,
   clampItemTransform,
   isDemoScene,
   updateSceneItemTransform,
 } from "./sceneDocument";
+
+function livingRoomModel(overrides: Partial<RoomModel> = {}): RoomModel {
+  return {
+    schemaVersion: "1.0",
+    imageKind: "floor_plan",
+    spaceType: "客厅",
+    roomCount: "三室两厅",
+    rooms: [
+      {
+        id: "living-room",
+        name: "客厅",
+        floorPolygon: [
+          { x: 0, z: 0 },
+          { x: 1, z: 0 },
+          { x: 1, z: 1 },
+          { x: 0, z: 1 },
+        ],
+        ceilingHeight: 3.0,
+        widthM: 6.0,
+        depthM: 7.0,
+        confidence: 0.9,
+      },
+    ],
+    walls: [],
+    doors: [],
+    windows: [],
+    fixedObstacles: [],
+    existingFurniture: [],
+    scale: { source: "user", confidence: 1 },
+    confidence: 0.9,
+    requiresConfirmation: [],
+    analysisNotes: [],
+    suggestions: [],
+    ...overrides,
+  };
+}
 
 describe("方案到 3D 场景转换", () => {
   it("生成统一米制、Y 轴向上的场景文档", () => {
@@ -77,5 +114,29 @@ describe("方案到 3D 场景转换", () => {
     );
 
     expect(unchanged).toBe(scene);
+  });
+
+  it("RoomModel 提供校准尺寸时优先采用真实宽深与层高", () => {
+    const scene = buildSceneDocument(mockDesigns[0], "客厅", livingRoomModel());
+
+    const xs = scene.room.floorPolygon.map((p) => p.x);
+    const zs = scene.room.floorPolygon.map((p) => p.z);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(6.0);
+    expect(Math.max(...zs) - Math.min(...zs)).toBeCloseTo(7.0);
+    expect(scene.room.ceilingHeight).toBe(3.0);
+  });
+
+  it("RoomModel 与房间类型不匹配时回退默认尺寸", () => {
+    const roomModel = livingRoomModel({
+      rooms: [{ ...livingRoomModel().rooms[0], name: "卧室" }],
+    });
+
+    const scene = buildSceneDocument(mockDesigns[0], "客厅", roomModel);
+
+    const xs = scene.room.floorPolygon.map((p) => p.x);
+    const zs = scene.room.floorPolygon.map((p) => p.z);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(4.6);
+    expect(Math.max(...zs) - Math.min(...zs)).toBeCloseTo(5.6);
+    expect(scene.room.ceilingHeight).toBe(2.8);
   });
 });

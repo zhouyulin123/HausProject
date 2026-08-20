@@ -8,7 +8,14 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.models import DesignTask, GenerationRun, GenerationRunEvent
+from app.db.models import (
+    DesignPlanVersion,
+    DesignRevision,
+    DesignTask,
+    GenerationRun,
+    GenerationRunEvent,
+    LayoutRun,
+)
 
 ACTIVE_STATUSES = ("queued", "running")
 NODE_PROGRESS = {
@@ -108,6 +115,23 @@ def mark_completed(
     db.commit()
 
 
+def record_generation_meta(
+    db: Session,
+    *,
+    run: GenerationRun,
+    meta: dict[str, Any],
+    output_snapshot: dict[str, Any],
+) -> None:
+    """把方案生成的模型 / Prompt / 输入 / 输出 / 用量 / 成本写入 generation_run。"""
+    run.model = meta.get("model")
+    run.prompt_snapshot = meta.get("prompt_snapshot")
+    run.input_snapshot = meta.get("input_snapshot")
+    run.output_snapshot = output_snapshot
+    run.usage_json = meta.get("usage")
+    run.cost_cny = meta.get("cost_cny")
+    db.commit()
+
+
 def mark_failed(
     db: Session,
     *,
@@ -132,3 +156,28 @@ def get_latest_run(
         .where(GenerationRun.task_id == task_id)
         .order_by(GenerationRun.attempt.desc())
     ).first()
+
+
+def layout_scores_for_task(db: Session, *, task_id: int) -> dict[str, Any]:
+    """聚合某任务所有 layout_runs 的评分，供「布局评分」量化与失败反推。"""
+    rows = db.scalars(
+        select(LayoutRun)
+        .join(DesignPlanVersion, LayoutRun.plan_version_id == DesignPlanVersion.id)
+        .join(DesignRevision, DesignPlanVersion.revision_id == DesignRevision.id)
+        .where(DesignRevision.task_id == task_id)
+    ).all()
+    if not rows:
+        return {"count": 0, "avg_score": None, "pass_rate": None, "issues": {}}
+
+    scores = [run.best_score for run in rows]
+    valid_count = sum(1 for run in rows if run.best_valid)
+    issues: dict[str, int] = {}
+    for run in rows:
+        for code in run.issue_codes or []:
+            issues[str(code)] = issues.get(str(code), 0) + 1
+    return {
+        "count": len(rows),
+        "avg_score": round(sum(scores) / len(scores), 2),
+        "pass_rate": round(valid_count / len(rows), 4),
+        "issues": issues,
+    }

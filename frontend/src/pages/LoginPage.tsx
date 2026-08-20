@@ -1,24 +1,77 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { Home, Lamp, MessageSquare, Smartphone, Sofa } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Home, Lamp, ShieldCheck, Smartphone, Sofa } from "lucide-react";
 import Button from "@/components/common/Button";
-
-type Mode = "login" | "register";
-type Channel = "email" | "phone";
+import { useAuthStore } from "@/store/useAuthStore";
+import { sendSmsCode } from "@/api/authApi";
 
 const inputClass =
   "w-full rounded-xl border border-cream-300 bg-white/80 px-4 py-2.5 text-sm text-stone-700 placeholder:text-stone-300 outline-none transition-colors focus:border-sage-500 focus:ring-2 focus:ring-sage-100";
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const [mode, setMode] = useState<Mode>("login");
-  const [channel, setChannel] = useState<Channel>("email");
+  const location = useLocation();
+  const login = useAuthStore((s) => s.login);
+  const [phone, setPhone] = useState("");
+  const [code, setCode] = useState("");
+  const [countdown, setCountdown] = useState(0);
+  const [sending, setSending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [devCode, setDevCode] = useState("");
 
-  const handleSubmit = () => {
-    // mock 登录：无真实鉴权，模拟成功后回首页
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const timer = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [countdown]);
+
+  const handleSend = async () => {
+    if (!/^1\d{10}$/.test(phone)) {
+      setError("请输入正确的 11 位手机号");
+      return;
+    }
+    setError("");
+    setSending(true);
+    try {
+      const res = await sendSmsCode(phone);
+      setDevCode(res.dev_code ?? "");
+      setCountdown(60);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "验证码发送失败，请稍后重试");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!/^1\d{10}$/.test(phone)) {
+      setError("请输入正确的 11 位手机号");
+      return;
+    }
+    if (!code) {
+      setError("请输入验证码");
+      return;
+    }
+    setError("");
     setSubmitting(true);
-    setTimeout(() => navigate("/"), 800);
+    try {
+      const user = await login(phone, code);
+      const from = (
+        location.state as { from?: { pathname?: string } } | null
+      )?.from?.pathname;
+      if (from) {
+        navigate(from, { replace: true });
+      } else {
+        navigate(
+          user.role === "factory" || user.role === "admin" ? "/workspace" : "/",
+        );
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "登录失败，请稍后重试");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -42,106 +95,85 @@ export default function LoginPage() {
             还要适合每天的生活。
           </h2>
           <p className="mt-4 max-w-xs text-sm leading-relaxed text-stone-600/80">
-            登录后可以保存方案、收藏家具，并在任何设备继续你的家装定制。
+            手机号验证码即可登录，方案自动保存，还能发布装修意向给厂家报价。
           </p>
         </div>
       </div>
 
       {/* 右侧表单 */}
       <div className="mx-auto w-full max-w-md">
-        <h1 className="text-2xl font-semibold">
-          {mode === "login" ? "欢迎回来" : "创建账号"}
-        </h1>
+        <h1 className="text-2xl font-semibold">登录 / 注册</h1>
         <p className="mt-2 text-sm text-stone-500">
-          {mode === "login"
-            ? "继续你的家装定制之旅。"
-            : "注册后，AI 生成的方案会自动保存到你的账号。"}
+          未注册的手机号验证后将自动创建账号。
         </p>
 
-        {/* 登录方式切换 */}
-        <div className="mt-6 flex rounded-xl bg-cream-100 p-1">
-          {(
-            [
-              { key: "email", label: "邮箱登录", icon: MessageSquare },
-              { key: "phone", label: "手机号登录", icon: Smartphone },
-            ] as const
-          ).map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => setChannel(item.key)}
-              className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-sm font-medium transition-all ${
-                channel === item.key
-                  ? "bg-white text-stone-800 shadow-card"
-                  : "text-stone-400 hover:text-stone-600"
-              }`}
-            >
-              <item.icon className="h-4 w-4" />
-              {item.label}
-            </button>
-          ))}
-        </div>
-
         <form
-          className="mt-5 space-y-4"
+          className="mt-6 space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            handleSubmit();
+            void handleSubmit();
           }}
         >
-          {channel === "email" ? (
-            <input type="email" required placeholder="邮箱地址" className={inputClass} />
-          ) : (
-            <input type="tel" required placeholder="手机号" className={inputClass} />
-          )}
-          <input
-            type="password"
-            required
-            placeholder={mode === "login" ? "密码" : "设置密码（至少 8 位）"}
-            className={inputClass}
-          />
-          {mode === "login" && (
-            <div className="text-right">
-              <button
-                type="button"
-                className="text-xs text-stone-400 hover:text-sage-700"
-                onClick={() => setMode("register")}
-              >
-                忘记密码？
-              </button>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-stone-500">
+              手机号
+            </label>
+            <div className="relative">
+              <Smartphone className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-stone-300" />
+              <input
+                type="tel"
+                inputMode="numeric"
+                maxLength={11}
+                placeholder="请输入 11 位手机号"
+                className={`${inputClass} pl-9`}
+                value={phone}
+                onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
+              />
             </div>
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-stone-500">
+              验证码
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={6}
+                placeholder="6 位验证码"
+                className={inputClass}
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="shrink-0"
+                onClick={() => void handleSend()}
+                disabled={sending || countdown > 0}
+              >
+                {countdown > 0 ? `${countdown}s` : sending ? "发送中" : "获取验证码"}
+              </Button>
+            </div>
+          </div>
+
+          {devCode && (
+            <p className="flex items-center gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              <ShieldCheck className="h-4 w-4" />
+              开发环境验证码：{devCode}
+            </p>
           )}
+
+          {error && <p className="text-xs text-red-600">{error}</p>}
+
           <Button type="submit" className="w-full" size="lg" disabled={submitting}>
-            {submitting ? "正在进入..." : mode === "login" ? "登录" : "注册"}
+            {submitting ? "正在进入..." : "登录 / 注册"}
           </Button>
         </form>
 
-        {/* 第三方登录占位 */}
-        <div className="mt-6">
-          <div className="flex items-center gap-3 text-xs text-stone-300">
-            <span className="h-px flex-1 bg-cream-200" />
-            或使用以下方式
-            <span className="h-px flex-1 bg-cream-200" />
-          </div>
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <Button variant="outline" onClick={handleSubmit}>
-              微信登录
-            </Button>
-            <Button variant="outline" onClick={handleSubmit}>
-              手机验证码
-            </Button>
-          </div>
-        </div>
-
-        <p className="mt-8 text-center text-sm text-stone-500">
-          {mode === "login" ? "还没有账号？" : "已有账号？"}
-          <button
-            type="button"
-            className="ml-1 font-medium text-sage-700 hover:text-sage-600"
-            onClick={() => setMode(mode === "login" ? "register" : "login")}
-          >
-            {mode === "login" ? "立即注册" : "去登录"}
-          </button>
+        <p className="mt-6 text-center text-xs text-stone-400">
+          登录即代表同意《用户协议》与《隐私政策》。厂家账号由管理员开通。
         </p>
       </div>
     </div>

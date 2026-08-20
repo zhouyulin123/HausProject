@@ -1,13 +1,27 @@
 """客户 Web 3D 编辑器的场景版本 API。"""
 
+import logging
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import SessionIdHeader, require_active_session
+from app.api.dependencies import (
+    SessionIdHeader,
+    get_current_user,
+    require_active_session,
+)
 from app.agents.scene_agent import SceneAgentSafetyError, SceneAgentWorkflow
 from app.core.config import settings
 from app.db.database import get_db
-from app.db.models import BlenderRenderJob, DesignScene, DesignSceneVersion
+from app.db.models import (
+    BlenderRenderJob,
+    DesignRevision,
+    DesignScene,
+    DesignSceneVersion,
+    DesignTask,
+    User,
+)
 from app.schemas.blender_render import (
     BlenderRenderJobResponse,
     BlenderRenderRequest,
@@ -27,6 +41,9 @@ from app.schemas.scene_agent import (
 )
 from app.services import (
     blender_job_service,
+    design_version_service,
+    layout_generator,
+    layout_service,
     llm_service,
     scene_service,
     scene_tools,
@@ -35,6 +52,7 @@ from app.services.llm_service import LLMUnavailable
 from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 scene_agent_rate_limiter = SceneAgentRateLimiter(
     max_requests=settings.scene_agent_requests_per_minute,
     window_seconds=60,
@@ -111,6 +129,23 @@ def _render_job_response(job: BlenderRenderJob) -> BlenderRenderJobResponse:
     )
 
 
+@router.get("/plan-versions/{plan_version_id}")
+def get_plan_version_detail(
+    plan_version_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """按方案版本 ID 拉取方案快照，供登录用户跨设备打开详情页兜底。"""
+    plan_version = design_version_service.get_plan_version_for_user(
+        db,
+        plan_version_id=plan_version_id,
+        user_id=user.id,
+    )
+    if plan_version is None:
+        raise _not_found("方案版本")
+    return {"plan": design_version_service.plan_version_payload(plan_version)}
+
+
 @router.post(
     "/plan-versions/{plan_version_id}/scene",
     response_model=SceneResponse,
@@ -137,6 +172,94 @@ def create_plan_scene(
             plan_version=plan_version,
             document=payload.scene,
             source=payload.source,
+        )
+        db.commit()
+        db.refresh(scene)
+        db.refresh(version)
+    except scene_service.SceneConflictError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except scene_service.SceneValidationError as error:
+        db.rollback()
+        raise _validation_error(error) from error
+    return _scene_response(scene, version)
+
+
+@router.post(
+    "/plan-versions/{plan_version_id}/auto-layout",
+    response_model=SceneResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def auto_layout_plan_scene(
+    plan_version_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    """用确定性布局引擎为方案自动生成可编辑的 3D 初稿（幂等）。
+
+    场景已存在时直接返回当前版本，不重复生成。
+    """
+    require_active_session(db, x_session_id)
+    plan_version = scene_service.get_owned_plan_version(
+        db,
+        session_id=x_session_id,
+        plan_version_id=plan_version_id,
+    )
+    if plan_version is None:
+        raise _not_found("方案版本")
+
+    # 幂等：场景已存在直接返回当前版本
+    existing = scene_service.get_scene_by_plan_version(db, plan_version.id)
+    if existing is not None:
+        version = scene_service.get_current_version(db, existing)
+        return _scene_response(existing, version)
+
+    plan = plan_version.plan_json or {}
+    furniture = layout_service.build_layout_furniture(
+        db, plan.get("furnitureSuggestions")
+    )
+    if not furniture:
+        raise HTTPException(
+            status_code=422,
+            detail="方案没有可用于布局的商品",
+        )
+
+    revision = db.get(DesignRevision, plan_version.revision_id)
+    task = db.get(DesignTask, revision.task_id) if revision else None
+    room_name = (task.space_type if task and task.space_type else "客厅")
+    geometry = layout_service.room_geometry_from_plan_version(db, plan_version)
+    room, openings = geometry or layout_service.default_room_geometry(room_name)
+
+    started = time.monotonic()
+    results = layout_generator.generate_layouts(room, openings, furniture)
+    duration_ms = int((time.monotonic() - started) * 1000)
+    if not results:
+        raise HTTPException(status_code=422, detail="无法为这套方案生成布局")
+
+    best_scene, best_score = results[0]
+    if not best_score.valid:
+        logger.warning(
+            "方案 %s 的最优自动布局未达标（%d 分）",
+            plan_version.id,
+            best_score.total,
+        )
+
+    try:
+        scene, version = scene_service.create_scene(
+            db,
+            plan_version=plan_version,
+            document=best_scene,
+            source="auto_layout",
+        )
+        # 记录布局生成元数据（评分/问题分布/耗时），供质量监控与失败反推
+        layout_service.record_layout_run(
+            db,
+            plan_version_id=plan_version.id,
+            scene_version_id=version.id,
+            room=room,
+            furniture=furniture,
+            results=results,
+            duration_ms=duration_ms,
         )
         db.commit()
         db.refresh(scene)

@@ -134,3 +134,69 @@ def get_latest_plan(
         )
         .order_by(DesignRevision.version.desc())
     ).first()
+
+
+def list_user_designs(db: Session, *, user_id: int) -> list[dict[str, Any]]:
+    """列出登录用户的设计任务，每个任务附带最新版本的三套方案快照。"""
+    tasks = db.scalars(
+        select(DesignTask)
+        .where(DesignTask.user_id == user_id)
+        .order_by(DesignTask.id.desc())
+    ).all()
+
+    result: list[dict[str, Any]] = []
+    for task in tasks:
+        revision = get_latest_revision(db, task_id=task.id)
+        if not revision:
+            continue
+        plans = []
+        for plan_version in revision.plans:
+            plan = deepcopy(plan_version.plan_json or {})
+            plan["planVersionId"] = plan_version.id
+            plan["planKey"] = plan_version.plan_key
+            plan["task_id"] = task.id
+            plans.append(plan)
+        result.append(
+            {
+                "task_id": task.id,
+                "created_at": (
+                    task.created_at.strftime("%Y-%m-%d %H:%M")
+                    if task.created_at
+                    else None
+                ),
+                "style": task.style,
+                "space_type": task.space_type,
+                "plans": plans,
+            }
+        )
+    return result
+
+
+def get_plan_version_for_user(
+    db: Session,
+    *,
+    plan_version_id: int,
+    user_id: int,
+) -> DesignPlanVersion | None:
+    """按方案版本 ID 查询，且该方案必须归属指定登录用户。"""
+    return db.scalars(
+        select(DesignPlanVersion)
+        .options(selectinload(DesignPlanVersion.quote_snapshot))
+        .join(
+            DesignRevision,
+            DesignRevision.id == DesignPlanVersion.revision_id,
+        )
+        .join(DesignTask, DesignTask.id == DesignRevision.task_id)
+        .where(
+            DesignPlanVersion.id == plan_version_id,
+            DesignTask.user_id == user_id,
+        )
+    ).first()
+
+
+def plan_version_payload(plan_version: DesignPlanVersion) -> dict[str, Any]:
+    """把方案版本快照转成给前端详情页的结构。"""
+    plan = deepcopy(plan_version.plan_json or {})
+    plan["planVersionId"] = plan_version.id
+    plan["planKey"] = plan_version.plan_key
+    return plan

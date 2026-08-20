@@ -240,7 +240,13 @@ class SceneValidationReport(BaseModel):
     warnings: list[SceneValidationIssue] = Field(default_factory=list)
 
 
-SceneSource = Literal["manual", "scene_agent", "import", "migration"]
+SceneSource = Literal[
+    "manual",
+    "scene_agent",
+    "import",
+    "migration",
+    "auto_layout",
+]
 
 
 class SceneCreateRequest(BaseModel):

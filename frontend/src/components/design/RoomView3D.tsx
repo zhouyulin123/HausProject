@@ -35,6 +35,7 @@ import type { ProductModelAsset } from "@/lib/productModel";
 import { getProductModelAsset } from "@/lib/productModel";
 import type { TransformMode } from "@/hooks/useSceneEditor";
 import type { DesignPlan } from "@/types/design";
+import type { RoomModel } from "@/types/roomModel";
 import type {
   SceneDocument,
   SceneItem,
@@ -392,11 +393,13 @@ function SyncBadge({
 export default function RoomView3D({
   plan,
   roomType,
+  roomModel,
 }: {
   plan: DesignPlan;
   roomType: string;
+  roomModel?: RoomModel | null;
 }) {
-  const editor = useSceneEditor(plan, roomType);
+  const editor = useSceneEditor(plan, roomType, roomModel);
   const [agentInstruction, setAgentInstruction] = useState("");
   const scene = editor.history.present;
   const selectedItem = scene.items.find(

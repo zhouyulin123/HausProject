@@ -20,6 +20,10 @@ frontend/dist/
 frontend/.vite/
 frontend/coverage/
 *.tsbuildinfo
+frontend/vite.config.ts.timestamp-*.mjs
+
+# 本地 AI 工具目录
+.workbuddy/
 
 # IDE 与系统文件
 .idea/

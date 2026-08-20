@@ -11,6 +11,7 @@ langgraph>=1.1.0,<2.0.0 # 方案生成 Agent 工作流编排
 python-dotenv>=1.0.0
 reportlab>=4.0.0 # 品牌提案 PDF
 openpyxl>=3.1.0 # 商品 Excel 模板与导入
+PyJWT>=2.8.0 # 登录态 JWT 签发与校验
 
 # 本地效果图生成（SD1.5 + ControlNet，需 NVIDIA GPU + cu128 版 PyTorch）
 # 注：torch 需按显卡架构单独安装（RTX 50 系需 cu128 构建），故不锁在此处

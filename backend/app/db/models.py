@@ -3,6 +3,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -22,8 +23,48 @@ class User(Base):
     phone = Column(String(20), unique=True, index=True, nullable=True)
     nickname = Column(String(50), nullable=True)
     avatar = Column(String(255), nullable=True)
+    # customer / factory / admin：普通用户 / 厂家 / 管理员
+    role = Column(String(20), nullable=False, default="customer", index=True)
+    phone_verified = Column(Boolean, nullable=False, default=False)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    profile = relationship(
+        "UserProfile",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class UserProfile(Base):
+    """用户的长期装修画像：跨会话、跨设备记忆其偏好。"""
+
+    __tablename__ = "user_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+    # 关键维度用列，便于确定性查询（如预算内推荐）
+    budget_min = Column(Integer, nullable=True)
+    budget_max = Column(Integer, nullable=True)
+    preferred_styles = Column(JSON, nullable=False, default=list)
+    # 扩展维度用 JSON 兜底，避免频繁迁移
+    profile_json = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    user = relationship("User", back_populates="profile")
 
 
 class DesignTask(Base):
@@ -358,6 +399,40 @@ class DesignSceneVersion(Base):
     scene = relationship("DesignScene", back_populates="versions")
 
 
+class LayoutRun(Base):
+    """一次确定性布局生成的元数据：输入摘要 + 评分 + 问题分布。
+
+    用于量化布局引擎质量、对比模型/规则改动前后的通过率，
+    并配合用户的场景修改行为反推失败类型（M3 评测体系）。
+    """
+
+    __tablename__ = "layout_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_version_id = Column(
+        Integer,
+        ForeignKey("design_plan_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    scene_version_id = Column(
+        Integer,
+        ForeignKey("design_scene_versions.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    room_name = Column(String(50), nullable=True)
+    room_width_m = Column(Float, nullable=True)
+    room_depth_m = Column(Float, nullable=True)
+    furniture_count = Column(Integer, nullable=False, default=0)
+    candidate_count = Column(Integer, nullable=False, default=0)
+    best_score = Column(Integer, nullable=False, default=0)
+    best_valid = Column(Boolean, nullable=False, default=False)
+    issue_codes = Column(JSON, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    source = Column(String(30), nullable=False, default="auto_layout")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class BlenderRenderJob(Base):
     """独立 Worker 消费的不可变场景渲染作业。"""
 
@@ -448,6 +523,13 @@ class GenerationRun(Base):
     current_node = Column(String(50), nullable=True)
     generator = Column(String(20), nullable=True)
     error_message = Column(Text, nullable=True)
+    # ---- 生成元数据（M3：换模型/改 Prompt 后量化质量与成本） ----
+    model = Column(String(100), nullable=True)
+    prompt_snapshot = Column(Text, nullable=True)  # 截断后的完整 Prompt
+    input_snapshot = Column(JSON, nullable=True)  # 需求 + 图片上下文摘要
+    output_snapshot = Column(JSON, nullable=True)  # 方案摘要（名称/风格/预算/评分/家具数）
+    usage_json = Column(JSON, nullable=True)  # token 用量（prompt/completion/total）
+    cost_cny = Column(Float, nullable=True)  # 估算成本（配置单价后才有值）
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
@@ -481,3 +563,73 @@ class GenerationRunEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     run = relationship("GenerationRun", back_populates="events")
+
+
+class SmsCode(Base):
+    """手机号验证码。Mock 阶段使用固定 code，生产切换到真实短信服务商。"""
+
+    __tablename__ = "sms_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    phone = Column(String(20), nullable=False, index=True)
+    code = Column(String(10), nullable=False)
+    purpose = Column(String(20), nullable=False, default="login")  # login / register
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    consumed = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Order(Base):
+    """订单意向：普通用户发布，厂家在订单池接单并报价。"""
+
+    __tablename__ = "orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_no = Column(String(40), unique=True, index=True, nullable=False)
+    customer_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+    # plan：基于已生成方案发布；requirement：纯需求意向
+    source_type = Column(String(20), nullable=False, default="requirement")
+    task_id = Column(Integer, ForeignKey("design_tasks.id"), nullable=True, index=True)
+    plan_version_id = Column(
+        Integer,
+        ForeignKey("design_plan_versions.id"),
+        nullable=True,
+    )
+    title = Column(String(200), nullable=True)
+    description = Column(Text, nullable=True)
+    budget_min = Column(Integer, nullable=True)
+    budget_max = Column(Integer, nullable=True)
+    # open / quoted / assigned / closed / cancelled
+    status = Column(String(20), nullable=False, default="open", index=True)
+    assigned_factory_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    assigned_quote_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class OrderQuote(Base):
+    """厂家对某订单的一次报价。"""
+
+    __tablename__ = "order_quotes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(
+        Integer,
+        ForeignKey("orders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    factory_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    total_price = Column(Integer, nullable=False)
+    price_min = Column(Integer, nullable=True)
+    price_max = Column(Integer, nullable=True)
+    note = Column(Text, nullable=True)
+    # pending / accepted / rejected
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

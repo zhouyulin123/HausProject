@@ -1,5 +1,10 @@
 import { createBrowserRouter } from "react-router-dom";
 import Layout from "@/components/layout/Layout";
+import {
+  RequireAdmin,
+  RequireAuth,
+  RequireFactory,
+} from "@/components/auth/RouteGuard";
 import HomePage from "@/pages/HomePage";
 import CustomizePage from "@/pages/CustomizePage";
 import UploadPage from "@/pages/UploadPage";
@@ -9,8 +14,11 @@ import DesignDetailPage from "@/pages/DesignDetailPage";
 import FurniturePage from "@/pages/FurniturePage";
 import StyleGalleryPage from "@/pages/StyleGalleryPage";
 import MyDesignsPage from "@/pages/MyDesignsPage";
+import OrdersPage from "@/pages/OrdersPage";
+import WorkspacePage from "@/pages/WorkspacePage";
 import CustomersPage from "@/pages/CustomersPage";
 import AdminPage from "@/pages/AdminPage";
+import AdminUsersPage from "@/pages/AdminUsersPage";
 import LoginPage from "@/pages/LoginPage";
 
 export const router = createBrowserRouter(
@@ -28,8 +36,46 @@ export const router = createBrowserRouter(
         { path: "furniture", element: <FurniturePage /> },
         { path: "styles", element: <StyleGalleryPage /> },
         { path: "my-designs", element: <MyDesignsPage /> },
-        { path: "customers", element: <CustomersPage /> },
-        { path: "admin", element: <AdminPage /> },
+        {
+          path: "orders",
+          element: (
+            <RequireAuth>
+              <OrdersPage />
+            </RequireAuth>
+          ),
+        },
+        {
+          path: "workspace",
+          element: (
+            <RequireFactory>
+              <WorkspacePage />
+            </RequireFactory>
+          ),
+        },
+        {
+          path: "customers",
+          element: (
+            <RequireFactory>
+              <CustomersPage />
+            </RequireFactory>
+          ),
+        },
+        {
+          path: "admin",
+          element: (
+            <RequireFactory>
+              <AdminPage />
+            </RequireFactory>
+          ),
+        },
+        {
+          path: "admin/users",
+          element: (
+            <RequireAdmin>
+              <AdminUsersPage />
+            </RequireAdmin>
+          ),
+        },
         { path: "login", element: <LoginPage /> },
       ],
     },

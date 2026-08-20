@@ -1,3 +1,5 @@
+import type { RoomModel } from "./roomModel";
+
 export interface UserRequirement {
   rooms: string[];
   area: number | null;
@@ -47,10 +49,14 @@ export const emptyRequirement: UserRequirement = {
 export interface ImageAnalysis {
   fileName: string;
   fileSize: string;
+  /** 后端图片 id，用于尺寸校准等后续操作 */
+  imageId?: number;
   findings: string[];
   suggestions?: string[];
   spaceType?: string;
   roomCount?: string;
   /** vl（真实视觉模型）/ placeholder（降级）/ mock（前端本地） */
   source?: string;
+  /** VL 识别出的统一空间事实模型；降级时为 null */
+  roomModel?: RoomModel | null;
 }

@@ -9,8 +9,10 @@ from fastapi import APIRouter, Depends, File, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import require_factory
 from app.core.config import settings
 from app.db.database import get_db
+from app.db.models import User
 from app.services import shop_service
 
 router = APIRouter()
@@ -31,7 +33,11 @@ def get_shop(db: Session = Depends(get_db)):
 
 
 @router.put("")
-def update_shop(data: ShopUpdate, db: Session = Depends(get_db)):
+def update_shop(
+    data: ShopUpdate,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     shop = shop_service.get_or_create(db)
     for k, v in data.model_dump(exclude_unset=True).items():
         setattr(shop, k, v)
@@ -41,7 +47,10 @@ def update_shop(data: ShopUpdate, db: Session = Depends(get_db)):
 
 
 @router.post("/logo")
-async def upload_logo(file: UploadFile = File(...)):
+async def upload_logo(
+    file: UploadFile = File(...),
+    _user: User = Depends(require_factory),
+):
     content = await file.read()
     upload_dir = Path(settings.upload_dir) / "shop"
     upload_dir.mkdir(parents=True, exist_ok=True)

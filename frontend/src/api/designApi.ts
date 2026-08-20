@@ -1,6 +1,7 @@
 import type { DesignPlan } from "@/types/design";
 import type { FurnitureItem } from "@/types/furniture";
 import type { ImageAnalysis, UserRequirement } from "@/types/requirement";
+import type { RoomModel } from "@/types/roomModel";
 import type {
   BlenderRenderJob,
   BlenderRenderProfile,
@@ -13,7 +14,7 @@ import type {
 } from "@/types/scene";
 import { mockDesigns } from "@/data/mockDesigns";
 import { mockFurniture } from "@/data/mockFurniture";
-import { getAiReply, uploadAnalysisFindings } from "@/data/mockChat";
+import { uploadAnalysisFindings } from "@/data/mockChat";
 import {
   readImageIds,
   readSessionId,
@@ -22,6 +23,7 @@ import {
   writeSessionId,
   writeTaskId,
 } from "./sessionStorage";
+import { readToken } from "./authApi";
 
 /**
  * API 层：优先调用真实后端（FastAPI + MySQL + DeepSeek），
@@ -309,6 +311,7 @@ export async function analyzeRoomImage(file: File): Promise<ImageAnalysis> {
         space_type?: string;
         room_count?: string;
         source?: string;
+        room_model?: RoomModel | null;
       };
     }>("/api/upload/image", { method: "POST", body: form });
     uploadedImageIds.push(data.image_id);
@@ -316,11 +319,13 @@ export async function analyzeRoomImage(file: File): Promise<ImageAnalysis> {
     return {
       fileName: file.name,
       fileSize: sizeText,
+      imageId: data.image_id,
       findings: data.analysis.findings,
       suggestions: data.analysis.suggestions ?? [],
       spaceType: data.analysis.space_type,
       roomCount: data.analysis.room_count,
       source: data.analysis.source ?? "vl",
+      roomModel: data.analysis.room_model ?? null,
     };
   } catch (error) {
     console.warn("[designApi] 上传接口不可用，降级到本地 mock 分析", error);
@@ -332,6 +337,33 @@ export async function analyzeRoomImage(file: File): Promise<ImageAnalysis> {
       source: "mock",
     };
   }
+}
+
+export interface RoomModelCalibration {
+  roomId?: string;
+  widthM: number;
+  depthM: number;
+  ceilingHeightM?: number;
+}
+
+/** 用户校准主空间真实尺寸，写回图片的 RoomModel。 */
+export async function calibrateRoomModel(
+  imageId: number,
+  calibration: RoomModelCalibration,
+): Promise<RoomModel> {
+  const data = await request<{ image_id: number; room_model: RoomModel }>(
+    `/api/upload/images/${imageId}/room-model`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        roomId: calibration.roomId,
+        widthM: calibration.widthM,
+        depthM: calibration.depthM,
+        ceilingHeightM: calibration.ceilingHeightM,
+      }),
+    },
+  );
+  return data.room_model;
 }
 
 // ---------------------------------------------------------------- 商品库（自家家具）
@@ -580,6 +612,71 @@ export async function exportProposalPdf(plan: DesignPlan): Promise<string> {
   return data.pdf_url;
 }
 
+// ---------------------------------------------------------------- 我的方案（后端）
+
+export interface MyDesignItem {
+  task_id: number;
+  created_at: string | null;
+  style: string | null;
+  space_type: string | null;
+  plans: DesignPlan[];
+}
+
+async function authedRequest<T>(path: string): Promise<T> {
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json");
+  const token = readToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const resp = await fetch(path, { headers });
+  if (!resp.ok) throw new ApiError(`${path} -> ${resp.status}`, resp.status);
+  return resp.json() as Promise<T>;
+}
+
+/** 拉取登录用户的历史方案（每个任务附带最新版本方案快照）。 */
+export async function fetchMyDesigns(): Promise<MyDesignItem[]> {
+  const data = await authedRequest<{
+    designs: (Omit<MyDesignItem, "plans"> & { plans: DesignPlan[] })[];
+  }>("/api/design/tasks/mine");
+  return data.designs.map((item) => ({
+    ...item,
+    plans: item.plans.map(decoratePlan),
+  }));
+}
+
+/** 按方案版本 ID 拉取单个方案快照，供详情页本地无缓存时兜底。 */
+export async function fetchPlanByVersion(
+  planVersionId: number,
+): Promise<DesignPlan> {
+  const data = await authedRequest<{ plan: DesignPlan }>(
+    `/api/design/plan-versions/${planVersionId}`,
+  );
+  return decoratePlan(data.plan, 0);
+}
+
+export interface RefinePlanResult {
+  plan: DesignPlan;
+  version: number;
+  message: string;
+}
+
+/** 按自然语言指令在现有方案上精准修改，返回新版本方案。 */
+export async function refinePlan(
+  taskId: number,
+  planId: string,
+  instruction: string,
+): Promise<RefinePlanResult> {
+  const data = await request<{
+    plan: DesignPlan;
+    version: number;
+    message: string;
+  }>(`/api/design/tasks/${taskId}/plans/${planId}/refine`, {
+    method: "POST",
+    body: JSON.stringify({ instruction }),
+  });
+  data.plan = decoratePlan(data.plan, 0);
+  return data;
+}
+
 // ---------------------------------------------------------------- 3D 场景
 
 /** 为服务端不可变方案版本创建第一版 3D 场景。 */
@@ -594,6 +691,16 @@ export async function createDesignScene(
       method: "POST",
       body: JSON.stringify({ scene, source }),
     },
+  );
+}
+
+/** 让后端确定性布局引擎为方案自动生成可编辑 3D 初稿（幂等）。 */
+export async function createAutoLayoutScene(
+  planVersionId: number,
+): Promise<DesignScene> {
+  return request<DesignScene>(
+    `/api/design/plan-versions/${planVersionId}/auto-layout`,
+    { method: "POST", body: JSON.stringify({}) },
   );
 }
 
@@ -616,6 +723,16 @@ async function doLoadOrCreateDesignScene(
     return await fetchDesignSceneByPlanVersion(planVersionId);
   } catch (error) {
     if (!(error instanceof ApiError) || error.status !== 404) throw error;
+  }
+
+  // 优先后端确定性布局引擎自动生成可编辑 3D 初稿（幂等）
+  try {
+    return await createAutoLayoutScene(planVersionId);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      return fetchDesignSceneByPlanVersion(planVersionId);
+    }
+    // 后端不可用 / 方案无可用商品 / 无房间模型时，回退前端确定性初始布局
   }
 
   try {
@@ -795,8 +912,7 @@ export async function sendChatMessage(text: string): Promise<string> {
     chatHistory.push({ role: "ai", content: data.reply });
     return data.reply;
   } catch (error) {
-    console.warn("[designApi] 对话接口不可用，降级到本地规则回复", error);
-    await delay(1200 + Math.random() * 800);
-    return getAiReply(text);
+    console.warn("[designApi] 对话接口不可用", error);
+    return "AI 服务暂时不可用，请稍后再试。";
   }
 }

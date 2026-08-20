@@ -7,8 +7,9 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import require_factory
 from app.db.database import get_db
-from app.db.models import Customer, DesignTask
+from app.db.models import Customer, DesignTask, User
 
 router = APIRouter()
 
@@ -43,7 +44,11 @@ def _to_dict(c: Customer, task_count: int = 0) -> dict:
 
 
 @router.get("")
-def list_customers(q: Optional[str] = None, db: Session = Depends(get_db)):
+def list_customers(
+    q: Optional[str] = None,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     stmt = select(Customer).order_by(Customer.id.desc())
     if q:
         like = f"%{q}%"
@@ -60,7 +65,11 @@ def list_customers(q: Optional[str] = None, db: Session = Depends(get_db)):
 
 
 @router.post("")
-def create_customer(data: CustomerCreate, db: Session = Depends(get_db)):
+def create_customer(
+    data: CustomerCreate,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     customer = Customer(**data.model_dump())
     db.add(customer)
     db.commit()
@@ -69,7 +78,11 @@ def create_customer(data: CustomerCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{customer_id}")
-def get_customer(customer_id: int, db: Session = Depends(get_db)):
+def get_customer(
+    customer_id: int,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     customer = db.get(Customer, customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -94,7 +107,12 @@ def get_customer(customer_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{customer_id}")
-def update_customer(customer_id: int, data: CustomerUpdate, db: Session = Depends(get_db)):
+def update_customer(
+    customer_id: int,
+    data: CustomerUpdate,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     customer = db.get(Customer, customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -105,7 +123,12 @@ def update_customer(customer_id: int, data: CustomerUpdate, db: Session = Depend
 
 
 @router.post("/{customer_id}/attach-task")
-def attach_task(customer_id: int, body: dict, db: Session = Depends(get_db)):
+def attach_task(
+    customer_id: int,
+    body: dict,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     """把一次设计任务（方案）关联到客户名下。"""
     customer = db.get(Customer, customer_id)
     if not customer:

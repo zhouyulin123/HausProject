@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Download,
@@ -10,7 +10,9 @@ import {
   Trash2,
 } from "lucide-react";
 import { useDesignStore } from "@/store/useDesignStore";
-import type { SavedDesign } from "@/types/design";
+import { useAuthStore } from "@/store/useAuthStore";
+import { fetchMyDesigns } from "@/api/designApi";
+import type { DesignPlan, SavedDesign } from "@/types/design";
 import PageTitle from "@/components/common/PageTitle";
 import EmptyState from "@/components/common/EmptyState";
 import Button from "@/components/common/Button";
@@ -40,13 +42,56 @@ export default function MyDesignsPage() {
     removeDesign,
     updateDesignStatus,
     toggleDesignFavorite,
+    setGeneratedPlans,
   } = useDesignStore();
+  const user = useAuthStore((s) => s.user);
   const [keyword, setKeyword] = useState("");
   const [filter, setFilter] = useState<FilterOption>("最近创建");
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [serverDesigns, setServerDesigns] = useState<SavedDesign[]>([]);
+  const [loadingServer, setLoadingServer] = useState(false);
+
+  // 登录后从后端拉取历史方案，注入 generatedPlans 供详情页查看
+  useEffect(() => {
+    if (!user) {
+      setServerDesigns([]);
+      return;
+    }
+    setLoadingServer(true);
+    fetchMyDesigns()
+      .then((items) => {
+        const allPlans: DesignPlan[] = [];
+        const saved: SavedDesign[] = [];
+        items.forEach((item) => {
+          item.plans.forEach((plan) => {
+            allPlans.push(plan);
+            saved.push({
+              id: `server-${item.task_id}-${plan.id}`,
+              planId: plan.id,
+              planVersionId: plan.planVersionId,
+              name: plan.name,
+              style: plan.style,
+              budget: plan.budget,
+              rooms: item.space_type ? [item.space_type] : ["全屋"],
+              status: "已生成",
+              isFavorite: false,
+              createdAt: item.created_at?.slice(0, 10) ?? "",
+              coverGradient: plan.coverGradient,
+            });
+          });
+        });
+        setGeneratedPlans(allPlans);
+        setServerDesigns(saved);
+      })
+      .catch(() => setServerDesigns([]))
+      .finally(() => setLoadingServer(false));
+  }, [user, setGeneratedPlans]);
+
+  // 登录后以后端方案为准，未登录回退本地保存
+  const displayDesigns = user ? serverDesigns : savedDesigns;
 
   const filtered = useMemo(() => {
-    let list = savedDesigns.filter(
+    let list = displayDesigns.filter(
       (d) => d.name.includes(keyword) || d.style.includes(keyword),
     );
     switch (filter) {
@@ -69,7 +114,7 @@ export default function MyDesignsPage() {
         break;
     }
     return list;
-  }, [savedDesigns, keyword, filter]);
+  }, [displayDesigns, keyword, filter]);
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
@@ -78,11 +123,15 @@ export default function MyDesignsPage() {
         description="保存过的家装方案都在这里，随时查看、优化或导出。"
       />
 
-      {savedDesigns.length === 0 ? (
+      {loadingServer ? (
+        <p className="mt-8 py-10 text-center text-sm text-stone-400">
+          正在加载你的方案...
+        </p>
+      ) : displayDesigns.length === 0 ? (
         <div className="mt-8">
           <EmptyState
             icon={Home}
-            title="还没有保存的家装方案"
+            title={user ? "还没有生成过方案" : "还没有保存的家装方案"}
             description="创建第一个方案，让 AI 帮你找到家的样子。"
             action={
               <Link to="/customize">
@@ -162,7 +211,9 @@ export default function MyDesignsPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => navigate(`/design/${design.planId}`)}
+                      onClick={() =>
+                        navigate(`/design/${design.planVersionId ?? design.planId}`)
+                      }
                     >
                       <Eye className="h-4 w-4" />
                       查看
@@ -186,45 +237,48 @@ export default function MyDesignsPage() {
                       <Download className="h-4 w-4" />
                       导出
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => toggleDesignFavorite(design.id)}
-                    >
-                      <Heart
-                        className={`h-4 w-4 ${design.isFavorite ? "fill-terra-500 text-terra-500" : ""}`}
-                      />
-                    </Button>
-                    {pendingDelete === design.id ? (
-                      <div className="flex items-center gap-1.5 rounded-xl bg-terra-50 px-2 py-1">
-                        <span className="text-xs text-terra-600">确认删除？</span>
-                        <Button
-                          variant="terra"
-                          size="sm"
-                          onClick={() => {
-                            removeDesign(design.id);
-                            setPendingDelete(null);
-                          }}
-                        >
-                          删除
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setPendingDelete(null)}
-                        >
-                          取消
-                        </Button>
-                      </div>
-                    ) : (
+                    {!design.id.startsWith("server-") && (
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setPendingDelete(design.id)}
+                        onClick={() => toggleDesignFavorite(design.id)}
                       >
-                        <Trash2 className="h-4 w-4 text-stone-400" />
+                        <Heart
+                          className={`h-4 w-4 ${design.isFavorite ? "fill-terra-500 text-terra-500" : ""}`}
+                        />
                       </Button>
                     )}
+                    {!design.id.startsWith("server-") &&
+                      (pendingDelete === design.id ? (
+                        <div className="flex items-center gap-1.5 rounded-xl bg-terra-50 px-2 py-1">
+                          <span className="text-xs text-terra-600">确认删除？</span>
+                          <Button
+                            variant="terra"
+                            size="sm"
+                            onClick={() => {
+                              removeDesign(design.id);
+                              setPendingDelete(null);
+                            }}
+                          >
+                            删除
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setPendingDelete(null)}
+                          >
+                            取消
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setPendingDelete(design.id)}
+                        >
+                          <Trash2 className="h-4 w-4 text-stone-400" />
+                        </Button>
+                      ))}
                   </div>
                 </div>
               ))}

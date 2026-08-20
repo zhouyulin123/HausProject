@@ -11,10 +11,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.api.dependencies import get_current_user
 from app.api.routes import products
 from app.core.config import settings
 from app.db.database import Base, get_db
-from app.db.models import Product
+from app.db.models import Product, User
 
 
 def _glb_bytes() -> bytes:
@@ -50,6 +51,15 @@ def product_api(monkeypatch):
                 model_depth_mm=950,
             )
         )
+        db.add(
+            User(
+                id=999,
+                phone="13800009999",
+                nickname="13800009999",
+                role="factory",
+                phone_verified=True,
+            )
+        )
         db.commit()
 
     monkeypatch.setattr(settings, "upload_dir", str(upload_dir))
@@ -60,7 +70,12 @@ def product_api(monkeypatch):
         with factory() as db:
             yield db
 
+    def override_current_user():
+        with factory() as db:
+            return db.get(User, 999)
+
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_current_user] = override_current_user
     try:
         with TestClient(app) as client:
             yield client, upload_dir

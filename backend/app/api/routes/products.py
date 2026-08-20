@@ -12,9 +12,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import require_factory
 from app.core.config import settings
 from app.db.database import get_db
-from app.db.models import CustomQuoteRule, Product
+from app.db.models import CustomQuoteRule, Product, User
 from app.services.glb_validation import GlbValidationError, validate_glb_upload
 from app.services.upload_validation import UploadValidationError, validate_image_upload
 
@@ -131,7 +132,11 @@ class ProductCreate(BaseModel):
 
 
 @router.post("")
-def create_product(data: ProductCreate, db: Session = Depends(get_db)):
+def create_product(
+    data: ProductCreate,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     product = Product(**data.model_dump())
     db.add(product)
     db.commit()
@@ -160,7 +165,12 @@ class ProductUpdate(BaseModel):
 
 
 @router.patch("/{product_id}")
-def update_product(product_id: int, data: ProductUpdate, db: Session = Depends(get_db)):
+def update_product(
+    product_id: int,
+    data: ProductUpdate,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -172,7 +182,11 @@ def update_product(product_id: int, data: ProductUpdate, db: Session = Depends(g
 
 
 @router.delete("/{product_id}")
-def deactivate_product(product_id: int, db: Session = Depends(get_db)):
+def deactivate_product(
+    product_id: int,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -182,7 +196,10 @@ def deactivate_product(product_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/upload-image")
-async def upload_product_image(file: UploadFile = File(...)):
+async def upload_product_image(
+    file: UploadFile = File(...),
+    _user: User = Depends(require_factory),
+):
     """上传产品图，返回可访问 URL（供创建/编辑产品时填入 image_url）。"""
     content = await file.read()
     try:
@@ -205,6 +222,7 @@ async def upload_product_image(file: UploadFile = File(...)):
 async def upload_product_model(
     product_id: int,
     file: UploadFile = File(...),
+    _user: User = Depends(require_factory),
     db: Session = Depends(get_db),
 ):
     """上传并绑定商品 GLB；可用模型必须先维护真实物理尺寸。"""
@@ -265,7 +283,11 @@ class QuoteRuleUpdate(BaseModel):
 
 
 @router.post("/quote-rules")
-def create_quote_rule(data: QuoteRuleCreate, db: Session = Depends(get_db)):
+def create_quote_rule(
+    data: QuoteRuleCreate,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     rule = CustomQuoteRule(**data.model_dump())
     db.add(rule)
     db.commit()
@@ -274,7 +296,12 @@ def create_quote_rule(data: QuoteRuleCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/quote-rules/{rule_id}")
-def update_quote_rule(rule_id: int, data: QuoteRuleUpdate, db: Session = Depends(get_db)):
+def update_quote_rule(
+    rule_id: int,
+    data: QuoteRuleUpdate,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     rule = db.get(CustomQuoteRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Quote rule not found")
@@ -285,7 +312,11 @@ def update_quote_rule(rule_id: int, data: QuoteRuleUpdate, db: Session = Depends
 
 
 @router.delete("/quote-rules/{rule_id}")
-def deactivate_quote_rule(rule_id: int, db: Session = Depends(get_db)):
+def deactivate_quote_rule(
+    rule_id: int,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+):
     rule = db.get(CustomQuoteRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Quote rule not found")

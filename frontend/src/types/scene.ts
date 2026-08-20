@@ -80,7 +80,12 @@ export interface SceneValidationReport {
   warnings: SceneValidationIssue[];
 }
 
-export type SceneSource = "manual" | "scene_agent" | "import" | "migration";
+export type SceneSource =
+  | "manual"
+  | "scene_agent"
+  | "import"
+  | "migration"
+  | "auto_layout";
 
 export interface DesignScene {
   id: number;

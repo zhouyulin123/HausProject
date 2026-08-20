@@ -111,12 +111,16 @@ const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(mi
  * 规则式布局：把方案中属于目标空间的家具摆进一个矩形房间。
  * 沙发靠后墙、茶几在沙发前、柜子靠前墙、地毯居中平铺、灯具落角，
  * 其余家具沿侧墙依次排布。后续可替换为 LLM 生成 + 碰撞校验。
+ * size 为可选的真实房间尺寸（米），缺省时按空间类型使用默认值。
  */
 export function computeRoomLayout(
   plan: DesignPlan,
   roomType: string,
+  size?: { width: number; depth: number },
 ): RoomScene {
-  const [width, depth] = ROOM_SIZE[roomType] ?? [4.4, 5.2];
+  const fallback = ROOM_SIZE[roomType] ?? [4.4, 5.2];
+  const [width, depth] =
+    size && size.width > 0 && size.depth > 0 ? [size.width, size.depth] : fallback;
   const height = 2.8;
 
   // 只取属于该空间的家具；没有匹配则全取

@@ -1,5 +1,5 @@
-import { lazy, Suspense, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -9,12 +9,23 @@ import {
   Download,
   Lightbulb,
   MessageCircleMore,
+  ShoppingBag,
   Sparkles,
+  Wand2,
 } from "lucide-react";
 import { mockDesigns } from "@/data/mockDesigns";
-import { exportProposalPdf } from "@/api/designApi";
+import {
+  exportProposalPdf,
+  fetchPlanByVersion,
+  getCurrentTaskId,
+  refinePlan,
+} from "@/api/designApi";
+import { createOrder } from "@/api/orderApi";
 import { useDesignStore } from "@/store/useDesignStore";
 import { useRequirementStore } from "@/store/useRequirementStore";
+import { useRoomModelStore } from "@/store/useRoomModelStore";
+import { useAuthStore } from "@/store/useAuthStore";
+import type { DesignPlan } from "@/types/design";
 import BudgetBreakdown from "@/components/design/BudgetBreakdown";
 import ColorPalette from "@/components/design/ColorPalette";
 import MaterialBoard from "@/components/design/MaterialBoard";
@@ -50,20 +61,84 @@ function SceneEditorFallback() {
 export default function DesignDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { generatedPlans, savedDesigns, saveDesign, updateDesignStatus } =
-    useDesignStore();
+  const location = useLocation();
+  const user = useAuthStore((s) => s.user);
+  const {
+    generatedPlans,
+    savedDesigns,
+    saveDesign,
+    updateDesignStatus,
+    setGeneratedPlans,
+  } = useDesignStore();
   const rooms = useRequirementStore((s) => s.requirement.rooms);
+  const roomModel = useRoomModelStore((s) => s.roomModel);
   const [tab, setTab] = useState<Tab>("总览");
   const [exportState, setExportState] = useState<"idle" | "doing" | "done" | "fail">(
     "idle",
   );
+  const [orderState, setOrderState] = useState<"idle" | "doing" | "fail">("idle");
+  const [fetchedPlan, setFetchedPlan] = useState<DesignPlan | null>(null);
+  const [refinedPlan, setRefinedPlan] = useState<DesignPlan | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [refineInstruction, setRefineInstruction] = useState("");
+  const [refineState, setRefineState] = useState<"idle" | "doing" | "fail">("idle");
+  const [refineMessage, setRefineMessage] = useState("");
 
-  const plan = useMemo(
-    () =>
+  const localPlan = useMemo(() => {
+    // 优先按服务端 planVersionId 精确定位，避免多个任务的 plan-a 串号
+    const numericId = Number(id);
+    if (Number.isInteger(numericId)) {
+      const byVersion = generatedPlans.find(
+        (p) => p.planVersionId === numericId,
+      );
+      if (byVersion) return byVersion;
+    }
+    return (
       generatedPlans.find((p) => p.id === id) ??
-      mockDesigns.find((p) => p.id === id),
-    [generatedPlans, id],
-  );
+      mockDesigns.find((p) => p.id === id)
+    );
+  }, [generatedPlans, id]);
+
+  // 本地无缓存且 id 是版本号时，向后端按版本兜底拉取
+  useEffect(() => {
+    if (localPlan) return;
+    const numericId = Number(id);
+    if (!Number.isInteger(numericId) || !user) return;
+    setFetching(true);
+    fetchPlanByVersion(numericId)
+      .then((plan) => setFetchedPlan(plan))
+      .catch(() => setFetchedPlan(null))
+      .finally(() => setFetching(false));
+  }, [localPlan, id, user]);
+
+  const plan = refinedPlan ?? localPlan ?? fetchedPlan;
+
+  const handleRefine = async () => {
+    const instruction = refineInstruction.trim();
+    if (!instruction || refineState === "doing" || !plan) return;
+    const taskId = plan.task_id ?? getCurrentTaskId();
+    if (!taskId) {
+      setRefineMessage("当前方案缺少任务上下文，无法修改");
+      return;
+    }
+    setRefineState("doing");
+    setRefineMessage("");
+    try {
+      const result = await refinePlan(taskId, plan.id, instruction);
+      setRefinedPlan(result.plan);
+      setGeneratedPlans(
+        generatedPlans.map((p) => (p.id === result.plan.id ? result.plan : p)),
+      );
+      setRefineInstruction("");
+      setRefineMessage(result.message || "已按你的要求调整方案");
+    } catch (e) {
+      setRefineMessage(e instanceof Error ? e.message : "修改失败，请稍后重试");
+      setRefineState("fail");
+      setTimeout(() => setRefineState("idle"), 3000);
+      return;
+    }
+    setRefineState("idle");
+  };
 
   // 3D 视图聚焦的主空间：优先用户所选（跳过"全屋"），否则看方案家具都属于哪个空间
   const primaryRoom = useMemo(() => {
@@ -73,6 +148,13 @@ export default function DesignDetailPage() {
   }, [rooms, plan]);
 
   if (!plan) {
+    if (fetching) {
+      return (
+        <div className="mx-auto max-w-2xl px-4 py-16 text-center">
+          <p className="text-sm text-stone-400">正在加载方案...</p>
+        </div>
+      );
+    }
     return (
       <div className="mx-auto max-w-2xl px-4 py-16">
         <EmptyState
@@ -107,6 +189,38 @@ export default function DesignDetailPage() {
       console.warn("[DesignDetail] 提案导出失败", error);
       setExportState("fail");
       setTimeout(() => setExportState("idle"), 3000);
+    }
+  };
+
+  const handlePublishOrder = async () => {
+    if (!user) {
+      navigate("/login", { state: { from: location } });
+      return;
+    }
+    if (orderState === "doing") return;
+    setOrderState("doing");
+    try {
+      const taskId = getCurrentTaskId();
+      if (plan.planVersionId && taskId) {
+        await createOrder({
+          source_type: "plan",
+          task_id: taskId,
+          plan_version_id: plan.planVersionId,
+          title: plan.name,
+          description: plan.description,
+        });
+      } else {
+        await createOrder({
+          source_type: "requirement",
+          title: plan.name,
+          description: plan.description,
+        });
+      }
+      navigate("/orders");
+    } catch (error) {
+      console.warn("[DesignDetail] 发布订单意向失败", error);
+      setOrderState("fail");
+      setTimeout(() => setOrderState("idle"), 3000);
     }
   };
 
@@ -177,7 +291,51 @@ export default function DesignDetailPage() {
             <MessageCircleMore className="h-4 w-4" />
             继续和 AI 优化
           </Button>
+          <Button
+            variant="terra"
+            onClick={() => void handlePublishOrder()}
+            disabled={orderState === "doing"}
+          >
+            <ShoppingBag className="h-4 w-4" />
+            {orderState === "doing"
+              ? "正在发布..."
+              : orderState === "fail"
+                ? "发布失败，点击重试"
+                : "发布订单意向"}
+          </Button>
         </div>
+      </div>
+
+      {/* AI 修改方案 */}
+      <div className="mt-4 rounded-2xl border border-cream-200 bg-white/80 p-4">
+        <div className="flex items-center gap-2">
+          <Wand2 className="h-4 w-4 text-sage-600" />
+          <span className="text-sm font-medium text-stone-700">AI 修改方案</span>
+        </div>
+        <p className="mt-1 text-xs text-stone-400">
+          试试说：「主卧换暖色调」「总价压到 15 万内」「沙发换成 L 型布艺」
+        </p>
+        <div className="mt-3 flex gap-2">
+          <input
+            type="text"
+            value={refineInstruction}
+            onChange={(e) => setRefineInstruction(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleRefine();
+            }}
+            placeholder="告诉 AI 你想怎么改..."
+            className="min-w-0 flex-1 rounded-xl border border-cream-300 bg-white px-4 py-2.5 text-sm text-stone-700 placeholder:text-stone-300 outline-none transition-colors focus:border-sage-500 focus:ring-2 focus:ring-sage-100"
+          />
+          <Button
+            onClick={() => void handleRefine()}
+            disabled={refineState === "doing" || !refineInstruction.trim()}
+          >
+            {refineState === "doing" ? "修改中..." : "应用修改"}
+          </Button>
+        </div>
+        {refineMessage && (
+          <p className="mt-2 text-xs text-sage-700">{refineMessage}</p>
+        )}
       </div>
 
       {/* Tab 导航 */}
@@ -263,7 +421,11 @@ export default function DesignDetailPage() {
           {tab === "3D 布局" && (
             <div>
               <Suspense fallback={<SceneEditorFallback />}>
-                <RoomView3D plan={plan} roomType={primaryRoom} />
+                <RoomView3D
+                  plan={plan}
+                  roomType={primaryRoom}
+                  roomModel={roomModel}
+                />
               </Suspense>
               <p className="mt-3 px-1 text-xs leading-relaxed text-stone-400">
                 点击家具后可拖动、旋转或使用方向按钮微调；正式方案会自动保存场景版本。

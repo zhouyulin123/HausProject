@@ -1,5 +1,327 @@
 # 项目开发状态记录
 
+## 2026-08-19 空间事实模型 M1 + 自动布局 M2 完成
+
+按外部专家评审的 M1/M2 里程碑落地，主方向「户型结构化理解 → 自动生成可编辑 3D 布局」。
+
+### M1 统一空间事实模型 RoomModel
+
+- `schemas/room_model.py`：RoomModel Schema（归一化坐标 0~1 + confidence + requiresConfirmation + rooms/walls/doors/windows/fixedObstacles/existingFurniture/scale）。
+- VL 结构化输出：`llm_service.analyze_room_model`，Qwen3-VL 输出房间多边形/门窗/置信度，绝对尺寸不猜（置 null + requiresConfirmation）。
+- `room_model_service`：`room_model_to_scene`（归一化→米制居中、门窗映射、默认尺寸兜底）+ `apply_calibration`（用户真实尺寸写回，scale=user）。
+- 尺寸校准：`PUT /api/upload/images/{id}/room-model` + 前端 `RoomCalibration` 内联卡片。
+- 前端 3D：`buildSceneDocument` 消费 RoomModel 校准尺寸（替换 `ROOM_SIZE` 硬编码兜底），`useRoomModelStore` 跨页透传。
+
+### M2 自动布局智能体
+
+- 几何工具提取为公共模块 `scene_geometry.py`（scene_service 与布局引擎共用）。
+- 确定性生成器 `layout_generator.generate_layouts`：沙发靠后墙（居中/偏左/偏右 3 变体）、电视柜正对靠前墙、茶几在前、地毯/灯具/休闲椅/床/餐桌，其余沿墙排布；商品真实尺寸。
+- 确定性评分器 `layout_evaluator`：越界(20)/碰撞(15)/门窗遮挡(25)/观看距离(10)/尺寸过大(5)，`HARD_FAIL_CODES` 任一出现即不合格。
+- 确定性修复器 `layout_repair`：越界夹回、碰撞候选偏移避让、遮挡沿墙移开、观看距离调电视柜纵深；generate→evaluate→repair→重新评估，最多 3 轮。
+- 桥接 `layout_service` + 幂等接口 `POST /api/design/plan-versions/{id}/auto-layout`（场景存在即返回）→ 写 `design_scenes`（source=auto_layout）；前端 3D 打开优先调它，失败回退本地构建。
+- **20 例标准客厅验收评测** `backend/evals/`：覆盖尺寸（3.6~5.8m 宽）、家具组合（三件套/L型/软装/边柜/满配）、门窗情况；当前 100% 通过、平均 100 分，报告在 `evals/reports/living_room_eval.md`。
+
+### 验证
+
+- 后端 **146 passed**（RoomModel 10 + 布局生成/评估/修复 16 + auto-layout 2 + 评测 4 + 其余回归）。
+- 前端 **38 passed** + tsc + vite build 通过。
+
+### 关键决策
+
+- RoomModel=感知层（归一化事实），SceneDocument=生成层（米制场景）；`room_model_to_scene` 只做几何映射不摆家具。
+- 布局质量评估纯确定性（无 LLM）；硬错误即不合格、软问题排序选优；repair 以"issues 非空即修复"为目标而非仅保合格线。
+- auto-layout 幂等，场景已存在不重复生成；前端降级链：auto-layout → 本地构建。
+
+### 下一步（M3）
+
+1. 评测体系扩展：30-50 条跨空间评测集（卧室/餐厅/书房）+ 需求提取/约束遵守/预算偏差等指标。
+2. 生成元数据落库（模型/Prompt/输入/输出/评分/成本），用用户修改行为反推失败类型。
+3. 多空间布局规则深化（卧室/餐厅专用摆位）。
+
+## 2026-08-19 M3 评测体系第一批：跨空间布局评测 + 多空间生成规则
+
+### 生成器多空间规则（`layout_generator`）
+
+- 卧室：床靠后墙居中 / 靠侧墙（变体），床头柜贴床短边两侧，衣柜在床对面墙依次排布面向床；卧室里的梳妆台（书桌类）走沿墙排布避免与床重叠。
+- 餐厅：餐桌居中，餐椅围绕四边（上/下/左/右 + 第二排），面向餐桌。
+- 书房：书桌靠后墙 + 书椅在前（旋转面向桌子）。
+
+### 跨空间评测集与 runner
+
+- `evals/cases/base.py`：通用 `RoomCase`（含 group 分组）；`living_room.py` 改用 base 保持兼容。
+- `evals/cases/bedroom.py`（8 例）/ `dining_room.py`（6 例）/ `study.py`（4 例）：覆盖尺寸、家具组合、儿童房/双衣柜/6 椅等变体。
+- `evals/run_layout_eval.py`：`python -m evals.run_layout_eval` 按空间分组跑全部 38 例，输出通过率/平均分/失败原因分布，报告写 `evals/reports/layout_eval.md`。
+- `tests/integration/test_layout_eval.py`：断言 ≥30 例、总通过率 ≥90%、各空间通过率 ≥80%、平均分 ≥70。
+
+### 结果
+
+- **38 例（客厅 20 + 卧室 8 + 餐厅 6 + 书房 4）全部 100 分通过**。
+
+### 踩坑
+
+- 循环变量 `for index, ... in enumerate` 覆盖 `place` 的 `nonlocal index`，导致同 SKU 多件家具 instanceId 冲突 → 循环变量全部改名（table_index/cabinet_index/chair_index）。
+- 卧室衣柜（category 柜子）被客厅 TV 分支误当电视柜放前墙，随后衣柜分支再放一次 → 双衣柜碰撞 → TV 分支限定 `if tv and sofa`。
+
+### 验证
+
+- 后端 **150 passed**（新增 test_layout_eval.py 4 项）。
+
+## 2026-08-19 M3 第二批：布局生成元数据落库
+
+- 新增 `layout_runs` 表（`LayoutRun` 模型 + Alembic 迁移 `a1f3c5e7b9d2`）：plan_version_id、scene_version_id、room_name/宽深、furniture_count、candidate_count、**best_score、best_valid、issue_codes、duration_ms、source、created_at**。
+- `layout_service.record_layout_run`：写入一次布局生成的输入摘要 + 最优评分 + 问题分布 + 耗时。
+- auto-layout 路由集成：create_scene 成功后记录（带 scene_version_id），幂等返回不重复记录。
+- `test_auto_layout_api` 新增元数据断言（best_score=100 / furniture_count=3 / issue_codes=[] / source=auto_layout / scene_version_id 非空）。
+
+### 用途
+
+每次 auto-layout 的质量历史可查询；配合用户对场景的手动修改，后续可反推"布局失败类型"（用户动得多的区域即薄弱点）。
+
+### 验证
+
+- 后端 **151 passed**。
+
+## 2026-08-19 M3 第三批：生成元数据落库 + 需求级指标 + 修改反推
+
+补齐 M3 剩余三项，让评测体系从「布局质量」扩展到「方案生成质量 + 成本 + 需求级指标 + 用户修改闭环」。
+
+### 生成元数据落库（generation_runs 扩展）
+
+- `GenerationRun` 新增 6 列：`model` / `prompt_snapshot`（截断 8000 字）/ `input_snapshot`（需求+画像上下文）/ `output_snapshot`（方案名/风格/预算/评分/家具数摘要）/ `usage_json`（token 用量）/ `cost_cny`（估算成本）。迁移 `b2e4d6f8a0c1`（down_revision=`a1f3c5e7b9d2`，head 唯一）。
+- `llm_service._chat_json` 捕获 token usage；`generate_plans` 成功后把模型/Prompt/输入/用量/成本写入 `last_generation_meta()`，每次调用前先清空避免降级残留旧值。
+- `estimate_cost_cny` 纯函数：按 `LLM_INPUT_PRICE_PER_MTOK` / `LLM_OUTPUT_PRICE_PER_MTOK`（可选配置，默认 None）估算成本；没配单价只记用量不记成本。
+- `generation_run_service.record_generation_meta`：把 meta 写回 `generation_runs`；`tasks._execute_generation` 通过 `on_meta` 回调在后台执行器落库（同步 `/generate` 不建 run，不落库）。
+- `layout_scores_for_task`：聚合某任务所有 `layout_runs` 的平均分/通过率/问题分布，把「布局评分」挂到 generation 维度可查询。
+
+### 需求级指标（可选 eval，需 LLM，不纳入 CI）
+
+- `evals/cases/requirement_cases.py`：5 例需求提取 + 4 例约束遵守 + 4 例预算偏差 ground truth。
+- `evals/run_requirement_eval.py`（`python -m evals.run_requirement_eval [--skip-llm]`）：
+  - 需求提取准确率：字段级确定性比对（space_type/style/area/budget/constraints/custom_projects）。
+  - 预算偏差率：方案报价相对预算范围的确定性偏差。
+  - 约束遵守率：`llm_service.judge_plan_compliance` LLM judge，与人工标注对账并报告 judge 准确率。
+- 报告写 `evals/reports/requirement_eval.md`。
+
+### 用户修改行为反推失败类型
+
+- `layout_service.diff_scene_items`：对比两个场景文档，逐实例输出位移/旋转/增删。
+- `layout_service.summarize_edits`：聚合成「改动最多的家具类别 = 布局薄弱点」信号。
+- `layout_service.analyze_manual_edits`：取场景的 `auto_layout` 初稿 vs 最新 `manual` 版本，反推失败类型（用户动得多的区域即引擎弱项）。
+
+### 验证
+
+- 后端 **170 passed**（新增 19 项：generation meta 2 + 成本估算 3 + 需求指标 8 + 修改反推 6；迁移断言扩展 generation_runs 新列）。
+- Windows 下全量跑建议用全新 `--basetemp`（`tmp_path` 权限 flaky，非代码问题，见 2026-08-17 环境备注）。
+
+
+## 2026-08-18 AI 模型环境变量统一
+
+- 文本模型配置统一为提供商无关的 `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`，不再让业务代码绑定 DeepSeek 命名。
+- 视觉模型配置统一为 `VL_API_KEY` / `VL_BASE_URL` / `VL_MODEL` / `VL_REASONING_MODEL`。
+- 保留旧 `DEEPSEEK_*`、`VL_API_KEY_BASE_URL`、`VL_MODEL1/2` 的读取兼容，方便其他部署环境平滑迁移。
+- 本地 Stable Diffusion、ControlNet 与 Hugging Face 缓存配置显式归入 `.env`，`.env.example` 按用途分组整理。
+- 配置代码中的机器专属 Hugging Face 缓存默认路径改为相对目录 `./hf_cache`。
+
+### 验证
+
+- 配置兼容与 AI 工作流相关单测：`10 passed`；后端全量测试：`114 passed`。
+- 当前有效模型配置检查通过，Chat/VL 均继续指向 SiliconFlow，模型名称与迁移前一致。
+
+## 2026-08-18 Chat 体验 P0 修复
+
+- **动态开场白**：去掉 mockChat.initialMessages 的固定文本；新增 `lib/openingMessage.buildOpeningMessage`，根据 `useRequirementStore` 的真实数据（户型、面积、风格、预算、家庭情况）拼一段引用具体信息的开场白，并按"最该先确认什么"挑一个针对性的开场问题。
+- **去掉 mockChat 降级**：`designApi.sendChatMessage` 失败时不再回退到 `getAiReply`（关键词匹配的假回复），改为返回"AI 服务暂时不可用，请稍后再试。"——假回复比"暂不可用"更毁信任。
+- 验证：前端 `35 passed`（新增 6 项），tsc + vite build 通过。
+
+### 用户反馈来源
+
+- 之前 chat 页"开场白每次一样、AI 回复不像 AI"是 `mockChat.getAiReply` 的关键词规则在前端降级兜底；现在 catch 块不再回退 mock。
+
+## 2026-08-18 3D 场景继承
+
+- 修复 P0 的遗留缺口：精修后新方案（新 planVersionId）没有 3D 场景的问题。
+- `plan_refine_service.refine_plan_version`：精修写入新版本后，若旧方案已有 3D 场景，把场景的 `plan_version_id` 归属移到新版本，保留用户的家具布局。
+
+### 验证
+
+- 后端全量测试：`112 passed`（新增场景继承 1 项）。
+
+## 2026-08-18 画像接入业务流程（P1 第 3、4 步）
+
+- 画像**写入**（登录用户，不阻断主流程）：
+  - `confirm_requirement`：确认需求后从结构化需求提取画像。
+  - `refine_plan_version`：精修后从修改指令提取画像（学习预算敏感、材质偏好等信号）。
+- 画像**读取**：
+  - `_execute_generation`：生成方案前读画像，注入 `requirement["profile_context"]`。
+  - `_PLAN_SYSTEM` 增加指令：方案必须贴合画像中的预算、风格、家庭结构、生活方式与软性偏好。
+- P1 闭环达成：确认需求/精修 → 存画像 → 下次生成方案 → 用画像。
+
+### 验证
+
+- 后端全量测试：`111 passed`。
+
+### 说明
+
+- 「匿名画像合并」暂不需要：匿名阶段（task.user_id 为空）不提取画像，登录后自然无匿名画像可合并；未来若支持匿名画像挂 session，再补合并逻辑。
+
+## 2026-08-18 用户画像存储基础（P1 第 1、2 步）
+
+- 新增 `user_profiles` 表（迁移 `21b0bc4721d4`，已应用到 MySQL）：
+  - 关键维度用列：`budget_min` / `budget_max` / `preferred_styles`（JSON）。
+  - 扩展维度用 `profile_json`（JSON 兜底，避免频繁迁移）。
+  - `User` 增加 `profile` 一对一关系。
+- `llm_service.extract_profile`：从文本（需求/对话/修改指令）提取装修画像。
+- `profile_service`：
+  - `get_or_create_profile` / `merge_profile`（增量合并：标量覆盖、列表去重合并、预算覆盖）。
+  - `extract_and_merge`（LLM 提取 + 合并，LLM 不可用时静默跳过不阻断主流程）。
+  - `build_profile_context`（画像转 LLM 上下文文本）。
+
+### 验证
+
+- 后端全量测试：`111 passed`（新增 profile_service 5 项）。
+- 迁移 `alembic current`：`21b0bc4721d4 (head)`。
+
+### 下一步（P1 第 3、4 步）
+
+- 在 `confirm_requirement`、`refine_plan` 节点挂画像提取。
+- 在 `generate_plans`、`chat_reply` 里注入画像上下文。
+- 登录时把匿名画像合并进账号。
+
+## 2026-08-18 方案级 AI 精修（P0）
+
+- 新增「方案级自然语言修改 Agent」，让 AI 从「一次性出 3 套」升级为「对话式打磨」：
+  - `llm_service.refine_plan`：在现有方案上按指令精准修改（换风格/换家具/调配色/调预算），返回修改后完整方案 + 一句话说明。
+  - `agents/plan_refine_agent.py`：复用 Scene Agent 的 `plan→execute→validate` 三节点模式，模型做语义修改，`catalog_service` 确定性回填商品 SKU 与报价，质量门禁校验。
+  - `services/plan_refine_service.py`：编排精修，替换目标方案、保留其余方案，写入新的不可变 plan version（generator=refine）。
+  - 路由 `POST /api/design/tasks/{task_id}/plans/{plan_id}/refine`。
+- 方案 payload 统一带 `task_id`（result / 我的方案 / refine 返回），前端可精确知道方案所属任务。
+- 前端 `DesignDetailPage` 顶部新增「AI 修改方案」输入框，回车或点「应用修改」即生效；修改后详情页立即切换到新版本方案。
+
+### 验证
+
+- 后端全量测试：`106 passed`（新增 refine agent 3 项、refine service 2 项、路由断言）。
+- 前端全量测试：`29 passed`，tsc 与 vite 构建通过。
+
+### 已知局限（后续）
+
+- 修改不继承旧版本的 3D 场景（refine 产生新 planVersionId，旧场景仍挂在旧版本上），后续可做「场景继承或重置提示」。
+- 预算达标目前靠 LLM 尽量满足（换便宜商品/减工程量），未做强校验。
+
+## 2026-08-18 报价通知角标 + 用户管理拆分
+
+- 厂家报价通知角标：
+  - 后端新增 `GET /api/orders/unread-count`（需登录）+ `order_service.unread_quote_count`（客户待选择报价总数）。
+  - 前端 `Header` 对普通用户每 30 秒轮询，在「我的订单」菜单显示红点角标（>99 显示 99+）。
+- 用户管理从商品库页拆出：
+  - 新增 `RequireAdmin` 路由守卫 + 独立页面 `AdminUsersPage`（路由 `/admin/users`，仅管理员）。
+  - `AdminPage` 移除「用户管理」Tab，恢复为纯厂家功能（成品家具/定制报价/店铺设置）。
+  - `Header` 管理员额外显示「用户管理」入口。
+
+### 验证
+
+- 后端全量测试：`101 passed`（新增 unread_quote_count 1 项 + 路由断言）。
+- 前端全量测试：`29 passed`，tsc 与 vite 构建通过。
+
+## 2026-08-18 详情页后端兜底拉取
+
+- 补齐「我的方案」闭环的最后一块：详情页本地无缓存时向后端按版本兜底。
+- 后端新增 `GET /api/design/plan-versions/{plan_version_id}`（需登录）：
+  - `design_version_service.get_plan_version_for_user` 按方案版本 ID 查询并校验归属（`task.user_id`），杜绝越权。
+  - 返回方案快照（含 `planVersionId` / `planKey`）。
+- 前端 `DesignDetailPage`：本地 `generatedPlans` 找不到方案且 id 为数字时，向后端拉取兜底；拉取中显示加载态。
+- 现在登录用户的方案可跨设备直接打开 `/design/{planVersionId}`，不再依赖本地缓存。
+
+### 验证
+
+- 后端全量测试：`100 passed`（新增 get_plan_version_for_user 1 项 + 路由断言）。
+- 前端全量测试：`29 passed`，tsc 与 vite 构建通过。
+
+## 2026-08-17 详情页按 planVersionId 定位
+
+- 修复多任务同名方案（plan-a/b/c）串号问题：
+  - `SavedDesign` 类型新增 `planVersionId?`；「我的方案」后端方案跳转改为 `/design/{planVersionId}`。
+  - `DesignDetailPage` 匹配逻辑优先按 `planVersionId`（数字 id）精确定位，找不到再回退 `plan.id`（本地方案/结果页）。
+- 验证：前端 `29 passed`，tsc 与 vite 构建通过。
+
+### 已知局限
+
+- 详情页仍依赖 `generatedPlans`（本地持久化）；跨设备直接访问 `/design/{planVersionId}` 时无本地缓存会找不到方案，需后续加「按 planVersionId 拉取方案」接口。
+
+## 2026-08-17 我的方案后端化
+
+- 后端新增 `GET /api/design/tasks/mine`（需登录）：返回当前用户的设计任务，每个任务附带最新版本的三套方案快照（含 `planVersionId` / `planKey`）。
+  - `design_version_service.list_user_designs` 复用 `get_latest_revision`，只返回有方案版本的任务。
+- 前端 `MyDesignsPage` 登录后从后端拉取历史方案，注入 `generatedPlans` 供详情页查看，并生成 `SavedDesign` 摘要展示；未登录仍回退本地 localStorage。
+  - 后端方案（id 前缀 `server-`）隐藏本地「收藏/删除」按钮，避免误导（删除后端方案需后续做删除接口）。
+- `designApi` 新增 `fetchMyDesigns`（Bearer 鉴权 + decorate 方案封面）。
+
+### 验证
+
+- 后端全量测试：`99 passed`（新增 list_user_designs 1 项 + 路由断言）。
+- 前端全量测试：`29 passed`，tsc 与 vite 构建通过。
+
+### 已知局限
+
+- 方案详情跳转仍用 `plan.id`（plan-a/b/c），多个任务的同名方案可能冲突；后续可改为按 `planVersionId` 定位详情。
+- 「我的方案」删除/收藏目前仅对本地方案生效；后端方案的删除与收藏需补接口。
+
+## 2026-08-17 登录与订单池优化一轮
+
+- 订单列表返回报价数 + 客户手机号脱敏：
+  - `list_customer_orders` 返回 `pending_quote_count`；`list_order_pool` 返回 `pending_quote_count` 且 `customer_name` 脱敏（`138****0080`）。
+- 登录时合并匿名会话：`login` 接口接收可选 `session_id`，`auth_service.merge_anonymous_session` 把该会话的设计任务与图片归属到账号（为后续「我的方案」后端化铺路）。
+- 前端：
+  - `LoginPage` 登录成功后回跳原页面（读取 `location.state.from`）。
+  - `orderApi` / `adminApi` 在 401 时自动清登录态（`useAuthStore.logout()`），token 失效不再持续报错。
+  - `authApi.login` 携带当前匿名会话 id。
+  - 订单页展示报价数：我的订单「N 个报价待选择」，工作台「已有 N 人报价」。
+
+### 验证
+
+- 后端全量测试：`98 passed`（新增 merge 1 项、订单报价数/脱敏 2 项）。
+- 前端全量测试：`29 passed`，tsc 与 vite 构建通过。
+
+### 环境备注
+
+- Windows 下 pytest 的 `tmp_path` 临时目录受 workbuddy safe-delete shim 影响权限不稳定，全量跑建议每次用全新 `--basetemp` 目录（或先清理），否则 blender 相关测试会报 WinError 5。非代码问题。
+
+## 2026-08-17 登录与订单池（厂家接单）
+
+- 新增手机号验证码登录/注册二合一（Mock 阶段固定验证码 `123456`，开发环境后端日志打印并在响应返回 `dev_code`）：
+  - `users` 表新增 `role`（customer/factory/admin）、`phone_verified`、`last_login_at`。
+  - 新增 `sms_codes` 表 + `auth_service`（验证码生成/60s 限流/5 分钟过期/一次性消费、登录即注册、JWT 签发解析）。
+  - 接口：`POST /api/auth/send-code`、`POST /api/auth/login`、`GET /api/auth/me`。
+- 新增订单池（多方报价比价）：
+  - `orders`（订单意向，支持绑定方案 `plan` / 纯需求 `requirement`）+ `order_quotes`（厂家报价）两张表。
+  - 接口：`POST /api/orders`、`GET /api/orders/mine`、`GET /api/orders`、`GET /api/orders/{id}`、`POST /api/orders/{id}/quotes`、`POST /api/orders/{id}/accept`、`POST /api/orders/{id}/close`。
+  - 用户接受某报价后订单锁定（`assigned`），其余报价自动 `rejected`。
+- 新增权限依赖：`get_current_user`（Bearer JWT）、`require_factory`（厂家/管理员）、`require_admin`。
+- 给 `products` / `shop` / `customers` 全部写接口加 `require_factory`，堵住裸奔写接口。
+- 新增管理员接口：`GET /api/admin/users`、`PATCH /api/admin/users/{id}/role`。
+- 新增 `backend/set_admin.py`：首次部署时自举管理员账号（`python set_admin.py <手机号>`）。
+- 前端：
+  - 新增 `useAuthStore` + `authApi` + `orderApi` + `adminApi`。
+  - `LoginPage` 改为手机号+验证码登录/注册（去邮箱/密码/微信 mock）。
+  - 新增路由守卫 `RequireAuth` / `RequireFactory`；`/workspace` `/customers` `/admin` 需厂家权限，`/orders` 需登录。
+  - `Header` 按角色显示导航；登录后显示昵称+角色徽章+退出。
+  - 新增 `OrdersPage`（用户订单）、`WorkspacePage`（厂家工作台/订单池）、`AdminPage` 用户管理 Tab。
+  - `DesignDetailPage` 新增「发布订单意向」按钮（绑定方案或纯需求）。
+- 迁移：`e7f8a9b0c1d2`（head），已应用到 MySQL。
+
+### 验证
+
+- 后端全量测试：`95 passed`（新增 auth 7 项、订单 8 项、路由与迁移断言扩展）。
+- 前端全量测试：`29 passed`（新增 useAuthStore 3 项）。
+- TypeScript 检查与 Vite 生产构建通过。
+- MySQL `alembic current`：`e7f8a9b0c1d2 (head)`，`alembic check` 无漂移。
+
+### 备注与后续
+
+- 短信为 Mock 阶段，生产需接短信服务商（替换 `auth_service._send_sms`）。
+- 首个管理员账号需运行 `python set_admin.py <手机号>` 自举，之后在 `/admin` 用户管理中授权。
+- 本机开发/测试需用 `D:/software/py314/python.exe`（项目依赖装在 Python 3.14），默认 `python` 指向 workbuddy 3.13.12 无依赖。
+- 下一步候选：把匿名会话方案在登录后合并到账号、订单与厂家报价通知、真实短信服务商接入。
+
 ## 2026-08-17 最新代码同步说明
 
 - 当前稳定代码基线：`ac357e5 feat: 建立隔离Blender Worker高质量渲染链路`。

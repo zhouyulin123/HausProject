@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # .env 放在项目根目录（backend 的上一级），无论从哪里启动都能找到
@@ -17,23 +17,51 @@ class Settings(BaseSettings):
         "mysql+pymysql://root:123456@127.0.0.1:3306/houseproject_db?charset=utf8mb4"
     )
 
-    # LLM Settings（DeepSeek：需求解析 / 对话 / 方案生成）
-    openai_api_key: str = ""
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-chat"
+    # 文本模型：需求解析 / 对话 / 方案生成 / Agent 规划
+    llm_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("LLM_API_KEY", "DEEPSEEK_API_KEY"),
+    )
+    llm_base_url: str = Field(
+        default="https://api.siliconflow.cn/v1",
+        validation_alias=AliasChoices("LLM_BASE_URL", "DEEPSEEK_BASE_URL"),
+    )
+    llm_model: str = Field(
+        default="deepseek-ai/DeepSeek-V3",
+        validation_alias=AliasChoices("LLM_MODEL", "DEEPSEEK_MODEL"),
+    )
+    # 可选：每百万 token 单价（元），配置后才会估算方案生成成本并写入 generation_runs
+    llm_input_price_per_mtok: float | None = None
+    llm_output_price_per_mtok: float | None = None
 
     # 视觉模型（SiliconFlow 上的 Qwen3-VL：户型图 / 房间照片分析）
     vl_api_key: str = ""
-    vl_api_key_base_url: str = "https://api.siliconflow.cn/v1"
-    vl_model1: str = "Qwen/Qwen3-VL-32B-Instruct"  # 主力：图片分析、结构化输出
-    vl_model2: str = "Qwen/Qwen3-VL-32B-Thinking"  # 备用：复杂户型推理
+    vl_base_url: str = Field(
+        default="https://api.siliconflow.cn/v1",
+        validation_alias=AliasChoices("VL_BASE_URL", "VL_API_KEY_BASE_URL"),
+    )
+    vl_model: str = Field(
+        default="Qwen/Qwen3-VL-32B-Instruct",
+        validation_alias=AliasChoices("VL_MODEL", "VL_MODEL1"),
+    )
+    vl_reasoning_model: str = Field(
+        default="Qwen/Qwen3-VL-32B-Thinking",
+        validation_alias=AliasChoices("VL_REASONING_MODEL", "VL_MODEL2"),
+    )
 
     # 本地效果图生成（SD1.5 + ControlNet MLSD，跑在本机 GPU）
     sd_enabled: bool = True
     sd_base_model: str = "Lykon/dreamshaper-8"
     sd_controlnet_model: str = "lllyasviel/control_v11p_sd15_mlsd"
-    hf_home: str = "D:/hf_cache"  # 模型缓存目录（与已下载的一致）
+    hf_home: str = "./hf_cache"
+
+    # 登录与短信验证码（Mock 阶段固定验证码；生产切换到真实短信服务商）
+    jwt_secret_key: str = "dev-secret-change-me-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60 * 24 * 7  # 7 天
+    sms_mock_code: str = "123456"
+    sms_code_expire_seconds: int = 300  # 验证码 5 分钟有效
+    sms_code_resend_seconds: int = 60  # 同手机号 60 秒内不可重发
 
     # 店铺信息默认值（首次启动写入 shop_settings 表；之后以数据库为准，可在 /admin 修改）
     shop_name: str = "AI 家装定制助手"

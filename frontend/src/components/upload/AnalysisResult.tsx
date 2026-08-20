@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { CheckCircle2, FileImage, Lightbulb, ScanEye, Sparkles } from "lucide-react";
+import { CheckCircle2, FileImage, Lightbulb, Ruler, ScanEye, Sparkles } from "lucide-react";
 import type { ImageAnalysis } from "@/types/requirement";
 import LoadingAI from "@/components/chat/LoadingAI";
 import Tag from "@/components/common/Tag";
@@ -67,6 +67,34 @@ export default function AnalysisResult({
             )}
             {analysis.roomCount && <Tag tone="cream">{analysis.roomCount}</Tag>}
           </div>
+
+          {analysis.roomModel && (
+            <div className="mt-3 rounded-2xl border border-sage-100 bg-sage-50/50 p-3.5">
+              <div className="flex items-center gap-1.5 text-sm font-semibold text-sage-700">
+                <Ruler className="h-4 w-4" />
+                空间结构识别
+              </div>
+              <p className="mt-1.5 text-xs text-stone-600">
+                识别到 {analysis.roomModel.rooms.length} 个空间
+                {analysis.roomModel.doors.length > 0 &&
+                  ` · ${analysis.roomModel.doors.length} 扇门`}
+                {analysis.roomModel.windows.length > 0 &&
+                  ` · ${analysis.roomModel.windows.length} 扇窗`}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {analysis.roomModel.rooms.map((room) => (
+                  <Tag key={room.id} tone="cream">
+                    {room.name}
+                  </Tag>
+                ))}
+              </div>
+              {analysis.roomModel.requiresConfirmation.length > 0 && (
+                <p className="mt-2 text-xs text-terra-600">
+                  尺寸与门窗宽度将在下一步确认后用于生成 3D 布局
+                </p>
+              )}
+            </div>
+          )}
 
           <ul className="mt-3 space-y-2">
             {analysis.findings.map((finding, i) => (

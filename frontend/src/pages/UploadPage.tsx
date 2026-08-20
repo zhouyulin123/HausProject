@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { ArrowRight, LayoutTemplate, Sofa, BedDouble } from "lucide-react";
 import UploadPanel from "@/components/upload/UploadPanel";
 import AnalysisResult from "@/components/upload/AnalysisResult";
+import RoomCalibration from "@/components/upload/RoomCalibration";
 import type { AnalysisStatus } from "@/components/upload/AnalysisResult";
 import PageTitle from "@/components/common/PageTitle";
 import Button from "@/components/common/Button";
 import { analyzeRoomImage } from "@/api/designApi";
+import { useRoomModelStore } from "@/store/useRoomModelStore";
 import type { ImageAnalysis } from "@/types/requirement";
 
 const examples = [
@@ -58,6 +60,7 @@ export default function UploadPage() {
     setTimeout(() => setStatus("analyzing"), 400);
     const result = await analyzeRoomImage(file);
     setAnalysis(result);
+    useRoomModelStore.getState().setRoomModel(result.roomModel ?? null);
     setStatus("done");
   };
 
@@ -118,6 +121,16 @@ export default function UploadPage() {
             fileSize={uploaded.size}
             status={status}
             analysis={analysis}
+          />
+        )}
+
+        {uploaded && analysis?.roomModel && (
+          <RoomCalibration
+            analysis={analysis}
+            onCalibrated={(roomModel) => {
+              setAnalysis((prev) => (prev ? { ...prev, roomModel } : prev));
+              useRoomModelStore.getState().setRoomModel(roomModel);
+            }}
           />
         )}
 

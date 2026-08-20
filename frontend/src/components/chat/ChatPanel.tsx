@@ -3,8 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Send, Sparkles } from "lucide-react";
 import type { ChatMessage as ChatMessageType } from "@/types/chat";
-import { initialMessages, quickCommands, quickReplies } from "@/data/mockChat";
+import { quickCommands, quickReplies } from "@/data/mockChat";
 import { sendChatMessage } from "@/api/designApi";
+import { buildOpeningMessage } from "@/lib/openingMessage";
+import { useRequirementStore } from "@/store/useRequirementStore";
 import ChatMessage from "./ChatMessage";
 import QuickActions from "./QuickActions";
 import LoadingAI from "./LoadingAI";
@@ -12,7 +14,14 @@ import Button from "@/components/common/Button";
 
 export default function ChatPanel() {
   const navigate = useNavigate();
-  const [messages, setMessages] = useState<ChatMessageType[]>(initialMessages);
+  const requirement = useRequirementStore((s) => s.requirement);
+  const [messages, setMessages] = useState<ChatMessageType[]>(() => [
+    {
+      id: "m0",
+      role: "ai",
+      content: buildOpeningMessage(requirement),
+    },
+  ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);

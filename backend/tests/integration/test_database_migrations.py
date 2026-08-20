@@ -39,7 +39,14 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "uploaded_images",
             "products",
             "custom_quote_rules",
+            "sms_codes",
+            "orders",
+            "order_quotes",
         } <= tables
+        user_columns = {
+            column["name"] for column in inspect(inspection_engine).get_columns("users")
+        }
+        assert {"role", "phone_verified", "last_login_at"} <= user_columns
         product_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns("products")
@@ -71,6 +78,20 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "output_url",
             "error_message",
         } <= render_job_columns
+        generation_run_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "generation_runs"
+            )
+        }
+        assert {
+            "model",
+            "prompt_snapshot",
+            "input_snapshot",
+            "output_snapshot",
+            "usage_json",
+            "cost_cny",
+        } <= generation_run_columns
     finally:
         if inspection_engine is not None:
             inspection_engine.dispose()

@@ -23,6 +23,7 @@ import {
   type SceneHistory,
 } from "@/lib/sceneHistory";
 import type { DesignPlan } from "@/types/design";
+import type { RoomModel } from "@/types/roomModel";
 import type {
   BlenderRenderJob,
   BlenderRenderProfile,
@@ -71,10 +72,11 @@ interface UseSceneEditorResult {
 export function useSceneEditor(
   plan: DesignPlan,
   roomType: string,
+  roomModel?: RoomModel | null,
 ): UseSceneEditorResult {
   const initialScene = useMemo(
-    () => buildSceneDocument(plan, roomType),
-    [plan, roomType],
+    () => buildSceneDocument(plan, roomType, roomModel),
+    [plan, roomType, roomModel],
   );
   const [history, setHistory] = useState(() =>
     createSceneHistory(initialScene),

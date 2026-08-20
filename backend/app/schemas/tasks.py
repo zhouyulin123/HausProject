@@ -121,3 +121,13 @@ class RenderResponse(BaseModel):
     image_url: str
     mode: str  # controlnet / text2img
     source: str  # sd / unavailable
+
+
+class RefinePlanRequest(BaseModel):
+    instruction: str = Field(min_length=1, max_length=500)
+
+
+class RefinePlanResponse(BaseModel):
+    plan: Dict[str, Any]
+    version: int
+    message: str = ""
