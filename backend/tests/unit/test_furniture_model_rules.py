@@ -5,6 +5,7 @@ import pytest
 
 from app.services.furniture_model_rules import (
     FurnitureRuleError,
+    build_deterministic_rule_catalog,
     compile_lounge_chair_rule,
     merge_furniture_catalogs,
     validate_deterministic_rule,
@@ -87,3 +88,32 @@ def test_rule_validation_rejects_unknown_material_binding() -> None:
 
     with pytest.raises(FurnitureRuleError, match="missing_material"):
         validate_deterministic_rule(rule)
+
+
+def test_rule_catalog_tracks_ready_and_pending_models() -> None:
+    chair = _lounge_chair_spec()
+    catalog = {
+        "家具数量": 3,
+        "家具列表": [
+            chair,
+            {"家具名称": "测试沙发", "家具类型": "沙发"},
+            {"家具名称": "测试餐桌", "家具类型": "餐桌"},
+        ],
+    }
+
+    rules = build_deterministic_rule_catalog(catalog)
+
+    assert rules["家具数量"] == 3
+    assert rules["已完成规则数量"] == 1
+    assert rules["待完善规则数量"] == 2
+    assert len({item["模型ID"] for item in rules["模型目录"]}) == 3
+    sample = next(
+        item for item in rules["模型目录"] if item["家具名称"] == "中古风绒布单人椅"
+    )
+    assert sample["规则状态"] == "ready"
+    assert sample["确定性规则"]["模型ID"] == sample["模型ID"]
+    assert all(
+        item["规则状态"] == "pending"
+        for item in rules["模型目录"]
+        if item["家具名称"] != "中古风绒布单人椅"
+    )
