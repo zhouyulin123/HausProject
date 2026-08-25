@@ -8,6 +8,7 @@ __pycache__/
 *.py[cod]
 *.pyd
 .pytest_cache/
+backend/.pytest-tmp*/
 .coverage
 htmlcov/
 .test_artifacts/
