@@ -10,6 +10,72 @@ class FurnitureRuleError(ValueError):
     """建模源数据缺失、冲突或规则不完整。"""
 
 
+SAMPLE_FURNITURE_NAME = "中古风绒布单人椅"
+SAMPLE_MODEL_ID = "HAUS-CHAIR-001"
+
+
+def build_deterministic_rule_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
+    """为统一目录建立稳定模型 ID，并登记规则完成状态。"""
+    items = catalog.get("家具列表")
+    if not isinstance(items, list):
+        raise FurnitureRuleError("统一目录缺少家具列表")
+
+    model_entries: list[dict[str, Any]] = []
+    prefix_counters: dict[str, int] = {}
+    used_model_ids = {SAMPLE_MODEL_ID}
+
+    for item in items:
+        name = _require_text(item, "家具名称")
+        furniture_type = _require_text(item, "家具类型")
+        if name == SAMPLE_FURNITURE_NAME:
+            rule = compile_lounge_chair_rule(item)
+            model_entries.append(
+                {
+                    "模型ID": SAMPLE_MODEL_ID,
+                    "家具名称": name,
+                    "家具类型": furniture_type,
+                    "数据批次": item.get("数据批次"),
+                    "规则状态": "ready",
+                    "确定性规则": rule,
+                }
+            )
+            continue
+
+        prefix = _model_id_prefix(furniture_type)
+        sequence = prefix_counters.get(prefix, 0) + 1
+        model_id = f"HAUS-{prefix}-{sequence:03d}"
+        while model_id in used_model_ids:
+            sequence += 1
+            model_id = f"HAUS-{prefix}-{sequence:03d}"
+        prefix_counters[prefix] = sequence
+        used_model_ids.add(model_id)
+        model_entries.append(
+            {
+                "模型ID": model_id,
+                "家具名称": name,
+                "家具类型": furniture_type,
+                "数据批次": item.get("数据批次"),
+                "规则状态": "pending",
+                "待完善内容": [
+                    "部件尺寸与空间变换",
+                    "材质槽与部件绑定",
+                    "设计冻结值",
+                    "模型质量规则",
+                ],
+            }
+        )
+
+    ready_count = sum(item["规则状态"] == "ready" for item in model_entries)
+    return {
+        "文件说明": "40 款家具的确定性建模规则目录；pending 项不得进入正式模型生产。",
+        "规则库版本": "1.0.0",
+        "家具数量": len(model_entries),
+        "已完成规则数量": ready_count,
+        "待完善规则数量": len(model_entries) - ready_count,
+        "模型目录": model_entries,
+    }
+
+
 def merge_furniture_catalogs(
     catalogs: list[tuple[str, dict[str, Any]]],
 ) -> dict[str, Any]:
@@ -46,6 +112,32 @@ def merge_furniture_catalogs(
         "家具数量": len(merged_items),
         "家具列表": merged_items,
     }
+
+
+def _model_id_prefix(furniture_type: str) -> str:
+    if "沙发" in furniture_type:
+        return "SOFA"
+    if "椅" in furniture_type:
+        return "CHAIR"
+    if "茶几" in furniture_type or "套几" in furniture_type:
+        return "COFFEE"
+    if "餐桌" in furniture_type:
+        return "DINING"
+    if "书桌" in furniture_type:
+        return "DESK"
+    if "床头柜" in furniture_type:
+        return "NIGHTSTAND"
+    if "床" in furniture_type:
+        return "BED"
+    if "灯" in furniture_type:
+        return "LAMP"
+    if "地毯" in furniture_type:
+        return "RUG"
+    if "窗帘" in furniture_type:
+        return "CURTAIN"
+    if "书架" in furniture_type or "书柜" in furniture_type:
+        return "SHELF"
+    raise FurnitureRuleError(f"没有模型 ID 分类规则：{furniture_type}")
 
 
 def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
