@@ -212,6 +212,49 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
         ),
     ]
 
+    rail_height = arm_profile[1]
+    rail_center_y = leg_height - rail_height / 2
+    frame_width = width - leg_section * 2
+    frame_depth = seat_depth - leg_section * 2
+    frame_front_z = seat_center_z + seat_depth / 2 - leg_section / 2
+    frame_rear_z = seat_center_z - seat_depth / 2 + leg_section / 2
+    parts.extend(
+        [
+            _part(
+                "front_seat_rail",
+                "wood_rail",
+                [frame_width, rail_height, leg_section],
+                [0, rail_center_y, frame_front_z],
+                [0, 0, 0],
+                "wood_frame",
+            ),
+            _part(
+                "rear_seat_rail",
+                "wood_rail",
+                [frame_width, rail_height, leg_section],
+                [0, rail_center_y, frame_rear_z],
+                [0, 0, 0],
+                "wood_frame",
+            ),
+            _part(
+                "left_seat_rail",
+                "wood_rail",
+                [leg_section, rail_height, frame_depth],
+                [-width / 2 + leg_section / 2, rail_center_y, seat_center_z],
+                [0, 0, 0],
+                "wood_frame",
+            ),
+            _part(
+                "right_seat_rail",
+                "wood_rail",
+                [leg_section, rail_height, frame_depth],
+                [width / 2 - leg_section / 2, rail_center_y, seat_center_z],
+                [0, 0, 0],
+                "wood_frame",
+            ),
+        ]
+    )
+
     leg_x = width / 2 - leg_section / 2
     front_z = depth / 2 - leg_section / 2
     rear_z = -depth / 2 + leg_section / 2
@@ -228,6 +271,22 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
                 [leg_section, leg_height, leg_section],
                 [x, leg_height / 2, z],
                 [lean, 0, 0],
+                "wood_frame",
+            )
+        )
+
+    back_post_height = height - leg_height
+    for part_id, x in [
+        ("left_back_post", -leg_x),
+        ("right_back_post", leg_x),
+    ]:
+        parts.append(
+            _part(
+                part_id,
+                "tapered_wood_post",
+                [leg_section, back_post_height, leg_section],
+                [x, leg_height + back_post_height / 2, rear_z],
+                [-back_lean, 0, 0],
                 "wood_frame",
             )
         )
@@ -266,6 +325,13 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
                 "高度_mm": leg_height,
                 "后腿后倾角_deg": rear_leg_lean,
                 "前腿渐缩": bool(shape.get("前腿渐缩")),
+            },
+            "木框连接": {
+                "连接方式": _require_text(
+                    _require_mapping(spec, "工艺细节"), "木连接"
+                ),
+                "座下横梁截面_mm": [leg_section, rail_height],
+                "靠背立柱截面_mm": [leg_section, leg_section],
             },
         },
         "材质槽": material_slots,
