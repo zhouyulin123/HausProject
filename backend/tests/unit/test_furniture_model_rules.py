@@ -65,7 +65,10 @@ def test_lounge_chair_rule_is_complete_and_has_no_runtime_defaults() -> None:
     assert rule["几何规则"]["座垫"]["尺寸_mm"] == [570, 90, 525]
     assert rule["几何规则"]["木扶手"]["截面_mm"] == [32, 46]
     assert rule["几何规则"]["靠背"]["后倾角_deg"] == 12
-    assert {part["部件ID"] for part in rule["部件"]} == {
+    parts = {part["部件ID"]: part for part in rule["部件"]}
+    assert parts["left_arm"]["位置_mm"][1] == 572
+    assert parts["front_left_leg"]["尺寸_mm"][1] == 549
+    assert set(parts) == {
         "seat_cushion",
         "back_cushion",
         "left_arm",
