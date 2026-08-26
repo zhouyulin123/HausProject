@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from math import cos, radians, sin
 from typing import Any
 
 
@@ -198,7 +199,11 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
             "left_arm",
             "wood_rail",
             [arm_profile[0], arm_profile[1], seat_depth],
-            [-width / 2 + arm_profile[0] / 2, arm_height, seat_center_z],
+            [
+                -width / 2 + arm_profile[0] / 2,
+                arm_height - arm_profile[1] / 2,
+                seat_center_z,
+            ],
             [0, 0, 0],
             "wood_frame",
         ),
@@ -206,7 +211,11 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
             "right_arm",
             "wood_rail",
             [arm_profile[0], arm_profile[1], seat_depth],
-            [width / 2 - arm_profile[0] / 2, arm_height, seat_center_z],
+            [
+                width / 2 - arm_profile[0] / 2,
+                arm_height - arm_profile[1] / 2,
+                seat_center_z,
+            ],
             [0, 0, 0],
             "wood_frame",
         ),
@@ -258,24 +267,28 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
     leg_x = width / 2 - leg_section / 2
     front_z = depth / 2 - leg_section / 2
     rear_z = -depth / 2 + leg_section / 2
-    for part_id, x, z, lean in [
-        ("front_left_leg", -leg_x, front_z, 0),
-        ("front_right_leg", leg_x, front_z, 0),
-        ("rear_left_leg", -leg_x, rear_z, -rear_leg_lean),
-        ("rear_right_leg", leg_x, rear_z, -rear_leg_lean),
+    front_leg_height = arm_height - arm_profile[1]
+    for part_id, x, z, part_height, lean in [
+        ("front_left_leg", -leg_x, front_z, front_leg_height, 0),
+        ("front_right_leg", leg_x, front_z, front_leg_height, 0),
+        ("rear_left_leg", -leg_x, rear_z, leg_height, rear_leg_lean),
+        ("rear_right_leg", leg_x, rear_z, leg_height, rear_leg_lean),
     ]:
         parts.append(
             _part(
                 part_id,
                 "tapered_wood_leg",
-                [leg_section, leg_height, leg_section],
-                [x, leg_height / 2, z],
+                [leg_section, part_height, leg_section],
+                [x, part_height / 2, z],
                 [lean, 0, 0],
                 "wood_frame",
             )
         )
 
     back_post_height = height - leg_height
+    rear_leg_angle = radians(rear_leg_lean)
+    rear_leg_top_y = leg_height * cos(rear_leg_angle)
+    rear_leg_top_z = rear_z + leg_height * sin(rear_leg_angle)
     for part_id, x in [
         ("left_back_post", -leg_x),
         ("right_back_post", leg_x),
@@ -285,7 +298,7 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
                 part_id,
                 "tapered_wood_post",
                 [leg_section, back_post_height, leg_section],
-                [x, leg_height + back_post_height / 2, rear_z],
+                [x, rear_leg_top_y + back_post_height / 2, rear_leg_top_z],
                 [-back_lean, 0, 0],
                 "wood_frame",
             )
@@ -319,10 +332,11 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
                 "后倾角_deg": back_lean,
                 "横向弧度半径_mm": _require_number(shape, "靠背横向弧度半径"),
             },
-            "木扶手": {"截面_mm": arm_profile, "中心高_mm": arm_height},
+            "木扶手": {"截面_mm": arm_profile, "顶面高_mm": arm_height},
             "木腿": {
                 "截面_mm": [leg_section, leg_section],
-                "高度_mm": leg_height,
+                "前腿高度_mm": front_leg_height,
+                "后腿下段高度_mm": leg_height,
                 "后腿后倾角_deg": rear_leg_lean,
                 "前腿渐缩": bool(shape.get("前腿渐缩")),
             },

@@ -4,7 +4,10 @@ import type {
   DeterministicMaterialSlot,
   DeterministicModelPart,
 } from "@/lib/deterministicFurniture";
-import { modelPartTransform } from "@/lib/deterministicFurniture";
+import {
+  modelPartTransform,
+  taperedPartPivotTransform,
+} from "@/lib/deterministicFurniture";
 
 function materialColor(slot: DeterministicMaterialSlot): string {
   if (Array.isArray(slot.base_color)) return slot.base_color[0] ?? "#8A7A68";
@@ -32,12 +35,13 @@ function TaperedWoodPart({
   part: DeterministicModelPart;
   material: DeterministicMaterialSlot;
 }) {
-  const { size, position, rotation } = modelPartTransform(part);
+  const { size, pivot, childCenter, rotation } = taperedPartPivotTransform(part);
   return (
-    <group position={position} rotation={rotation}>
+    <group position={pivot} rotation={rotation}>
       <mesh
         castShadow
         receiveShadow
+        position={childCenter}
         rotation={[0, Math.PI / 4, 0]}
         scale={[size[0] * Math.SQRT2, size[1], size[2] * Math.SQRT2]}
       >

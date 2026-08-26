@@ -57,3 +57,13 @@ export function modelPartTransform(part: DeterministicModelPart) {
     rotation: part.旋转_deg.map((value) => value * Math.PI / 180) as [number, number, number],
   };
 }
+
+export function taperedPartPivotTransform(part: DeterministicModelPart) {
+  const { size, position, rotation } = modelPartTransform(part);
+  return {
+    pivot: [position[0], position[1] - size[1] / 2, position[2]] as [number, number, number],
+    childCenter: [0, size[1] / 2, 0] as [number, number, number],
+    rotation,
+    size,
+  };
+}
