@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Furniture3DSpec } from "@/types/furniture";
 import {
   modelPartTransform,
+  taperedPartPivotTransform,
   resolveFurnitureRenderer,
 } from "@/lib/deterministicFurniture";
 
@@ -47,6 +48,24 @@ describe("确定性家具模型分发", () => {
       size: [0.032, 0.34, 0.032],
       position: [-0.344, 0.17, -0.374],
       rotation: [-8 * Math.PI / 180, 0, 0],
+    });
+  });
+
+  it("锥形木构件围绕底部中心旋转，连接点不会漂移", () => {
+    expect(
+      taperedPartPivotTransform({
+        部件ID: "rear_left_leg",
+        几何: "tapered_wood_leg",
+        尺寸_mm: [32, 340, 32],
+        位置_mm: [-344, 170, -374],
+        旋转_deg: [8, 0, 0],
+        材质槽: "wood_frame",
+      }),
+    ).toEqual({
+      pivot: [-0.344, 0, -0.374],
+      childCenter: [0, 0.17, 0],
+      rotation: [8 * Math.PI / 180, 0, 0],
+      size: [0.032, 0.34, 0.032],
     });
   });
 });

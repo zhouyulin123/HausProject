@@ -68,6 +68,9 @@ def test_lounge_chair_rule_is_complete_and_has_no_runtime_defaults() -> None:
     parts = {part["部件ID"]: part for part in rule["部件"]}
     assert parts["left_arm"]["位置_mm"][1] == 572
     assert parts["front_left_leg"]["尺寸_mm"][1] == 549
+    assert parts["rear_left_leg"]["旋转_deg"] == [8, 0, 0]
+    assert parts["left_back_post"]["位置_mm"][1] == pytest.approx(561.691, abs=0.001)
+    assert parts["left_back_post"]["位置_mm"][2] == pytest.approx(-326.682, abs=0.001)
     assert set(parts) == {
         "seat_cushion",
         "back_cushion",
