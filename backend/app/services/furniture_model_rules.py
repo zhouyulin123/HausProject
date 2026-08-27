@@ -170,7 +170,9 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
     back_thickness = 85
     leg_section = 32
     leg_height = seat_height - seat_thickness
-    seat_center_z = (depth - seat_depth) / 2
+    # 座框以模型原点为中心；总深度只用于相机/碰撞包围盒，不能直接拿来
+    # 把座面推到最前端，否则座面与靠背会产生结构断裂。
+    seat_center_z = 0
     back_height = height - seat_height
 
     material_slots = [
@@ -191,7 +193,11 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
             "back_cushion",
             "curved_cushion",
             [seat_width, back_height, back_thickness],
-            [0, seat_height + back_height / 2, -depth / 2 + back_thickness / 2],
+            [
+                0,
+                seat_height + back_height / 2,
+                -seat_depth / 2 + back_thickness / 2,
+            ],
             [-back_lean, 0, 0],
             "upholstery",
         ),
@@ -265,8 +271,8 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
     )
 
     leg_x = width / 2 - leg_section / 2
-    front_z = depth / 2 - leg_section / 2
-    rear_z = -depth / 2 + leg_section / 2
+    front_z = frame_front_z
+    rear_z = frame_rear_z
     front_leg_height = arm_height - arm_profile[1]
     for part_id, x, z, part_height, lean in [
         ("front_left_leg", -leg_x, front_z, front_leg_height, 0),
@@ -360,6 +366,7 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
             "座垫厚度_mm": seat_thickness,
             "靠背厚度_mm": back_thickness,
             "木腿截面_mm": [leg_section, leg_section],
+            "座框中心Z_mm": seat_center_z,
             "说明": "原始参数未给出的加工尺寸；经样板设计明确后冻结。",
         },
     }
