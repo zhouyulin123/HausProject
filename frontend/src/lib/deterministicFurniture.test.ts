@@ -4,9 +4,13 @@ import {
   cushionVertexPosition,
   deterministicFurnitureRule,
   modelPartTransform,
+  previewLighting,
   taperedPartPivotTransform,
   resolveFurnitureRenderer,
   upholsteryAppearance,
+  woodAppearance,
+  woodGrainAxis,
+  woodJoineryMarkers,
 } from "@/lib/deterministicFurniture";
 
 const deterministicSpec = {
@@ -26,6 +30,13 @@ const deterministicSpec = {
         绒面: { 方向性: true, 法线强度: 0.2, 纹理周期_mm: 3 },
         坐垫形变: { 前缘压缩: 0.04, 中心隆起_mm: 10 },
         靠背曲面: { 横向弧度半径_mm: 900 },
+      },
+      木材: {
+        树种: "深色白蜡木",
+        纹理周期_mm: 42,
+        法线强度: 0.16,
+        透明面漆: { 强度: 0.14, 粗糙度: 0.62 },
+        榫卯节点: { 启用: true, 榫肩线宽_mm: 1.2, 距构件端部_mm: 18 },
       },
     },
   },
@@ -133,5 +144,62 @@ describe("确定性家具模型分发", () => {
 
     expect(frontTop[1]).toBeCloseTo(0.0432, 4);
     expect(centerTop[1]).toBeCloseTo(0.055, 4);
+  });
+
+  it("把木材工艺转换为米制渲染参数", () => {
+    expect(woodAppearance(deterministicFurnitureRule(deterministicSpec)!)).toEqual({
+      species: "深色白蜡木",
+      grainPeriod: 0.042,
+      normalStrength: 0.16,
+      clearcoat: 0.14,
+      clearcoatRoughness: 0.62,
+      joineryEnabled: true,
+      shoulderLineWidth: 0.0012,
+      shoulderInset: 0.018,
+    });
+  });
+
+  it("木纹沿每个构件的最长本地轴排列", () => {
+    expect(woodGrainAxis({
+      部件ID: "front_seat_rail",
+      几何: "wood_rail",
+      尺寸_mm: [656, 46, 32],
+      位置_mm: [0, 317, 246.5],
+      旋转_deg: [0, 0, 0],
+      材质槽: "wood_frame",
+    })).toBe("x");
+    expect(woodGrainAxis({
+      部件ID: "front_left_leg",
+      几何: "tapered_wood_leg",
+      尺寸_mm: [32, 549, 32],
+      位置_mm: [-344, 274.5, 246.5],
+      旋转_deg: [0, 0, 0],
+      材质槽: "wood_frame",
+    })).toBe("y");
+  });
+
+  it("榫肩线在横梁两端按冻结距离定位", () => {
+    const appearance = woodAppearance(deterministicFurnitureRule(deterministicSpec)!);
+    expect(woodJoineryMarkers({
+      部件ID: "front_seat_rail",
+      几何: "wood_rail",
+      尺寸_mm: [656, 46, 32],
+      位置_mm: [0, 317, 246.5],
+      旋转_deg: [0, 0, 0],
+      材质槽: "wood_frame",
+    }, appearance)).toEqual([
+      { axis: "x", offset: -0.31 },
+      { axis: "x", offset: 0.31 },
+    ]);
+  });
+
+  it("三点灯光按模型半径缩放且降低环境平光", () => {
+    expect(previewLighting(0.4)).toEqual({
+      ambientIntensity: 0.22,
+      hemisphereIntensity: 0.62,
+      key: { position: [1.12, 1.68, 0.88], intensity: 1.75, color: "#FFF2DE" },
+      fill: { position: [-0.96, 0.88, 1.2], intensity: 0.48, color: "#DDE8F2" },
+      rim: { position: [0.32, 1.36, -1.12], intensity: 0.72, color: "#FFE2BF" },
+    });
   });
 });
