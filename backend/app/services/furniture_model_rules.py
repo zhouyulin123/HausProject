@@ -310,8 +310,36 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
             )
         )
 
+    craft = _require_mapping(spec, "工艺细节")
+    upholstery_material = material_slots[0]
+    appearance_rules = {
+        "软包": {
+            "滚边": {
+                "启用": craft.get("软包滚边") is True,
+                "直径_mm": 7,
+            },
+            "缝线": {
+                "启用": True,
+                "线径_mm": 1.4,
+                "内缩_mm": 10,
+            },
+            "绒面": {
+                "方向性": craft.get("绒面方向性") is True,
+                "法线强度": _require_number(upholstery_material, "normal_strength"),
+                "纹理周期_mm": 3,
+            },
+            "坐垫形变": {
+                "前缘压缩": _require_number(craft, "坐垫前缘压缩"),
+                "中心隆起_mm": 10,
+            },
+            "靠背曲面": {
+                "横向弧度半径_mm": _require_number(shape, "靠背横向弧度半径"),
+            },
+        }
+    }
+
     rule = {
-        "规则版本": "1.0.0",
+        "规则版本": "1.1.0",
         "规则状态": "ready",
         "模型ID": "HAUS-CHAIR-001",
         "家具名称": name,
@@ -354,6 +382,7 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
                 "靠背立柱截面_mm": [leg_section, leg_section],
             },
         },
+        "外观规则": appearance_rules,
         "材质槽": material_slots,
         "部件": parts,
         "质量规则": {
@@ -367,6 +396,11 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
             "靠背厚度_mm": back_thickness,
             "木腿截面_mm": [leg_section, leg_section],
             "座框中心Z_mm": seat_center_z,
+            "软包滚边直径_mm": 7,
+            "软包缝线线径_mm": 1.4,
+            "软包缝线内缩_mm": 10,
+            "绒面纹理周期_mm": 3,
+            "坐垫中心隆起_mm": 10,
             "说明": "原始参数未给出的加工尺寸；经样板设计明确后冻结。",
         },
     }
@@ -385,6 +419,7 @@ def validate_deterministic_rule(rule: dict[str, Any]) -> None:
         "坐标系统",
         "包围尺寸_mm",
         "几何规则",
+        "外观规则",
         "材质槽",
         "部件",
         "质量规则",
@@ -420,6 +455,11 @@ def validate_deterministic_rule(rule: dict[str, Any]) -> None:
                 raise FurnitureRuleError(f"{part_id} 的 {vector_key} 必须为三维数组")
         if any(not isinstance(value, (int, float)) or value <= 0 for value in part["尺寸_mm"]):
             raise FurnitureRuleError(f"{part_id} 的尺寸必须全部大于 0")
+
+    appearance = _require_mapping(rule, "外观规则")
+    upholstery = _require_mapping(appearance, "软包")
+    for detail_key in ("滚边", "缝线", "绒面", "坐垫形变", "靠背曲面"):
+        _require_mapping(upholstery, detail_key)
 
 
 def _part(
