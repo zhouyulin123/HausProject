@@ -312,6 +312,7 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
 
     craft = _require_mapping(spec, "工艺细节")
     upholstery_material = material_slots[0]
+    wood_material = material_slots[1]
     appearance_rules = {
         "软包": {
             "滚边": {
@@ -335,11 +336,22 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
             "靠背曲面": {
                 "横向弧度半径_mm": _require_number(shape, "靠背横向弧度半径"),
             },
-        }
+        },
+        "木材": {
+            "树种": _require_text(wood_material, "材质"),
+            "纹理周期_mm": 42,
+            "法线强度": _require_number(wood_material, "normal_strength"),
+            "透明面漆": {"强度": 0.14, "粗糙度": 0.62},
+            "榫卯节点": {
+                "启用": "榫卯" in _require_text(craft, "木连接"),
+                "榫肩线宽_mm": 1.2,
+                "距构件端部_mm": 18,
+            },
+        },
     }
 
     rule = {
-        "规则版本": "1.1.0",
+        "规则版本": "1.2.0",
         "规则状态": "ready",
         "模型ID": "HAUS-CHAIR-001",
         "家具名称": name,
@@ -401,6 +413,11 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
             "软包缝线内缩_mm": 10,
             "绒面纹理周期_mm": 3,
             "坐垫中心隆起_mm": 10,
+            "木纹周期_mm": 42,
+            "木材透明面漆强度": 0.14,
+            "木材透明面漆粗糙度": 0.62,
+            "榫肩线宽_mm": 1.2,
+            "榫肩线距构件端部_mm": 18,
             "说明": "原始参数未给出的加工尺寸；经样板设计明确后冻结。",
         },
     }
@@ -460,6 +477,9 @@ def validate_deterministic_rule(rule: dict[str, Any]) -> None:
     upholstery = _require_mapping(appearance, "软包")
     for detail_key in ("滚边", "缝线", "绒面", "坐垫形变", "靠背曲面"):
         _require_mapping(upholstery, detail_key)
+    wood = _require_mapping(appearance, "木材")
+    _require_mapping(wood, "透明面漆")
+    _require_mapping(wood, "榫卯节点")
 
 
 def _part(

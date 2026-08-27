@@ -5,6 +5,7 @@ import {
   Color,
   DataTexture,
   LinearFilter,
+  RGBAFormat,
   RedFormat,
   RepeatWrapping,
   Vector3,
@@ -20,7 +21,12 @@ import {
   cushionVertexPosition,
   taperedPartPivotTransform,
   upholsteryAppearance,
+  woodAppearance,
+  woodGrainAxis,
+  woodJoineryMarkers,
+  type LocalAxis,
   type UpholsteryAppearance,
+  type WoodAppearance,
 } from "@/lib/deterministicFurniture";
 
 function materialColor(slot: DeterministicMaterialSlot): string {
@@ -32,10 +38,16 @@ function PartMaterial({
   slot,
   bumpMap,
   bumpScale = 0,
+  map,
+  clearcoat = 0,
+  clearcoatRoughness = 0,
 }: {
   slot: DeterministicMaterialSlot;
   bumpMap?: DataTexture;
   bumpScale?: number;
+  map?: DataTexture;
+  clearcoat?: number;
+  clearcoatRoughness?: number;
 }) {
   const isUpholstery = slot.槽位ID === "upholstery";
   return (
@@ -48,6 +60,72 @@ function PartMaterial({
       sheenRoughness={0.72}
       bumpMap={bumpMap}
       bumpScale={bumpScale}
+      map={map}
+      clearcoat={clearcoat}
+      clearcoatRoughness={clearcoatRoughness}
+    />
+  );
+}
+
+function woodTexture(
+  appearance: WoodAppearance,
+  size: [number, number, number],
+  axis: LocalAxis,
+) {
+  const resolution = 96;
+  const data = new Uint8Array(resolution * resolution * 4);
+  for (let y = 0; y < resolution; y += 1) {
+    for (let x = 0; x < resolution; x += 1) {
+      const u = x / resolution;
+      const v = y / resolution;
+      const flowingGrain = Math.sin(u * Math.PI * 18 + Math.sin(v * Math.PI * 4) * 1.7);
+      const finePores = Math.sin(u * Math.PI * 46 + v * Math.PI * 3) * 0.35;
+      const value = Math.round(226 + flowingGrain * 20 + finePores * 12);
+      const index = (y * resolution + x) * 4;
+      data[index] = value;
+      data[index + 1] = value;
+      data[index + 2] = value;
+      data[index + 3] = 255;
+    }
+  }
+  const texture = new DataTexture(data, resolution, resolution, RGBAFormat);
+  const axisIndex = { x: 0, y: 1, z: 2 }[axis];
+  const length = size[axisIndex];
+  const crossSection = Math.min(...size.filter((_, index) => index !== axisIndex));
+  texture.wrapS = RepeatWrapping;
+  texture.wrapT = RepeatWrapping;
+  texture.magFilter = LinearFilter;
+  texture.center.set(0.5, 0.5);
+  texture.rotation = axis === "x" ? Math.PI / 2 : 0;
+  texture.repeat.set(
+    Math.max(1, crossSection / appearance.grainPeriod),
+    Math.max(1, length / 0.28),
+  );
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function WoodMaterial({
+  slot,
+  appearance,
+  size,
+  axis,
+}: {
+  slot: DeterministicMaterialSlot;
+  appearance: WoodAppearance;
+  size: [number, number, number];
+  axis: LocalAxis;
+}) {
+  const map = useMemo(() => woodTexture(appearance, size, axis), [appearance, axis, size]);
+  useEffect(() => () => map.dispose(), [map]);
+  return (
+    <PartMaterial
+      slot={slot}
+      map={map}
+      bumpMap={map}
+      bumpScale={appearance.normalStrength * 0.006}
+      clearcoat={appearance.clearcoat}
+      clearcoatRoughness={appearance.clearcoatRoughness}
     />
   );
 }
@@ -184,11 +262,14 @@ function CushionPart({
 function TaperedWoodPart({
   part,
   material,
+  appearance,
 }: {
   part: DeterministicModelPart;
   material: DeterministicMaterialSlot;
+  appearance: WoodAppearance;
 }) {
   const { size, pivot, childCenter, rotation } = taperedPartPivotTransform(part);
+  const axis = woodGrainAxis(part);
   return (
     <group position={pivot} rotation={rotation}>
       <mesh
@@ -199,8 +280,56 @@ function TaperedWoodPart({
         scale={[size[0] * Math.SQRT2, size[1], size[2] * Math.SQRT2]}
       >
         <cylinderGeometry args={[0.5, 0.37, 1, 4, 1]} />
-        <PartMaterial slot={material} />
+        <WoodMaterial slot={material} appearance={appearance} size={size} axis={axis} />
       </mesh>
+    </group>
+  );
+}
+
+function markerTransform(
+  axis: LocalAxis,
+  offset: number,
+  size: [number, number, number],
+  lineWidth: number,
+) {
+  const markerSize: [number, number, number] = [size[0] * 1.035, size[1] * 1.035, size[2] * 1.035];
+  const position: [number, number, number] = [0, 0, 0];
+  const axisIndex = { x: 0, y: 1, z: 2 }[axis];
+  markerSize[axisIndex] = lineWidth;
+  position[axisIndex] = offset;
+  return { markerSize, position };
+}
+
+function WoodRailPart({
+  part,
+  material,
+  appearance,
+}: {
+  part: DeterministicModelPart;
+  material: DeterministicMaterialSlot;
+  appearance: WoodAppearance;
+}) {
+  const { size, position, rotation } = modelPartTransform(part);
+  const radius = Math.min(Math.min(...size) * 0.18, 0.006);
+  const axis = woodGrainAxis(part);
+  const markers = woodJoineryMarkers(part, appearance);
+  return (
+    <group position={position} rotation={rotation}>
+      <RoundedBox args={size} radius={radius} smoothness={3} castShadow receiveShadow>
+        <WoodMaterial slot={material} appearance={appearance} size={size} axis={axis} />
+      </RoundedBox>
+      {markers.map(({ axis: markerAxis, offset }) => {
+        const marker = markerTransform(markerAxis, offset, size, appearance.shoulderLineWidth);
+        return (
+          <mesh key={`${markerAxis}-${offset}`} position={marker.position} castShadow>
+            <boxGeometry args={marker.markerSize} />
+            <meshStandardMaterial
+              color={upholsteryLineColor(material, 0.58)}
+              roughness={0.74}
+            />
+          </mesh>
+        );
+      })}
     </group>
   );
 }
@@ -209,36 +338,22 @@ function RulePart({
   part,
   material,
   appearance,
+  wood,
 }: {
   part: DeterministicModelPart;
   material: DeterministicMaterialSlot;
   appearance: UpholsteryAppearance;
+  wood: WoodAppearance;
 }) {
   if (part.几何 === "tapered_wood_leg" || part.几何 === "tapered_wood_post") {
-    return <TaperedWoodPart part={part} material={material} />;
+    return <TaperedWoodPart part={part} material={material} appearance={wood} />;
   }
 
-  const { size, position, rotation } = modelPartTransform(part);
   const isCushion = part.几何 === "rounded_cushion" || part.几何 === "curved_cushion";
   if (isCushion) {
     return <CushionPart part={part} material={material} appearance={appearance} />;
   }
-  const smallestSide = Math.min(...size);
-  const radius = Math.min(smallestSide * 0.18, 0.006);
-
-  return (
-    <RoundedBox
-      args={size}
-      radius={radius}
-      smoothness={3}
-      position={position}
-      rotation={rotation}
-      castShadow
-      receiveShadow
-    >
-      <PartMaterial slot={material} />
-    </RoundedBox>
-  );
+  return <WoodRailPart part={part} material={material} appearance={wood} />;
 }
 
 export default function DeterministicFurnitureModel3D({
@@ -248,6 +363,7 @@ export default function DeterministicFurnitureModel3D({
 }) {
   const materials = new Map(rule.材质槽.map((slot) => [slot.槽位ID, slot]));
   const appearance = upholsteryAppearance(rule);
+  const wood = woodAppearance(rule);
   return (
     <group name={rule.模型ID}>
       {rule.部件.map((part) => {
@@ -259,6 +375,7 @@ export default function DeterministicFurnitureModel3D({
             part={part}
             material={material}
             appearance={appearance}
+            wood={wood}
           />
         );
       })}

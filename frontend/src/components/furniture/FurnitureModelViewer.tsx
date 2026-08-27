@@ -2,7 +2,10 @@ import { Canvas } from "@react-three/fiber";
 import { ContactShadows, OrbitControls } from "@react-three/drei";
 import type { Furniture3DSpec } from "@/types/furniture";
 import FurnitureModel3D from "./FurnitureModel3D";
-import { deterministicFurnitureRule } from "@/lib/deterministicFurniture";
+import {
+  deterministicFurnitureRule,
+  previewLighting,
+} from "@/lib/deterministicFurniture";
 
 /** 把尺寸参数取成米制数值（数组取第一个）。 */
 function num(value: number | number[] | undefined, fallback: number): number {
@@ -33,6 +36,7 @@ export default function FurnitureModelViewer({
 }) {
   const radius = Math.max(0.3, estimateRadius(spec));
   const distance = radius * 3.2 + 0.6;
+  const lighting = previewLighting(radius);
 
   return (
     <Canvas
@@ -42,13 +46,27 @@ export default function FurnitureModelViewer({
       camera={{ position: [distance * 0.75, distance * 0.7, distance], fov: 40 }}
     >
       <color attach="background" args={["#EFE8DB"]} />
-      <ambientLight intensity={0.75} />
+      <ambientLight intensity={lighting.ambientIntensity} />
+      <hemisphereLight
+        args={["#FFF8EC", "#746A5E", lighting.hemisphereIntensity]}
+      />
       <directionalLight
-        position={[radius * 3, radius * 4, radius * 2]}
-        intensity={1.3}
+        position={lighting.key.position}
+        intensity={lighting.key.intensity}
+        color={lighting.key.color}
         castShadow
         shadow-mapSize-width={1024}
         shadow-mapSize-height={1024}
+      />
+      <directionalLight
+        position={lighting.fill.position}
+        intensity={lighting.fill.intensity}
+        color={lighting.fill.color}
+      />
+      <directionalLight
+        position={lighting.rim.position}
+        intensity={lighting.rim.intensity}
+        color={lighting.rim.color}
       />
       <group position={[0, 0, 0]}>
         <FurnitureModel3D spec={spec} />

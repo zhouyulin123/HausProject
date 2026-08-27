@@ -29,9 +29,86 @@ export interface DeterministicFurnitureRule {
       坐垫形变: { 前缘压缩: number; 中心隆起_mm: number };
       靠背曲面: { 横向弧度半径_mm: number };
     };
+    木材: {
+      树种: string;
+      纹理周期_mm: number;
+      法线强度: number;
+      透明面漆: { 强度: number; 粗糙度: number };
+      榫卯节点: { 启用: boolean; 榫肩线宽_mm: number; 距构件端部_mm: number };
+    };
   };
   材质槽: DeterministicMaterialSlot[];
   部件: DeterministicModelPart[];
+}
+
+export type LocalAxis = "x" | "y" | "z";
+
+export interface WoodAppearance {
+  species: string;
+  grainPeriod: number;
+  normalStrength: number;
+  clearcoat: number;
+  clearcoatRoughness: number;
+  joineryEnabled: boolean;
+  shoulderLineWidth: number;
+  shoulderInset: number;
+}
+
+export function woodAppearance(rule: DeterministicFurnitureRule): WoodAppearance {
+  const wood = rule.外观规则.木材;
+  return {
+    species: wood.树种,
+    grainPeriod: wood.纹理周期_mm / 1000,
+    normalStrength: wood.法线强度,
+    clearcoat: wood.透明面漆.强度,
+    clearcoatRoughness: wood.透明面漆.粗糙度,
+    joineryEnabled: wood.榫卯节点.启用,
+    shoulderLineWidth: wood.榫卯节点.榫肩线宽_mm / 1000,
+    shoulderInset: wood.榫卯节点.距构件端部_mm / 1000,
+  };
+}
+
+export function woodGrainAxis(part: DeterministicModelPart): LocalAxis {
+  const longestIndex = part.尺寸_mm.indexOf(Math.max(...part.尺寸_mm));
+  return (["x", "y", "z"] as const)[longestIndex];
+}
+
+export function woodJoineryMarkers(
+  part: DeterministicModelPart,
+  appearance: WoodAppearance,
+): Array<{ axis: LocalAxis; offset: number }> {
+  if (!appearance.joineryEnabled || part.几何 !== "wood_rail") return [];
+  const axis = woodGrainAxis(part);
+  const axisIndex = { x: 0, y: 1, z: 2 }[axis];
+  const length = part.尺寸_mm[axisIndex] / 1000;
+  const offset = Math.max(0, length / 2 - appearance.shoulderInset);
+  return [
+    { axis, offset: -offset },
+    { axis, offset },
+  ];
+}
+
+export function previewLighting(radius: number) {
+  const scaled = (factor: number) => Number((radius * factor).toFixed(4));
+  return {
+    ambientIntensity: 0.22,
+    hemisphereIntensity: 0.62,
+    key: {
+      position: [scaled(2.8), scaled(4.2), scaled(2.2)] as [number, number, number],
+      intensity: 1.75,
+      color: "#FFF2DE",
+    },
+    fill: {
+      position: [scaled(-2.4), scaled(2.2), scaled(3)] as [number, number, number],
+      intensity: 0.48,
+      color: "#DDE8F2",
+    },
+    rim: {
+      position: [scaled(0.8), scaled(3.4), scaled(-2.8)] as [number, number, number],
+      intensity: 0.72,
+      color: "#FFE2BF",
+    },
+  };
 }
 
 export interface UpholsteryAppearance {
