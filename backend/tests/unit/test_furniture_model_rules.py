@@ -65,6 +65,28 @@ def test_lounge_chair_rule_is_complete_and_has_no_runtime_defaults() -> None:
     assert rule["几何规则"]["座垫"]["尺寸_mm"] == [570, 90, 525]
     assert rule["几何规则"]["木扶手"]["截面_mm"] == [32, 46]
     assert rule["几何规则"]["靠背"]["后倾角_deg"] == 12
+    assert rule["规则版本"] == "1.1.0"
+    assert rule["外观规则"]["软包"]["滚边"] == {
+        "启用": True,
+        "直径_mm": 7,
+    }
+    assert rule["外观规则"]["软包"]["绒面"] == {
+        "方向性": True,
+        "法线强度": 0.2,
+        "纹理周期_mm": 3,
+    }
+    assert rule["外观规则"]["软包"]["坐垫形变"] == {
+        "前缘压缩": 0.04,
+        "中心隆起_mm": 10,
+    }
+    assert rule["外观规则"]["软包"]["靠背曲面"] == {
+        "横向弧度半径_mm": 900,
+    }
+    assert rule["外观规则"]["软包"]["缝线"] == {
+        "启用": True,
+        "线径_mm": 1.4,
+        "内缩_mm": 10,
+    }
     parts = {part["部件ID"]: part for part in rule["部件"]}
     assert parts["seat_cushion"]["位置_mm"][2] == 0
     assert parts["back_cushion"]["位置_mm"][2] == -220
@@ -95,6 +117,14 @@ def test_lounge_chair_rule_is_complete_and_has_no_runtime_defaults() -> None:
         "wood_frame",
     }
     assert rule["规则状态"] == "ready"
+
+
+def test_rule_validation_rejects_incomplete_upholstery_appearance() -> None:
+    rule = compile_lounge_chair_rule(_lounge_chair_spec())
+    del rule["外观规则"]["软包"]["靠背曲面"]
+
+    with pytest.raises(FurnitureRuleError, match="靠背曲面"):
+        validate_deterministic_rule(rule)
 
 
 def test_rule_validation_rejects_unknown_material_binding() -> None:
