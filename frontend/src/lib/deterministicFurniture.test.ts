@@ -42,6 +42,28 @@ const deterministicSpec = {
   },
 } as Furniture3DSpec;
 
+const coffeeTableSpec = {
+  家具类型: "茶几",
+  确定性建模规则: {
+    规则版本: "1.0.0",
+    规则状态: "ready",
+    模型ID: "HAUS-COFFEE-003",
+    生成器: "coffee_table_v1",
+    包围尺寸_mm: { 宽: 1200, 高: 360, 深: 600 },
+    材质槽: [],
+    部件: [],
+    外观规则: {
+      木材: {
+        树种: "北美白橡木木蜡油",
+        纹理周期_mm: 54,
+        法线强度: 0.17,
+        透明面漆: { 强度: 0.08, 粗糙度: 0.72 },
+        榫卯节点: { 启用: true, 榫肩线宽_mm: 1, 距构件端部_mm: 16 },
+      },
+    },
+  },
+} as Furniture3DSpec;
+
 describe("确定性家具模型分发", () => {
   it("ready 的单人椅规则优先于旧 sofa 生成器", () => {
     expect(resolveFurnitureRenderer(deterministicSpec)).toEqual({
@@ -54,6 +76,13 @@ describe("确定性家具模型分发", () => {
     expect(resolveFurnitureRenderer({ 家具类型: "单人椅" })).toEqual({
       kind: "legacy",
       generator: "sofa",
+    });
+  });
+
+  it("ready 的圆角茶几进入确定性桌类生成器", () => {
+    expect(resolveFurnitureRenderer(coffeeTableSpec)).toEqual({
+      kind: "deterministic",
+      generator: "coffee_table_v1",
     });
   });
 

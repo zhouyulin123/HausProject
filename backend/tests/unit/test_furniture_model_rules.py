@@ -7,12 +7,14 @@ from app.services.furniture_model_rules import (
     FurnitureRuleError,
     build_deterministic_rule_catalog,
     compile_lounge_chair_rule,
+    compile_round_rect_coffee_table_rule,
     merge_furniture_catalogs,
     validate_deterministic_rule,
 )
 
 
 SPEC_FILE = Path(__file__).resolve().parents[2] / "furniture_3d_specs.json"
+SPEC_40_FILE = Path(__file__).resolve().parents[2] / "furniture_3d_specs_40.json"
 
 
 def _lounge_chair_spec() -> dict:
@@ -21,6 +23,15 @@ def _lounge_chair_spec() -> dict:
         item
         for item in catalog["家具列表"]
         if item["家具名称"] == "中古风绒布单人椅"
+    )
+
+
+def _coffee_table_spec() -> dict:
+    catalog = json.loads(SPEC_40_FILE.read_text(encoding="utf-8"))
+    return next(
+        item
+        for item in catalog["家具列表"]
+        if item["家具名称"] == "白橡木圆角长茶几"
     )
 
 
@@ -152,6 +163,36 @@ def test_rule_validation_rejects_unknown_material_binding() -> None:
 
     with pytest.raises(FurnitureRuleError, match="missing_material"):
         validate_deterministic_rule(rule)
+
+
+def test_round_rect_coffee_table_rule_has_manufacturable_structure() -> None:
+    rule = compile_round_rect_coffee_table_rule(_coffee_table_spec())
+
+    validate_deterministic_rule(rule)
+
+    assert rule["模型ID"] == "HAUS-COFFEE-003"
+    assert rule["生成器"] == "coffee_table_v1"
+    assert rule["包围尺寸_mm"] == {"宽": 1200, "高": 360, "深": 600}
+    assert rule["几何规则"]["台面"] == {
+        "尺寸_mm": [1200, 32, 600],
+        "平面圆角半径_mm": 120,
+        "边缘圆角_mm": 10,
+    }
+    assert rule["几何规则"]["桌腿"]["外撇角_deg"] == 2
+    parts = {part["部件ID"]: part for part in rule["部件"]}
+    assert set(parts) == {
+        "tabletop",
+        "front_left_leg",
+        "front_right_leg",
+        "rear_left_leg",
+        "rear_right_leg",
+        "left_hidden_stretcher",
+        "right_hidden_stretcher",
+    }
+    assert parts["tabletop"]["位置_mm"] == [0, 344, 0]
+    assert parts["front_left_leg"]["旋转_deg"] == [2, 0, -2]
+    assert parts["left_hidden_stretcher"]["几何"] == "wood_rail"
+    assert rule["外观规则"]["木材"]["纹理周期_mm"] == 54
 
 
 def test_rule_catalog_tracks_ready_and_pending_models() -> None:
