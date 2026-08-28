@@ -159,6 +159,13 @@ describe("确定性家具模型分发", () => {
     });
   });
 
+  it("没有软包或木材外观时明确拒绝专用材质转换", () => {
+    const rule = structuredClone(deterministicFurnitureRule(coffeeTableSpec)!);
+    delete rule.外观规则.木材;
+    expect(() => upholsteryAppearance(rule)).toThrow("规则没有软包外观数据");
+    expect(() => woodAppearance(rule)).toThrow("规则没有木材外观数据");
+  });
+
   it("靠背中心按 900mm 横向半径向前形成微弧", () => {
     const appearance = upholsteryAppearance(deterministicFurnitureRule(deterministicSpec)!);
     const center = cushionVertexPosition(
@@ -195,6 +202,12 @@ describe("确定性家具模型分发", () => {
 
     expect(frontTop[1]).toBeCloseTo(0.0432, 4);
     expect(centerTop[1]).toBeCloseTo(0.055, 4);
+    expect(cushionVertexPosition(
+      "rounded_box",
+      [0.1, 0.2, 0.3],
+      [1, 1, 1],
+      appearance,
+    )).toEqual([0.1, 0.2, 0.3]);
   });
 
   it("把木材工艺转换为米制渲染参数", () => {
@@ -242,6 +255,14 @@ describe("确定性家具模型分发", () => {
       { axis: "x", offset: -0.31 },
       { axis: "x", offset: 0.31 },
     ]);
+    expect(woodJoineryMarkers({
+      部件ID: "seat",
+      几何: "rounded_box",
+      尺寸_mm: [400, 60, 420],
+      位置_mm: [0, 455, 0],
+      旋转_deg: [0, 0, 0],
+      材质槽: "wood_frame",
+    }, appearance)).toEqual([]);
   });
 
   it("三点灯光按模型半径缩放且降低环境平光", () => {

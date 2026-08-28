@@ -6,6 +6,8 @@ from copy import deepcopy
 from math import cos, radians, sin
 from typing import Any
 
+from app.services.furniture_family_rules import compile_furniture_family_rule
+
 
 class FurnitureRuleError(ValueError):
     """建模源数据缺失、冲突或规则不完整。"""
@@ -13,6 +15,8 @@ class FurnitureRuleError(ValueError):
 
 SAMPLE_FURNITURE_NAME = "中古风绒布单人椅"
 SAMPLE_MODEL_ID = "HAUS-CHAIR-001"
+COFFEE_TABLE_NAME = "白橡木圆角长茶几"
+COFFEE_TABLE_MODEL_ID = "HAUS-COFFEE-003"
 
 
 def build_deterministic_rule_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
@@ -23,7 +27,7 @@ def build_deterministic_rule_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
 
     model_entries: list[dict[str, Any]] = []
     prefix_counters: dict[str, int] = {}
-    used_model_ids = {SAMPLE_MODEL_ID}
+    used_model_ids = {SAMPLE_MODEL_ID, COFFEE_TABLE_MODEL_ID}
 
     for item in items:
         name = _require_text(item, "家具名称")
@@ -41,6 +45,19 @@ def build_deterministic_rule_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
                 }
             )
             continue
+        if name == COFFEE_TABLE_NAME:
+            rule = compile_round_rect_coffee_table_rule(item)
+            model_entries.append(
+                {
+                    "模型ID": COFFEE_TABLE_MODEL_ID,
+                    "家具名称": name,
+                    "家具类型": furniture_type,
+                    "数据批次": item.get("数据批次"),
+                    "规则状态": "ready",
+                    "确定性规则": rule,
+                }
+            )
+            continue
 
         prefix = _model_id_prefix(furniture_type)
         sequence = prefix_counters.get(prefix, 0) + 1
@@ -50,26 +67,23 @@ def build_deterministic_rule_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
             model_id = f"HAUS-{prefix}-{sequence:03d}"
         prefix_counters[prefix] = sequence
         used_model_ids.add(model_id)
+        rule = compile_furniture_family_rule(item, model_id)
+        validate_deterministic_rule(rule)
         model_entries.append(
             {
                 "模型ID": model_id,
                 "家具名称": name,
                 "家具类型": furniture_type,
                 "数据批次": item.get("数据批次"),
-                "规则状态": "pending",
-                "待完善内容": [
-                    "部件尺寸与空间变换",
-                    "材质槽与部件绑定",
-                    "设计冻结值",
-                    "模型质量规则",
-                ],
+                "规则状态": "ready",
+                "确定性规则": rule,
             }
         )
 
     ready_count = sum(item["规则状态"] == "ready" for item in model_entries)
     return {
-        "文件说明": "40 款家具的确定性建模规则目录；pending 项不得进入正式模型生产。",
-        "规则库版本": "1.0.0",
+        "文件说明": "40 款家具的确定性建模规则目录；全部部件尺寸、材质与安装基准显式化。",
+        "规则库版本": "2.0.0",
         "家具数量": len(model_entries),
         "已完成规则数量": ready_count,
         "待完善规则数量": len(model_entries) - ready_count,
@@ -363,6 +377,7 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
             "前向": "+Z",
             "原点": "floor_center",
         },
+        "安装规则": {"基准": "floor", "偏移_mm": 0},
         "包围尺寸_mm": {"宽": width, "高": height, "深": depth},
         "几何规则": {
             "座位数": 1,
@@ -425,6 +440,140 @@ def compile_lounge_chair_rule(spec: dict[str, Any]) -> dict[str, Any]:
     return rule
 
 
+def compile_round_rect_coffee_table_rule(spec: dict[str, Any]) -> dict[str, Any]:
+    """编译白橡木圆角长茶几，连接与加工尺寸均显式冻结。"""
+    name = _require_text(spec, "家具名称")
+    if name != COFFEE_TABLE_NAME:
+        raise FurnitureRuleError(f"当前茶几编译器不支持：{name}")
+
+    dimensions = _require_mapping(spec, "尺寸参数")
+    structure = _require_mapping(spec, "结构参数")
+    shape = _require_mapping(spec, "造型参数")
+    materials = _require_list(spec, "材质参数")
+    craft = _require_mapping(spec, "工艺细节")
+    mesh = _require_mapping(spec, "网格与贴图")
+
+    length = _require_number(dimensions, "长")
+    depth = _require_number(dimensions, "宽")
+    height = _require_number(dimensions, "高")
+    top_thickness = _require_number(dimensions, "台面厚")
+    plan_radius = _require_number(shape, "平面圆角半径")
+    edge_radius = _require_number(shape, "边缘圆角")
+    leg_splay = _require_number(shape, "桌腿外撇角_deg")
+
+    leg_height = height - top_thickness
+    leg_section = 46
+    leg_inset_x = 95
+    leg_inset_z = 75
+    stretcher_section = [28, 38]
+    wood_slot = _material_slot(materials, 0, "wood")
+
+    parts = [
+        {
+            **_part(
+                "tabletop",
+                "rounded_tabletop",
+                [length, top_thickness, depth],
+                [0, leg_height + top_thickness / 2, 0],
+                [0, 0, 0],
+                "wood",
+            ),
+            "平面圆角半径_mm": plan_radius,
+            "边缘圆角_mm": edge_radius,
+        }
+    ]
+    leg_x = length / 2 - leg_inset_x
+    leg_z = depth / 2 - leg_inset_z
+    for part_id, x, z, x_angle, z_angle in (
+        ("front_left_leg", -leg_x, leg_z, leg_splay, -leg_splay),
+        ("front_right_leg", leg_x, leg_z, leg_splay, leg_splay),
+        ("rear_left_leg", -leg_x, -leg_z, -leg_splay, -leg_splay),
+        ("rear_right_leg", leg_x, -leg_z, -leg_splay, leg_splay),
+    ):
+        parts.append(
+            _part(
+                part_id,
+                "top_pivot_tapered_wood_leg",
+                [leg_section, leg_height, leg_section],
+                [x, leg_height / 2, z],
+                [x_angle, 0, z_angle],
+                "wood",
+            )
+        )
+
+    stretcher_length = depth - leg_inset_z * 2
+    for side, x in (("left", -leg_x), ("right", leg_x)):
+        parts.append(
+            _part(
+                f"{side}_hidden_stretcher",
+                "wood_rail",
+                [stretcher_section[0], stretcher_section[1], stretcher_length],
+                [x, leg_height - stretcher_section[1] / 2, 0],
+                [0, 0, 0],
+                "wood",
+            )
+        )
+
+    rule = {
+        "规则版本": "1.0.0",
+        "规则状态": "ready",
+        "模型ID": COFFEE_TABLE_MODEL_ID,
+        "家具名称": name,
+        "家具类型": _require_text(spec, "家具类型"),
+        "生成器": "coffee_table_v1",
+        "坐标系统": {"单位": "mm", "上轴": "Y", "前向": "+Z", "原点": "floor_center"},
+        "安装规则": {"基准": "floor", "偏移_mm": 0},
+        "包围尺寸_mm": {"宽": length, "高": height, "深": depth},
+        "几何规则": {
+            "台面": {
+                "尺寸_mm": [length, top_thickness, depth],
+                "平面圆角半径_mm": plan_radius,
+                "边缘圆角_mm": edge_radius,
+            },
+            "桌腿": {
+                "数量": 4,
+                "截面_mm": [leg_section, leg_section],
+                "高度_mm": leg_height,
+                "外撇角_deg": leg_splay,
+                "旋转基准": "top_center",
+            },
+            "隐藏横撑": {"数量": 2, "截面_mm": stretcher_section},
+        },
+        "外观规则": {
+            "木材": {
+                "树种": _require_text(wood_slot, "材质"),
+                "纹理周期_mm": 54,
+                "法线强度": _require_number(wood_slot, "normal_strength"),
+                "透明面漆": {"强度": 0.08, "粗糙度": 0.72},
+                "榫卯节点": {
+                    "启用": "隐藏" in _require_text(structure, "横撑"),
+                    "榫肩线宽_mm": 1,
+                    "距构件端部_mm": 16,
+                },
+            }
+        },
+        "材质槽": [wood_slot],
+        "部件": parts,
+        "质量规则": {
+            "目标三角面": _require_number(mesh, "目标三角面"),
+            "需要UV": mesh.get("UV") is True,
+            "贴图分辨率": _require_text(mesh, "贴图分辨率"),
+            "LOD": deepcopy(mesh.get("LOD")),
+        },
+        "设计冻结": {
+            "桌腿截面_mm": [leg_section, leg_section],
+            "桌腿内缩_mm": [leg_inset_x, leg_inset_z],
+            "隐藏横撑截面_mm": stretcher_section,
+            "木纹周期_mm": 54,
+            "榫肩线宽_mm": 1,
+            "榫肩线距构件端部_mm": 16,
+            "说明": "原始参数未给出的加工尺寸；经第二样板设计明确后冻结。",
+        },
+    }
+    validate_deterministic_rule(rule)
+    return rule
+
+
 def validate_deterministic_rule(rule: dict[str, Any]) -> None:
     """校验规则能否在没有隐式默认值的情况下交给模型生成器。"""
     required_keys = {
@@ -440,6 +589,8 @@ def validate_deterministic_rule(rule: dict[str, Any]) -> None:
         "材质槽",
         "部件",
         "质量规则",
+        "安装规则",
+        "设计冻结",
     }
     missing = required_keys - rule.keys()
     if missing:
@@ -454,6 +605,8 @@ def validate_deterministic_rule(rule: dict[str, Any]) -> None:
     material_ids = {_require_text(slot, "槽位ID") for slot in material_slots}
     if len(material_ids) != len(material_slots):
         raise FurnitureRuleError("材质槽位 ID 重复")
+    for slot in material_slots:
+        _require_text(slot, "表面类型")
 
     parts = _require_list(rule, "部件")
     part_ids: set[str] = set()
@@ -474,12 +627,23 @@ def validate_deterministic_rule(rule: dict[str, Any]) -> None:
             raise FurnitureRuleError(f"{part_id} 的尺寸必须全部大于 0")
 
     appearance = _require_mapping(rule, "外观规则")
-    upholstery = _require_mapping(appearance, "软包")
-    for detail_key in ("滚边", "缝线", "绒面", "坐垫形变", "靠背曲面"):
-        _require_mapping(upholstery, detail_key)
-    wood = _require_mapping(appearance, "木材")
-    _require_mapping(wood, "透明面漆")
-    _require_mapping(wood, "榫卯节点")
+    upholstery = appearance.get("软包")
+    if upholstery is not None:
+        if not isinstance(upholstery, dict):
+            raise FurnitureRuleError("软包必须为对象字段")
+        for detail_key in ("滚边", "缝线", "绒面", "坐垫形变", "靠背曲面"):
+            _require_mapping(upholstery, detail_key)
+    wood = appearance.get("木材")
+    if wood is not None:
+        if not isinstance(wood, dict):
+            raise FurnitureRuleError("木材必须为对象字段")
+        _require_mapping(wood, "透明面漆")
+        _require_mapping(wood, "榫卯节点")
+
+    installation = _require_mapping(rule, "安装规则")
+    if _require_text(installation, "基准") not in {"floor", "ceiling", "wall"}:
+        raise FurnitureRuleError("安装基准必须为 floor、ceiling 或 wall")
+    _require_mapping(rule, "设计冻结")
 
 
 def _part(
@@ -510,6 +674,7 @@ def _material_slot(
     if not isinstance(material, dict):
         raise FurnitureRuleError(f"材质槽格式错误：{slot_id}")
     material["槽位ID"] = slot_id
+    material["表面类型"] = "fabric" if slot_id == "upholstery" else "wood"
     return material
 
 

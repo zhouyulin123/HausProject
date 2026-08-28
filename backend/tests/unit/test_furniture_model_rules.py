@@ -257,8 +257,18 @@ def test_catalog_rules_use_only_supported_explicit_geometry() -> None:
         "rug_panel",
         "curtain_panel",
         "mesh_panel",
+        "sphere",
+        "torus",
     }
 
     for entry in entries:
         rule = entry["确定性规则"]
         assert {part["几何"] for part in rule["部件"]} <= supported
+
+    pendant = next(
+        entry["确定性规则"]
+        for entry in entries
+        if entry["家具名称"] == "黄铜玻璃餐吊灯"
+    )
+    assert sum(part["几何"] == "sphere" for part in pendant["部件"]) == 6
+    assert sum(part["几何"] == "torus" for part in pendant["部件"]) == 1

@@ -1,4 +1,4 @@
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { ContactShadows, OrbitControls } from "@react-three/drei";
 import type { Furniture3DSpec } from "@/types/furniture";
 import FurnitureModel3D from "./FurnitureModel3D";
@@ -18,24 +18,53 @@ function num(value: number | number[] | undefined, fallback: number): number {
 function estimateRadius(spec: Furniture3DSpec): number {
   const rule = deterministicFurnitureRule(spec);
   if (rule) {
+    if (rule.预览规则) return rule.预览规则.半径_mm / 1000;
     const { 宽, 高, 深 } = rule.包围尺寸_mm;
-    return Math.max(宽, 高, 深) / 1000 / 2;
+    return Math.sqrt(宽 ** 2 + 高 ** 2 + 深 ** 2) / 1000 / 2;
   }
   const dims = spec.尺寸参数 ?? {};
   const width = num(dims["总宽"] ?? dims["外框宽"] ?? dims["长"] ?? dims["直径"], 1000);
   const height = num(dims["总高"] ?? dims["高"], 600);
   const depth = num(dims["总深"] ?? dims["宽"], 800);
-  return Math.max(width, height, depth) / 1000 / 2;
+  return Math.sqrt(width ** 2 + height ** 2 + depth ** 2) / 1000 / 2;
+}
+
+function estimateTargetHeight(spec: Furniture3DSpec): number {
+  const rule = deterministicFurnitureRule(spec);
+  if (rule?.预览规则) return rule.预览规则.中心_mm[1] / 1000;
+  if (rule) return rule.包围尺寸_mm.高 / 2000;
+  const dims = spec.尺寸参数 ?? {};
+  return num(dims["总高"] ?? dims["高"] ?? dims["床头高"], 600) / 2000;
+}
+
+function ViewerControls({ radius, targetHeight, enableZoom }: { radius: number; targetHeight: number; enableZoom: boolean }) {
+  const { size } = useThree();
+  if (size.width < 640) return null;
+
+  return (
+    <OrbitControls
+      makeDefault
+      enablePan={false}
+      enableZoom={enableZoom}
+      minDistance={radius * 0.6}
+      maxDistance={radius * 6}
+      maxPolarAngle={Math.PI / 2}
+      target={[0, targetHeight, 0]}
+    />
+  );
 }
 
 /** 家具 3D 查看器：灯光 + 阴影 + 可旋转缩放的程序化模型。 */
 export default function FurnitureModelViewer({
   spec,
+  enableZoom = true,
 }: {
   spec: Furniture3DSpec;
+  enableZoom?: boolean;
 }) {
   const radius = Math.max(0.3, estimateRadius(spec));
   const distance = radius * 3.2 + 0.6;
+  const targetHeight = estimateTargetHeight(spec);
   const lighting = previewLighting(radius);
 
   return (
@@ -43,7 +72,7 @@ export default function FurnitureModelViewer({
       shadows
       frameloop="demand"
       gl={{ antialias: true }}
-      camera={{ position: [distance * 0.75, distance * 0.7, distance], fov: 40 }}
+      camera={{ position: [distance * 0.75, targetHeight + distance * 0.55, distance], fov: 40 }}
     >
       <color attach="background" args={["#EFE8DB"]} />
       <ambientLight intensity={lighting.ambientIntensity} />
@@ -78,14 +107,7 @@ export default function FurnitureModelViewer({
         blur={2.5}
         far={radius * 2}
       />
-      <OrbitControls
-        makeDefault
-        enablePan={false}
-        minDistance={radius * 0.6}
-        maxDistance={radius * 6}
-        maxPolarAngle={Math.PI / 2}
-        target={[0, radius * 0.35, 0]}
-      />
+      <ViewerControls radius={radius} targetHeight={targetHeight} enableZoom={enableZoom} />
     </Canvas>
   );
 }

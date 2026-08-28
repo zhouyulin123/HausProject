@@ -3,15 +3,42 @@ import { furnitureModelKind } from "@/lib/furnitureModelKind";
 
 export interface DeterministicModelPart {
   部件ID: string;
-  几何: "rounded_cushion" | "curved_cushion" | "wood_rail" | "tapered_wood_leg" | "tapered_wood_post";
+  几何:
+    | "rounded_box"
+    | "rounded_cushion"
+    | "curved_cushion"
+    | "rounded_tabletop"
+    | "cloud_tabletop"
+    | "elliptical_tabletop"
+    | "wood_rail"
+    | "tapered_wood_leg"
+    | "top_pivot_tapered_wood_leg"
+    | "tapered_wood_post"
+    | "cylinder"
+    | "frustum"
+    | "tube"
+    | "rug_panel"
+    | "curtain_panel"
+    | "mesh_panel"
+    | "sphere"
+    | "torus";
   尺寸_mm: [number, number, number];
   位置_mm: [number, number, number];
   旋转_deg: [number, number, number];
   材质槽: string;
+  平面圆角半径_mm?: number;
+  边缘圆角_mm?: number;
+  圆角_mm?: number;
+  顶部直径_mm?: number;
+  底部直径_mm?: number;
+  褶皱周期_mm?: number;
+  网格间距_mm?: number;
+  图案?: string;
 }
 
 export interface DeterministicMaterialSlot extends FurnitureMaterialSpec {
   槽位ID: string;
+  表面类型?: "wood" | "fabric" | "metal" | "glass" | "stone" | "paper" | "rattan" | "mesh" | "generic";
   sheen?: number;
 }
 
@@ -19,17 +46,31 @@ export interface DeterministicFurnitureRule {
   规则版本: string;
   规则状态: "ready";
   模型ID: string;
-  生成器: "lounge_chair_v1";
+  生成器:
+    | "lounge_chair_v1"
+    | "coffee_table_v1"
+    | "sofa_v2"
+    | "table_v2"
+    | "chair_v2"
+    | "bed_v2"
+    | "lamp_v2"
+    | "rug_v2"
+    | "curtain_v2"
+    | "cabinet_v2"
+    | "desk_v2"
+    | "shelf_v2"
+    | "ergonomic_chair_v2";
   包围尺寸_mm: { 宽: number; 高: number; 深: number };
+  预览规则?: { 中心_mm: [number, number, number]; 半径_mm: number };
   外观规则: {
-    软包: {
+    软包?: {
       滚边: { 启用: boolean; 直径_mm: number };
       缝线: { 启用: boolean; 线径_mm: number; 内缩_mm: number };
       绒面: { 方向性: boolean; 法线强度: number; 纹理周期_mm: number };
       坐垫形变: { 前缘压缩: number; 中心隆起_mm: number };
       靠背曲面: { 横向弧度半径_mm: number };
     };
-    木材: {
+    木材?: {
       树种: string;
       纹理周期_mm: number;
       法线强度: number;
@@ -56,6 +97,7 @@ export interface WoodAppearance {
 
 export function woodAppearance(rule: DeterministicFurnitureRule): WoodAppearance {
   const wood = rule.外观规则.木材;
+  if (!wood) throw new Error("规则没有木材外观数据");
   return {
     species: wood.树种,
     grainPeriod: wood.纹理周期_mm / 1000,
@@ -129,6 +171,7 @@ export function upholsteryAppearance(
   rule: DeterministicFurnitureRule,
 ): UpholsteryAppearance {
   const upholstery = rule.外观规则.软包;
+  if (!upholstery) throw new Error("规则没有软包外观数据");
   return {
     pipingEnabled: upholstery.滚边.启用,
     pipingRadius: upholstery.滚边.直径_mm / 2000,
@@ -181,7 +224,24 @@ export function deterministicFurnitureRule(
   const rule = (spec as Furniture3DSpec & {
     确定性建模规则?: DeterministicFurnitureRule;
   }).确定性建模规则;
-  if (rule?.规则状态 !== "ready" || rule.生成器 !== "lounge_chair_v1") {
+  if (
+    rule?.规则状态 !== "ready"
+    || !([
+      "lounge_chair_v1",
+      "coffee_table_v1",
+      "sofa_v2",
+      "table_v2",
+      "chair_v2",
+      "bed_v2",
+      "lamp_v2",
+      "rug_v2",
+      "curtain_v2",
+      "cabinet_v2",
+      "desk_v2",
+      "shelf_v2",
+      "ergonomic_chair_v2",
+    ] as DeterministicFurnitureRule["生成器"][]).includes(rule.生成器)
+  ) {
     return undefined;
   }
   return rule;
@@ -210,9 +270,14 @@ export function modelPartTransform(part: DeterministicModelPart) {
 
 export function taperedPartPivotTransform(part: DeterministicModelPart) {
   const { size, position, rotation } = modelPartTransform(part);
+  const topPivot = part.几何 === "top_pivot_tapered_wood_leg";
   return {
-    pivot: [position[0], position[1] - size[1] / 2, position[2]] as [number, number, number],
-    childCenter: [0, size[1] / 2, 0] as [number, number, number],
+    pivot: [
+      position[0],
+      position[1] + (topPivot ? size[1] / 2 : -size[1] / 2),
+      position[2],
+    ] as [number, number, number],
+    childCenter: [0, topPivot ? -size[1] / 2 : size[1] / 2, 0] as [number, number, number],
     rotation,
     size,
   };
