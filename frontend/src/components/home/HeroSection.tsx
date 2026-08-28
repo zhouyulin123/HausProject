@@ -1,133 +1,212 @@
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { motion } from "framer-motion";
-import { ArrowRight, Lamp, PawPrint, ScanLine, Sofa, Sparkles } from "lucide-react";
-import Button from "@/components/common/Button";
-import Tag from "@/components/common/Tag";
+import { AnimatePresence, motion } from "framer-motion";
+import { ArrowDownRight, ArrowUpRight, ScanLine, Sparkles } from "lucide-react";
+import { fetchFurnitureCatalog } from "@/api/designApi";
+import type { FurnitureItem } from "@/types/furniture";
+import {
+  SPACES,
+  STYLES,
+  heroSceneFor,
+  type HeroSelectPayload,
+  type SpaceName,
+  type StyleName,
+} from "@/lib/heroSceneData";
 
-const trustStats = [
-  { value: "12,000+", label: "套灵感方案" },
-  { value: "30+", label: "家装风格" },
-  { value: "预算 · 户型 · 生活习惯", label: "综合分析" },
-];
+const HeroScene3D = lazy(() => import("./HeroScene3D"));
+
+function HeroSceneFallback({ failed = false }: { failed?: boolean }) {
+  return (
+    <div className="flex h-full items-center justify-center bg-[#101611]">
+      <div className="flex items-center gap-3 text-xs text-[#b8c5b8]">
+        <span className="h-2 w-2 animate-pulse rounded-full bg-[#d5ff67]" />
+        {failed ? "商品模型暂时不可用" : "正在构建数字空间"}
+      </div>
+    </div>
+  );
+}
+
+const suggestionBySpace: Record<SpaceName, { budget: string; match: string }> = {
+  客厅: { budget: "¥86,000", match: "98.2%" },
+  卧室: { budget: "¥52,000", match: "97.6%" },
+  餐厅: { budget: "¥38,000", match: "96.9%" },
+};
 
 export default function HeroSection() {
-  return (
-    <section className="relative overflow-hidden">
-      {/* 背景柔和光斑 */}
-      <div className="pointer-events-none absolute -top-24 -right-24 h-96 w-96 rounded-full bg-terra-100/70 blur-3xl" />
-      <div className="pointer-events-none absolute top-40 -left-32 h-80 w-80 rounded-full bg-sage-100/80 blur-3xl" />
+  const [space, setSpace] = useState<SpaceName>("客厅");
+  const [style, setStyle] = useState<StyleName>("奶油风");
+  const [selected, setSelected] = useState<HeroSelectPayload>(null);
+  const [catalog, setCatalog] = useState<FurnitureItem[] | null>(null);
+  const [catalogFailed, setCatalogFailed] = useState(false);
+  const activeScene = useMemo(() => heroSceneFor(space, style), [space, style]);
 
-      <div className="relative mx-auto grid max-w-7xl items-center gap-12 px-4 py-16 sm:px-6 lg:grid-cols-2 lg:py-24">
-        {/* 左侧文案 */}
+  useEffect(() => {
+    let active = true;
+    void fetchFurnitureCatalog({ fallbackToMock: false })
+      .then((products) => {
+        if (!active) return;
+        setCatalog(products);
+        setCatalogFailed(false);
+      })
+      .catch(() => {
+        if (!active) return;
+        setCatalog([]);
+        setCatalogFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  const sceneStats = useMemo(() => {
+    const xs = activeScene.room.floorPolygon.map((point) => point.x);
+    const zs = activeScene.room.floorPolygon.map((point) => point.z);
+    const width = Math.max(...xs) - Math.min(...xs);
+    const depth = Math.max(...zs) - Math.min(...zs);
+    return [
+      { value: `${width.toFixed(1)} × ${depth.toFixed(1)}m`, label: "空间尺寸" },
+      { value: suggestionBySpace[space].budget, label: "建议预算" },
+      { value: suggestionBySpace[space].match, label: "需求匹配" },
+    ];
+  }, [activeScene, space]);
+
+  return (
+    <section className="home-hero home-grid relative overflow-hidden bg-[#0b0f0c] text-[#f1efe7]">
+      <div className="absolute inset-0" aria-label={`${style}${space}交互式三维空间预览`}>
+        <Suspense fallback={<HeroSceneFallback />}>
+          {catalog?.length ? (
+            <HeroScene3D scene={activeScene} catalog={catalog} onSelectItem={setSelected} />
+          ) : (
+            <HeroSceneFallback failed={catalogFailed} />
+          )}
+        </Suspense>
+      </div>
+
+      <div className="home-noise pointer-events-none absolute inset-0 opacity-25" />
+      <div className="home-hero-tone pointer-events-none absolute inset-0" />
+      <div className="home-scan-line pointer-events-none absolute inset-x-0 top-0 z-[2] h-px bg-[#d5ff67]/65 shadow-[0_0_22px_#d5ff67]" />
+
+      <div className="pointer-events-none relative z-10 mx-auto min-h-[inherit] max-w-[1500px]">
         <motion.div
-          initial={{ opacity: 0, y: 28 }}
+          initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, ease: "easeOut" }}
+          transition={{ duration: 0.65 }}
+          className="absolute top-6 right-5 left-5 flex items-center justify-between gap-4 sm:right-8 sm:left-8 lg:top-9 lg:right-12 lg:left-12"
         >
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-sage-200 bg-sage-50 px-3.5 py-1.5 text-xs font-medium text-sage-700">
-            <Sparkles className="h-3.5 w-3.5" />
-            AI 驱动的家装定制平台
+          <span className="flex items-center gap-3 text-[10px] text-[#b7c1b7]">
+            <span className="h-1.5 w-1.5 rounded-full bg-[#d5ff67] shadow-[0_0_14px_#d5ff67]" />
+            HAUS / 空间智能系统
           </span>
-          <h1 className="mt-6 text-4xl leading-tight font-semibold sm:text-5xl sm:leading-[1.2]">
-            让 AI 为你
-            <br />
-            定制理想中的<span className="text-sage-600">家</span>
-          </h1>
-          <p className="mt-5 max-w-lg text-base leading-relaxed text-stone-500 sm:text-lg">
-            输入户型、预算与生活习惯，智能生成空间布局、家具搭配与装修方案。让
-            AI 先帮你看见家的样子。
-          </p>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Link to="/customize">
-              <Button size="lg">
-                立即开始定制
-                <ArrowRight className="h-4 w-4" />
-              </Button>
-            </Link>
-            <Link to="/styles">
-              <Button variant="outline" size="lg">
-                查看设计案例
-              </Button>
-            </Link>
-          </div>
-          <div className="mt-10 flex flex-wrap gap-x-10 gap-y-4">
-            {trustStats.map((s) => (
-              <div key={s.label}>
-                <div className="font-display text-lg font-semibold text-stone-800">
-                  {s.value}
-                </div>
-                <div className="mt-0.5 text-xs text-stone-400">{s.label}</div>
+          <span className="hidden items-center gap-2 text-[10px] text-[#d5ff67] sm:flex">
+            <ScanLine className="h-3.5 w-3.5" />
+            实时空间推演
+          </span>
+        </motion.div>
+
+        <div className="flex min-h-[inherit] w-full flex-col justify-center px-5 pt-24 pb-44 sm:px-8 sm:pb-48 lg:w-[49%] lg:px-12 lg:pt-28 lg:pb-28 xl:px-16">
+          <motion.div
+            initial={{ opacity: 0, y: 26 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.85, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <div className="mb-5 flex items-center gap-3 text-xs text-[#d5ff67] sm:mb-7">
+              <Sparkles className="h-4 w-4" />
+              <span>从一张照片开始设计</span>
+            </div>
+            <h1 className="max-w-[620px] font-display text-[clamp(3.25rem,6vw,5.9rem)] leading-[0.94] font-medium tracking-normal text-[#f4f1e8]">
+              AI 家装，<br />
+              <span className="text-[#b6c2b2] italic">预见家的</span><br />
+              下一种可能。
+            </h1>
+            <p className="mt-6 max-w-md text-sm leading-7 text-[#b2bbb2] sm:mt-8 sm:text-base">
+              上传真实空间，告诉 AI 你的生活方式。我们把户型、采光、动线与预算放进同一次推演，生成可以继续编辑、也能真正落地的方案。
+            </p>
+            <div className="pointer-events-auto mt-7 flex flex-wrap items-center gap-3 sm:mt-9">
+              <Link
+                to="/customize"
+                className="group inline-flex items-center gap-7 rounded-full bg-[#d5ff67] px-6 py-3.5 text-sm font-semibold text-[#11150f] transition-colors hover:bg-[#e0ff91]"
+              >
+                开始设计我的家
+                <ArrowUpRight className="h-4 w-4 transition-transform group-hover:rotate-45" />
+              </Link>
+              <Link
+                to="/styles"
+                className="inline-flex items-center gap-2 px-3 py-3 text-sm text-[#d2d8d1] transition-colors hover:text-white"
+              >
+                先看真实案例
+                <ArrowDownRight className="h-4 w-4" />
+              </Link>
+            </div>
+          </motion.div>
+
+          <div className="mt-10 hidden grid-cols-3 border-t border-white/12 pt-5 sm:grid lg:mt-12">
+            {sceneStats.map((stat, index) => (
+              <div key={stat.label} className={index > 0 ? "border-l border-white/12 px-4" : "pr-4"}>
+                <p className="font-mono text-sm text-[#f0f1e9] sm:text-base">{stat.value}</p>
+                <p className="mt-1 text-[9px] text-[#7f8a80]">{stat.label}</p>
               </div>
             ))}
           </div>
-        </motion.div>
+        </div>
 
-        {/* 右侧方案预览卡片 */}
-        <motion.div
-          initial={{ opacity: 0, y: 28 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.15, ease: "easeOut" }}
-          className="relative mx-auto w-full max-w-md"
-        >
-          <div className="rounded-3xl bg-white p-3 shadow-lift">
-            {/* 室内空间占位图 */}
-            <div className="relative h-56 overflow-hidden rounded-2xl bg-gradient-to-br from-[#f7efe2] via-[#ecd9bd] to-[#cfae83] sm:h-64">
-              {/* 简单的室内插画：窗 + 沙发 + 灯 */}
-              <div className="absolute top-6 left-7 h-24 w-20 rounded-t-full border-4 border-white/70 bg-gradient-to-b from-[#fdf6e9] to-[#f3dfc0]" />
-              <div className="absolute right-8 bottom-14 flex items-end gap-2">
-                <Lamp className="h-14 w-14 text-wood-700/70" strokeWidth={1.2} />
-              </div>
-              <div className="absolute bottom-10 left-10">
-                <Sofa className="h-24 w-24 text-wood-700/80" strokeWidth={1.1} />
-              </div>
-              <div className="absolute right-0 bottom-0 left-0 h-8 bg-wood-500/25" />
+        <div className="pointer-events-auto absolute top-16 right-5 sm:top-20 sm:right-8 lg:top-24 lg:right-12">
+          <div className="flex gap-1 rounded-full border border-white/12 bg-[#0b0f0c]/70 p-1 backdrop-blur-xl" aria-label="选择空间类型">
+            {SPACES.map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={space === option}
+                onClick={() => {
+                  setSpace(option);
+                  setSelected(null);
+                }}
+                className={`rounded-full px-3 py-1.5 text-[11px] transition-colors ${
+                  space === option ? "bg-[#f0eee6] text-[#11150f]" : "text-[#bdc5bd] hover:text-white"
+                }`}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="pointer-events-auto absolute right-5 bottom-5 left-5 sm:right-8 sm:bottom-8 sm:left-auto sm:w-[min(48rem,58%)] lg:right-12 lg:bottom-10">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={selected?.name ?? space}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              className="mb-4 hidden max-w-md border-l border-[#d5ff67] bg-[#0b0f0c]/72 px-4 py-3 backdrop-blur-xl sm:block"
+            >
+              <p className="text-[10px] text-[#d5ff67]">{selected ? `AI 设计依据 / ${selected.name}` : "AI 空间观察"}</p>
+              <p className="mt-1.5 text-xs leading-5 text-[#cbd2ca]">
+                {selected?.tip ?? "点击任意家具，查看尺寸与摆放依据。"}
+              </p>
+            </motion.div>
+          </AnimatePresence>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-[9px] text-[#8e988f]">当前方案</p>
+              <p className="mt-1 font-display text-xl tracking-normal text-white sm:text-2xl">{style} · {space}</p>
             </div>
-            <div className="px-3 pt-4 pb-3">
-              <div className="flex items-center justify-between">
-                <h3 className="font-display text-lg font-semibold text-stone-800">
-                  奶油原木客厅方案
-                </h3>
-                <Tag tone="sage">匹配度 98%</Tag>
-              </div>
-              <div className="mt-2 flex items-center gap-2 text-sm text-stone-500">
-                <span className="font-semibold text-terra-600">预算 ¥86,000</span>
-                <span className="text-stone-300">|</span>
-                <span>三口之家 / 有宠物 / 高收纳</span>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                <Tag tone="wood">奶油风</Tag>
-                <Tag tone="wood">原木风</Tag>
-                <Tag tone="wood">现代简约</Tag>
-              </div>
+            <div className="flex max-w-full gap-1 overflow-x-auto rounded-full border border-white/12 bg-[#0b0f0c]/72 p-1 backdrop-blur-xl" aria-label="选择设计风格">
+              {STYLES.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  aria-pressed={style === option}
+                  onClick={() => setStyle(option)}
+                  className={`shrink-0 rounded-full px-3 py-1.5 text-[10px] transition-colors ${
+                    style === option ? "bg-[#d5ff67] text-[#11150f]" : "text-[#aab4aa] hover:text-white"
+                  }`}
+                >
+                  {option}
+                </button>
+              ))}
             </div>
           </div>
-
-          {/* 浮动小卡片 */}
-          <motion.div
-            className="absolute -top-5 -left-4 flex items-center gap-2 rounded-2xl bg-white/90 px-3.5 py-2.5 text-xs font-medium text-stone-600 shadow-card backdrop-blur sm:-left-10"
-            animate={{ y: [0, -8, 0] }}
-            transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
-          >
-            <ScanLine className="h-4 w-4 text-sage-600" />
-            AI 正在分析采光
-          </motion.div>
-          <motion.div
-            className="absolute -right-3 top-1/3 flex items-center gap-2 rounded-2xl bg-white/90 px-3.5 py-2.5 text-xs font-medium text-stone-600 shadow-card backdrop-blur sm:-right-8"
-            animate={{ y: [0, -10, 0] }}
-            transition={{ duration: 6, repeat: Infinity, ease: "easeInOut", delay: 0.8 }}
-          >
-            <PawPrint className="h-4 w-4 text-terra-500" />
-            已优化收纳动线
-          </motion.div>
-          <motion.div
-            className="absolute -bottom-4 left-10 flex items-center gap-2 rounded-2xl bg-white/90 px-3.5 py-2.5 text-xs font-medium text-stone-600 shadow-card backdrop-blur"
-            animate={{ y: [0, -6, 0] }}
-            transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut", delay: 1.6 }}
-          >
-            <Sofa className="h-4 w-4 text-wood-600" />
-            推荐 6 件家具
-          </motion.div>
-        </motion.div>
+        </div>
       </div>
     </section>
   );
