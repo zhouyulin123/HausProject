@@ -195,30 +195,70 @@ def test_round_rect_coffee_table_rule_has_manufacturable_structure() -> None:
     assert rule["外观规则"]["木材"]["纹理周期_mm"] == 54
 
 
-def test_rule_catalog_tracks_ready_and_pending_models() -> None:
-    chair = _lounge_chair_spec()
-    catalog = {
-        "家具数量": 3,
-        "家具列表": [
-            chair,
-            {"家具名称": "测试沙发", "家具类型": "沙发"},
-            {"家具名称": "测试餐桌", "家具类型": "餐桌"},
-        ],
-    }
+def test_rule_catalog_compiles_all_40_products_without_pending_models() -> None:
+    catalog = json.loads(SPEC_40_FILE.read_text(encoding="utf-8"))
 
     rules = build_deterministic_rule_catalog(catalog)
 
-    assert rules["家具数量"] == 3
-    assert rules["已完成规则数量"] == 1
-    assert rules["待完善规则数量"] == 2
-    assert len({item["模型ID"] for item in rules["模型目录"]}) == 3
-    sample = next(
-        item for item in rules["模型目录"] if item["家具名称"] == "中古风绒布单人椅"
-    )
-    assert sample["规则状态"] == "ready"
-    assert sample["确定性规则"]["模型ID"] == sample["模型ID"]
-    assert all(
-        item["规则状态"] == "pending"
-        for item in rules["模型目录"]
-        if item["家具名称"] != "中古风绒布单人椅"
-    )
+    assert rules["家具数量"] == 40
+    assert rules["已完成规则数量"] == 40
+    assert rules["待完善规则数量"] == 0
+    assert len({item["模型ID"] for item in rules["模型目录"]}) == 40
+    assert all(item["规则状态"] == "ready" for item in rules["模型目录"])
+    for entry in rules["模型目录"]:
+        rule = entry["确定性规则"]
+        validate_deterministic_rule(rule)
+        assert rule["模型ID"] == entry["模型ID"]
+        assert rule["设计冻结"]
+        assert rule["安装规则"]["基准"] in {"floor", "ceiling", "wall"}
+        assert all(slot["表面类型"] for slot in rule["材质槽"])
+
+
+def test_catalog_rules_cover_every_furniture_family_with_detailed_parts() -> None:
+    catalog = json.loads(SPEC_40_FILE.read_text(encoding="utf-8"))
+    entries = build_deterministic_rule_catalog(catalog)["模型目录"]
+    by_name = {entry["家具名称"]: entry["确定性规则"] for entry in entries}
+
+    expected = {
+        "云感模块三人沙发": ("sofa_v2", 12),
+        "岩板套几（大小两件）": ("table_v2", 6),
+        "白橡木藤编餐椅": ("chair_v2", 9),
+        "现代悬浮灯带储物床": ("bed_v2", 8),
+        "奶油白蘑菇落地灯": ("lamp_v2", 3),
+        "低饱和几何短绒地毯": ("rug_v2", 2),
+        "亚麻遮光窗帘": ("curtain_v2", 3),
+        "藤编床头柜": ("cabinet_v2", 8),
+        "白蜡木电动升降书桌": ("desk_v2", 8),
+        "白橡木开放书架": ("shelf_v2", 11),
+        "人体工学椅": ("ergonomic_chair_v2", 12),
+    }
+    for name, (generator, minimum_parts) in expected.items():
+        assert by_name[name]["生成器"] == generator
+        assert len(by_name[name]["部件"]) >= minimum_parts
+
+
+def test_catalog_rules_use_only_supported_explicit_geometry() -> None:
+    catalog = json.loads(SPEC_40_FILE.read_text(encoding="utf-8"))
+    entries = build_deterministic_rule_catalog(catalog)["模型目录"]
+    supported = {
+        "rounded_box",
+        "rounded_cushion",
+        "curved_cushion",
+        "rounded_tabletop",
+        "cloud_tabletop",
+        "elliptical_tabletop",
+        "wood_rail",
+        "tapered_wood_leg",
+        "top_pivot_tapered_wood_leg",
+        "tapered_wood_post",
+        "cylinder",
+        "frustum",
+        "tube",
+        "rug_panel",
+        "curtain_panel",
+        "mesh_panel",
+    }
+
+    for entry in entries:
+        rule = entry["确定性规则"]
+        assert {part["几何"] for part in rule["部件"]} <= supported

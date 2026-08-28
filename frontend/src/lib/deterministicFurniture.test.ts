@@ -86,6 +86,28 @@ describe("确定性家具模型分发", () => {
     });
   });
 
+  it("接受完整家具库的结构族生成器", () => {
+    const generators = [
+      "sofa_v2",
+      "table_v2",
+      "chair_v2",
+      "bed_v2",
+      "lamp_v2",
+      "rug_v2",
+      "curtain_v2",
+      "cabinet_v2",
+      "desk_v2",
+      "shelf_v2",
+      "ergonomic_chair_v2",
+    ] as const;
+
+    for (const generator of generators) {
+      const spec = structuredClone(coffeeTableSpec);
+      spec.确定性建模规则!.生成器 = generator;
+      expect(resolveFurnitureRenderer(spec)).toEqual({ kind: "deterministic", generator });
+    }
+  });
+
   it("把毫米和角度转换成 Three.js 变换", () => {
     expect(
       modelPartTransform({
