@@ -41,8 +41,11 @@ echo [2/2] 启动前端服务 ^(端口 8080^)...
 start "豪斯-前端" cmd /k "npm --prefix frontend run dev"
 
 echo.
-echo 服务启动中，5 秒后自动打开浏览器...
-timeout /t 5 >nul
+echo 正在等待前后端服务就绪...
+call :wait_for_url "http://127.0.0.1:8081/health" 45 "后端服务"
+if errorlevel 1 exit /b 1
+call :wait_for_url "http://localhost:8080/" 45 "前端服务"
+if errorlevel 1 exit /b 1
 start http://localhost:8080
 
 echo.
@@ -55,6 +58,17 @@ echo.
 echo 本窗口可以关闭（不影响服务运行）。
 pause
 exit /b 0
+
+:wait_for_url
+for /l %%I in (1,1,%~2) do (
+    powershell.exe -NoProfile -Command "$ProgressPreference = 'SilentlyContinue'; try { $response = Invoke-WebRequest -UseBasicParsing -Uri '%~1' -TimeoutSec 2; if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) { exit 0 } } catch {}; exit 1" >nul 2>nul && (
+        echo [就绪] %~3
+        exit /b 0
+    )
+    timeout /t 1 /nobreak >nul
+)
+echo [失败] %~3 在 %~2 秒内未就绪，请查看对应服务窗口中的错误信息。
+exit /b 1
 
 :check
 echo [自检] 当前目录: %CD%

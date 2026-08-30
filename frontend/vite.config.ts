@@ -14,8 +14,8 @@ export default defineConfig({
     port: 8080,
     // 后端联调：FastAPI 运行在 8081 端口
     proxy: {
-      "/api": "http://localhost:8081",
-      "/uploads": "http://localhost:8081",
+      "/api": "http://127.0.0.1:8081",
+      "/uploads": "http://127.0.0.1:8081",
     },
   },
 });
