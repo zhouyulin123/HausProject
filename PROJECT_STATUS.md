@@ -9,6 +9,7 @@
 
 - 启动脚本单元测试 2 项通过，文件裸 LF 数量为 0。
 - `startHaus.bat --check` 通过：数据库迁移为 head、后端应用可导入、LLM key 已配置、npm 可用。
+- 实际执行 `startHaus.bat` 后，前端 `http://localhost:8080` 与后端 `/health` 均返回 HTTP 200；诊断用临时 8082 服务已关闭。
 
 ## 2026-08-28 首页空间复用 40 件确定性商品模型
 
