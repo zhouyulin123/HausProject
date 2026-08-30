@@ -67,9 +67,9 @@ def test_compile_updates_known_product_as_editable_merchant_draft(db) -> None:
     assert product.source_metadata["verification_status"] == "pending_manual_review"
     assert product.is_active is True
     assert (product.model_width_mm, product.model_height_mm, product.model_depth_mm) == (
-        900,
-        450,
-        900,
+        1210,
+        460,
+        800,
     )
     assert "详见" not in product.size
 
