@@ -1,31 +1,56 @@
+import { lazy, Suspense, type ComponentType } from "react";
 import { createBrowserRouter } from "react-router-dom";
 import Layout from "@/components/layout/Layout";
+import RouteErrorPage from "@/components/common/RouteErrorPage";
 import {
   RequireAdmin,
   RequireAuth,
   RequireFactory,
 } from "@/components/auth/RouteGuard";
 import HomePage from "@/pages/HomePage";
-import CustomizePage from "@/pages/CustomizePage";
-import UploadPage from "@/pages/UploadPage";
-import ChatPage from "@/pages/ChatPage";
-import ResultsPage from "@/pages/ResultsPage";
-import DesignDetailPage from "@/pages/DesignDetailPage";
-import FurniturePage from "@/pages/FurniturePage";
-import StyleGalleryPage from "@/pages/StyleGalleryPage";
-import MyDesignsPage from "@/pages/MyDesignsPage";
-import OrdersPage from "@/pages/OrdersPage";
-import WorkspacePage from "@/pages/WorkspacePage";
-import CustomersPage from "@/pages/CustomersPage";
-import AdminPage from "@/pages/AdminPage";
-import AdminUsersPage from "@/pages/AdminUsersPage";
-import LoginPage from "@/pages/LoginPage";
+import { importWithRetry } from "@/lib/lazyImport";
+
+type PageModule = { default: ComponentType };
+const lazyPage = (importer: () => Promise<PageModule>) =>
+  lazy(() => importWithRetry(importer));
+
+const CustomizePage = lazyPage(() => import("@/pages/CustomizePage"));
+const UploadPage = lazyPage(() => import("@/pages/UploadPage"));
+const ChatPage = lazyPage(() => import("@/pages/ChatPage"));
+const ResultsPage = lazyPage(() => import("@/pages/ResultsPage"));
+const DesignDetailPage = lazyPage(() => import("@/pages/DesignDetailPage"));
+const FurniturePage = lazyPage(() => import("@/pages/FurniturePage"));
+const StyleGalleryPage = lazyPage(() => import("@/pages/StyleGalleryPage"));
+const MyDesignsPage = lazyPage(() => import("@/pages/MyDesignsPage"));
+const OrdersPage = lazyPage(() => import("@/pages/OrdersPage"));
+const WorkspacePage = lazyPage(() => import("@/pages/WorkspacePage"));
+const CustomersPage = lazyPage(() => import("@/pages/CustomersPage"));
+const AdminPage = lazyPage(() => import("@/pages/AdminPage"));
+const AdminUsersPage = lazyPage(() => import("@/pages/AdminUsersPage"));
+const LoginPage = lazyPage(() => import("@/pages/LoginPage"));
+const Demo3DPage = lazyPage(() => import("@/pages/Demo3DPage"));
 
 export const router = createBrowserRouter(
   [
     {
+      path: "/demo",
+      errorElement: <RouteErrorPage />,
+      element: (
+        <Suspense
+          fallback={
+            <div className="flex h-screen items-center justify-center bg-[#E7DECF] text-sm text-stone-500">
+              正在加载 3D 演示…
+            </div>
+          }
+        >
+          <Demo3DPage />
+        </Suspense>
+      ),
+    },
+    {
       path: "/",
       element: <Layout />,
+      errorElement: <RouteErrorPage />,
       children: [
         { index: true, element: <HomePage /> },
         { path: "customize", element: <CustomizePage /> },
