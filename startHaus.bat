@@ -4,10 +4,23 @@ chcp 65001 >nul
 cd /d "%~dp0"
 title 豪斯 AI 家装 - 启动器
 
-REM 项目后端依赖安装在 Python 3.14（本机 D:\software\py314），默认 PATH 里的 python 无依赖
-set "PYTHON=D:\software\py314\python.exe"
+REM Python 解析顺序：显式 HAUS_PYTHON > 项目虚拟环境 > py 3.14 > PATH python
+set "PYTHON_CMD="
+if defined HAUS_PYTHON if exist "%HAUS_PYTHON%" set PYTHON_CMD="%HAUS_PYTHON%"
+if not defined PYTHON_CMD if exist "backend\.venv\Scripts\python.exe" set PYTHON_CMD="%CD%\backend\.venv\Scripts\python.exe"
+if not defined PYTHON_CMD (
+    where py >nul 2>nul && py -3.14 -c "import fastapi, alembic" >nul 2>nul && set "PYTHON_CMD=py -3.14"
+)
+if not defined PYTHON_CMD (
+    where python >nul 2>nul && python -c "import fastapi, alembic" >nul 2>nul && set "PYTHON_CMD=python"
+)
 
 if /i "%~1"=="--check" goto check
+
+if not defined PYTHON_CMD (
+    echo [失败] 未找到包含 FastAPI/Alembic 依赖的 Python。可设置 HAUS_PYTHON 或创建 backend\.venv。
+    exit /b 1
+)
 
 echo ============================================
 echo    豪斯 AI 家装定制助手 - 一键启动
@@ -22,7 +35,7 @@ if not exist "frontend\node_modules" (
 )
 
 echo [1/2] 启动后端服务 ^(端口 8081^)...
-start "豪斯-后端" cmd /k "cd /d backend && %PYTHON% -m alembic upgrade head && %PYTHON% -m uvicorn app.main:app --port 8081"
+start "豪斯-后端" cmd /k "cd /d backend && %PYTHON_CMD% -m alembic upgrade head && %PYTHON_CMD% -m uvicorn app.main:app --port 8081"
 
 echo [2/2] 启动前端服务 ^(端口 8080^)...
 start "豪斯-前端" cmd /k "npm --prefix frontend run dev"
@@ -45,8 +58,8 @@ exit /b 0
 
 :check
 echo [自检] 当前目录: %CD%
-if not exist "%PYTHON%" (
-    echo [失败] 未找到 Python（%PYTHON%），请修改 startHaus.bat 中的 PYTHON 路径。
+if not defined PYTHON_CMD (
+    echo [失败] 未找到包含 FastAPI/Alembic 依赖的 Python。可设置 HAUS_PYTHON 或创建 backend\.venv。
     exit /b 1
 )
 where npm >nul 2>nul || (
@@ -54,7 +67,9 @@ where npm >nul 2>nul || (
     exit /b 1
 )
 pushd backend
-"%PYTHON%" -m alembic current
+%PYTHON_CMD% -m alembic current
+set "CHECK_EXIT=%ERRORLEVEL%"
+if "%CHECK_EXIT%"=="0" %PYTHON_CMD% -c "from app.main import app; from app.core.config import settings; print('app_import=ok'); print('llm_key_configured=' + str(bool(settings.llm_api_key))); raise SystemExit(0 if settings.llm_api_key else 2)"
 set "CHECK_EXIT=%ERRORLEVEL%"
 popd
 if not "%CHECK_EXIT%"=="0" (
