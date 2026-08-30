@@ -59,6 +59,24 @@ def test_parse_extended_product_row_keeps_numeric_and_review_fields() -> None:
     assert parsed["review_status"] == "manual_verified"
 
 
+def test_parse_keeps_legacy_price_column_compatible() -> None:
+    headers = [
+        "sku", "名称", "类别", "空间", "风格", "材质", "价格", "价格上限",
+        "尺寸", "卖点", "替代选择",
+    ]
+    row = [
+        "SF-OLD", "旧版沙发", "沙发", "客厅", "现代简约", "布艺", 2999,
+        None, "宽2100×深900×高780mm", "易维护", None,
+    ]
+
+    parsed = parse_product_row(headers, row)
+
+    assert parsed is not None
+    assert parsed["product"]["price"] == 2999
+    assert "model_width_mm" not in parsed["product"]
+    assert parsed["review_status"] == "pending_manual_review"
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
