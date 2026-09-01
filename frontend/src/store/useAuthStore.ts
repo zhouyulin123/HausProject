@@ -3,8 +3,9 @@ import type { AuthUser, UserRole } from "@/api/authApi";
 import {
   fetchMe,
   login as apiLogin,
+  logoutSession,
+  AuthApiError,
   readStoredUser,
-  readToken,
   writeStoredUser,
   writeToken,
 } from "@/api/authApi";
@@ -27,30 +28,33 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   login: async (phone, code) => {
     const result = await apiLogin(phone, code);
-    writeToken(result.token);
+    // 新登录态由 HttpOnly Cookie 保存；清理旧版本遗留的 localStorage JWT。
+    writeToken(null);
     writeStoredUser(result.user);
     set({ user: result.user });
     return result.user;
   },
 
   init: async () => {
-    if (!readToken()) {
-      set({ initialized: true, user: null });
-      return;
-    }
     try {
       const user = await fetchMe();
+      writeToken(null);
       writeStoredUser(user);
       set({ user, initialized: true });
-    } catch {
-      // token 失效或网络异常时清空登录态，回退到未登录
-      writeToken(null);
-      writeStoredUser(null);
-      set({ user: null, initialized: true });
+    } catch (error) {
+      if (error instanceof AuthApiError && [401, 403].includes(error.status)) {
+        writeToken(null);
+        writeStoredUser(null);
+        set({ user: null, initialized: true });
+        return;
+      }
+      // 网络或服务暂时不可用时保留缓存身份，避免一次抖动导致误登出。
+      set({ user: readStoredUser(), initialized: true });
     }
   },
 
   logout: () => {
+    void logoutSession().catch(() => undefined);
     writeToken(null);
     writeStoredUser(null);
     set({ user: null });

@@ -4,6 +4,7 @@ import { useRequirementStore } from "@/store/useRequirementStore";
 import { generateDesigns, restoreCurrentDesigns } from "@/api/designApi";
 import DesignCard from "@/components/design/DesignCard";
 import LoadingAI from "@/components/chat/LoadingAI";
+import StudioPage from "@/components/layout/StudioPage";
 
 const filters = ["综合推荐", "预算最低", "收纳最强", "风格最匹配", "环保优先"] as const;
 type Filter = (typeof filters)[number];
@@ -71,23 +72,15 @@ export default function ResultsPage() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-3xl px-4 py-16">
-        <LoadingAI />
-      </div>
+      <StudioPage title="正在并行推演空间方案。" description="AI 正在比较布局、材质、家具与预算组合，并验证每套方案与你的需求匹配程度。">
+        <div className="rounded-[2rem] border border-[#1d241f]/15 bg-[#f4f1e9] p-8 shadow-[0_30px_80px_rgb(20_28_22/.12)]"><LoadingAI /></div>
+      </StudioPage>
     );
   }
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6">
-      <div className="text-center">
-        <h1 className="text-2xl font-semibold sm:text-3xl">
-          为你生成了 {sortedPlans.length} 套家装方案
-        </h1>
-        <p className="mt-2.5 text-sm text-stone-500 sm:text-base">
-          根据你的户型、预算、风格偏好和生活习惯智能生成
-        </p>
-      </div>
-
+    <StudioPage title={`已完成 ${sortedPlans.length} 套空间提案。`} description="每套方案都基于同一份需求简报，却采用不同的布局和设计策略。你可以比较、保存，或继续让 AI 调整。">
+      <div className="rounded-[2rem] border border-[#1d241f]/15 bg-[#f4f1e9] p-5 shadow-[0_30px_80px_rgb(20_28_22/.12)] sm:p-8">
       {/* 筛选项 */}
       <div className="mt-8 flex flex-wrap justify-center gap-2.5">
         {filters.map((f) => (
@@ -106,11 +99,12 @@ export default function ResultsPage() {
         ))}
       </div>
 
-      <div className="mt-10 grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+      <div className="mt-8 grid gap-6 md:grid-cols-2 xl:grid-cols-3">
         {sortedPlans.map((plan, i) => (
           <DesignCard key={`${filter}-${plan.id}`} plan={plan} index={i} />
         ))}
       </div>
-    </div>
+      </div>
+    </StudioPage>
   );
 }

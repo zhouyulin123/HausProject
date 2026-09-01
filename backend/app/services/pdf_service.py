@@ -4,6 +4,8 @@
 """
 
 import io
+import os
+import platform
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,6 +26,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from app.core.config import settings
+
 _SAGE = colors.HexColor("#5F7350")
 _TERRA = colors.HexColor("#B06A45")
 _INK = colors.HexColor("#44403C")
@@ -34,17 +38,51 @@ _LINE = colors.HexColor("#E7DFD1")
 _fonts_ready = False
 
 
+def _system_font_candidates() -> list[tuple[Path, Path | None]]:
+    system = platform.system()
+    if system == "Windows":
+        font_dir = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+        return [
+            (font_dir / "msyh.ttc", font_dir / "msyhbd.ttc"),
+            (font_dir / "simhei.ttf", None),
+        ]
+    if system == "Darwin":
+        return [(Path("/System/Library/Fonts/PingFang.ttc"), None)]
+    return [
+        (
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        ),
+        (Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"), None),
+    ]
+
+
+def resolve_pdf_font_paths() -> tuple[Path, Path]:
+    configured_regular = settings.pdf_font_regular_path.strip()
+    configured_bold = settings.pdf_font_bold_path.strip()
+    if configured_regular:
+        regular = Path(configured_regular).expanduser()
+        bold = Path(configured_bold).expanduser() if configured_bold else regular
+        if not regular.is_file() or not bold.is_file():
+            raise RuntimeError("配置的 PDF 中文字体不存在，请检查 PDF_FONT_*_PATH")
+        return regular, bold
+
+    for regular, bold in _system_font_candidates():
+        if regular.is_file():
+            resolved_bold = bold if bold and bold.is_file() else regular
+            return regular, resolved_bold
+    raise RuntimeError(
+        "未找到可用的 PDF 中文字体，请配置 PDF_FONT_REGULAR_PATH 和 PDF_FONT_BOLD_PATH"
+    )
+
+
 def _ensure_fonts() -> None:
     global _fonts_ready
     if _fonts_ready:
         return
-    pdfmetrics.registerFont(TTFont("MSYH", "C:/Windows/Fonts/msyh.ttc", subfontIndex=0))
-    try:
-        pdfmetrics.registerFont(
-            TTFont("MSYH-B", "C:/Windows/Fonts/msyhbd.ttc", subfontIndex=0)
-        )
-    except Exception:
-        pdfmetrics.registerFont(TTFont("MSYH-B", "C:/Windows/Fonts/msyh.ttc", subfontIndex=0))
+    regular, bold = resolve_pdf_font_paths()
+    pdfmetrics.registerFont(TTFont("MSYH", str(regular), subfontIndex=0))
+    pdfmetrics.registerFont(TTFont("MSYH-B", str(bold), subfontIndex=0))
     _fonts_ready = True
 
 

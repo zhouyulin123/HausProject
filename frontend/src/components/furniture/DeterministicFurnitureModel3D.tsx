@@ -22,6 +22,8 @@ import type {
 } from "@/lib/deterministicFurniture";
 import {
   modelPartTransform,
+  roundPartScale,
+  structuralSurfacePixels,
   cushionVertexPosition,
   taperedPartPivotTransform,
   upholsteryAppearance,
@@ -166,21 +168,13 @@ function fabricTexture(appearance: UpholsteryAppearance, size: [number, number, 
 
 function structuralSurfaceTexture(part: DeterministicModelPart, size: [number, number, number]) {
   const resolution = 96;
-  const data = new Uint8Array(resolution * resolution);
   const mesh = part.几何 === "mesh_panel";
-  for (let y = 0; y < resolution; y += 1) {
-    for (let x = 0; x < resolution; x += 1) {
-      if (mesh) {
-        const warp = x % 8 < 2;
-        const weft = y % 8 < 2;
-        data[y * resolution + x] = warp || weft ? 82 : 205;
-      } else {
-        const loop = Math.sin(x * 0.72) * 20 + Math.sin(y * 0.58) * 16;
-        data[y * resolution + x] = Math.round(184 + loop);
-      }
-    }
-  }
-  const texture = new DataTexture(data, resolution, resolution, RedFormat);
+  const texture = new DataTexture(
+    structuralSurfacePixels(resolution, mesh),
+    resolution,
+    resolution,
+    RGBAFormat,
+  );
   texture.wrapS = RepeatWrapping;
   texture.wrapT = RepeatWrapping;
   texture.magFilter = LinearFilter;
@@ -426,7 +420,7 @@ function RoundPart({ part, material }: { part: DeterministicModelPart; material:
   const topRadius = (part.顶部直径_mm ?? part.尺寸_mm[0]) / 2000;
   const bottomRadius = (part.底部直径_mm ?? part.尺寸_mm[0]) / 2000;
   return (
-    <mesh position={position} rotation={rotation} castShadow receiveShadow>
+    <mesh position={position} rotation={rotation} scale={roundPartScale(part)} castShadow receiveShadow>
       <cylinderGeometry args={[topRadius, bottomRadius, size[1], part.几何 === "frustum" ? 48 : 32, 1]} />
       <PartMaterial slot={material} />
     </mesh>

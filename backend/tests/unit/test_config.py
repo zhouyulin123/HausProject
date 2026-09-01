@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from app.core.config import Settings
 
 
@@ -37,3 +40,53 @@ def test_model_configuration_accepts_legacy_environment_names(monkeypatch):
     assert config.vl_base_url == "https://legacy-vl.example.com/v1"
     assert config.vl_model == "legacy/vision-model"
     assert config.vl_reasoning_model == "legacy/vision-reasoning-model"
+
+
+def test_debug_is_disabled_by_default():
+    config = Settings(_env_file=None)
+
+    assert config.app_debug is False
+
+
+@pytest.mark.parametrize(
+    ("database_url", "jwt_secret_key"),
+    [
+        (
+            "mysql+pymysql://root:123456@127.0.0.1:3306/houseproject_db",
+            "a-production-secret-that-is-long-enough",
+        ),
+        (
+            "mysql+pymysql://app:strong-password@db:3306/houseproject_db",
+            "dev-secret-change-me-in-production",
+        ),
+    ],
+)
+def test_production_rejects_unsafe_database_or_jwt_defaults(
+    database_url,
+    jwt_secret_key,
+):
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            app_debug=False,
+            database_url=database_url,
+            jwt_secret_key=jwt_secret_key,
+            cors_origins="https://app.example.com",
+        )
+
+
+def test_production_accepts_explicit_safe_configuration():
+    config = Settings(
+        _env_file=None,
+        app_env="production",
+        app_debug=False,
+        database_url=(
+            "mysql+pymysql://haus_app:a-strong-database-password@db:3306/houseproject_db"
+        ),
+        jwt_secret_key="a-production-jwt-secret-with-at-least-32-characters",
+        cors_origins="https://app.example.com",
+    )
+
+    assert config.app_env == "production"
+    assert config.cors_origin_list == ["https://app.example.com"]

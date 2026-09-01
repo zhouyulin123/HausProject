@@ -10,6 +10,7 @@ def test_startup_script_discovers_python_without_machine_specific_path():
 
     assert "D:\\software\\py314" not in script
     assert "HAUS_PYTHON" in script
+    assert "py -3.12" in script
     assert "py -3.14" in script
     assert "llm_key_configured" in script
 
@@ -24,13 +25,15 @@ def test_startup_script_uses_windows_line_endings_consistently():
 def test_startup_waits_for_backend_and_frontend_before_opening_browser():
     script = STARTUP_SCRIPT.read_text(encoding="utf-8-sig")
 
-    assert 'call :wait_for_url "http://127.0.0.1:8081/health"' in script
-    assert 'call :wait_for_url "http://localhost:8080/"' in script
+    assert 'call :wait_for_url "http://127.0.0.1:8081/ready"' in script
+    assert 'call :wait_for_url "http://127.0.0.1:8080/"' in script
+    assert "start http://127.0.0.1:8080" in script
     assert "timeout /t 5 >nul" not in script
 
 
 def test_vite_proxy_uses_backend_ipv4_address():
     vite_config = VITE_CONFIG.read_text(encoding="utf-8")
 
+    assert 'host: "127.0.0.1"' in vite_config
     assert '"/api": "http://127.0.0.1:8081"' in vite_config
     assert '"/uploads": "http://127.0.0.1:8081"' in vite_config

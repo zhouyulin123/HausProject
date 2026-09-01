@@ -421,6 +421,8 @@ _SCENE_AGENT_SYSTEM = """你是坐标计算器。必须执行明确指令，禁�
 move/rotate/remove 只能使用 scene 已有 instanceId；add 只能使用 catalog 已有 sku。
 左=x减小，右=x增加，前=z增加，后=z减小；厘米除以100换算成米。
 move 输出绝对 position{x,z}，rotate 输出绝对 rotationY，不能输出Y坐标或代码。
+处理“刚才那个/它/上一件”等跨轮指代时，优先使用最近已执行记录的 affectedInstanceIds，
+并结合当前 scene 核对实例仍然存在；不得凭空编造 instanceId。
 示例：sofa-main 当前 x=0,z=-1，向左移动30厘米，应输出
 {"message":"已移动","operations":[{"type":"move","instanceId":"sofa-main","position":{"x":-0.3,"z":-1}}]}。
 只输出 JSON。"""
@@ -430,6 +432,7 @@ def plan_scene_operations(
     *,
     instruction: str,
     context: Dict[str, Any],
+    history: Optional[List[Dict[str, Any]]] = None,
 ):
     """把自然语言转换为受 Pydantic 鉴别联合约束的场景操作。"""
     from app.schemas.scene_agent import SceneOperationBatch
@@ -437,6 +440,8 @@ def plan_scene_operations(
     user_prompt = (
         "指令："
         + instruction
+        + "\n最近已执行记录："
+        + json.dumps((history or [])[-8:], ensure_ascii=False, separators=(",", ":"))
         + "\n数据："
         + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
     )
@@ -606,7 +611,7 @@ def analyze_room_model(image_bytes: bytes, file_name: str) -> Dict[str, Any] | N
                 },
             ],
             response_format={"type": "json_object"},
-            max_tokens=2000,
+            max_tokens=10000,
             temperature=0.3,
         )
         data = json.loads(resp.choices[0].message.content)

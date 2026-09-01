@@ -32,12 +32,14 @@ export default function UploadPanel({ onFile }: { onFile: (file: File) => void }
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
         onClick={() => inputRef.current?.click()}
-        className={`flex cursor-pointer flex-col items-center justify-center gap-4 rounded-3xl border-2 border-dashed px-6 py-14 text-center transition-all ${
+        className={`home-plan-grid relative flex min-h-[360px] cursor-pointer flex-col items-center justify-center gap-4 overflow-hidden rounded-[1.6rem] border px-6 py-14 text-center transition-all ${
           dragging
-            ? "border-sage-500 bg-sage-50"
-            : "border-cream-300 bg-white/60 hover:border-sage-400 hover:bg-white/90"
+            ? "border-[#5f7350] bg-[#dfe8d7]"
+            : "border-[#1d241f]/20 bg-[#deddd3] hover:border-[#5f7350] hover:bg-[#e6e5dc]"
         }`}
       >
+        <span className="absolute top-4 left-5 font-mono text-[9px] tracking-[0.18em] text-[#6e796f] uppercase">Input / Spatial source</span>
+        <span className="absolute top-4 right-5 flex items-center gap-2 font-mono text-[9px] tracking-[0.16em] text-[#5f7350] uppercase"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#5f7350]" />Scanner ready</span>
         {previewUrl ? (
           <img
             src={previewUrl}
@@ -49,7 +51,7 @@ export default function UploadPanel({ onFile }: { onFile: (file: File) => void }
             <FileText className="h-10 w-10" strokeWidth={1.4} />
           </div>
         ) : (
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-sage-100 text-sage-600">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[#182019] text-[#d5ff67] shadow-[0_0_0_10px_rgb(24_32_25/.07)]">
             <UploadCloud className="h-8 w-8" strokeWidth={1.5} />
           </div>
         )}

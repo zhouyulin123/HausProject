@@ -105,3 +105,58 @@
 .thin-scrollbar::-webkit-scrollbar-thumb {
   @apply rounded-full bg-cream-300;
 }
+
+/* 首页 ThreeUI 风格空间层：细网格、材质噪点与扫描动效。 */
+.home-hero {
+  min-height: clamp(680px, calc(100svh - 8rem), 800px);
+}
+
+.home-hero-tone {
+  background-color: rgb(6 11 7 / 0.22);
+}
+
+.home-grid {
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.035) 1px, transparent 1px);
+  background-size: 72px 72px;
+}
+
+.home-plan-grid {
+  background-image:
+    linear-gradient(rgb(29 36 31 / 0.075) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(29 36 31 / 0.075) 1px, transparent 1px),
+    radial-gradient(circle at 70% 30%, rgb(213 255 103 / 0.16), transparent 32%);
+  background-size: 36px 36px, 36px 36px, 100% 100%;
+}
+
+.home-noise {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.18'/%3E%3C/svg%3E");
+  mix-blend-mode: soft-light;
+}
+
+.home-scan-line {
+  animation: home-scan 6.5s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes home-scan {
+  0%, 12% { top: 0; opacity: 0; }
+  18% { opacity: 0.8; }
+  72% { opacity: 0.45; }
+  82%, 100% { top: 100%; opacity: 0; }
+}
+
+@media (max-width: 1023px) {
+  .home-hero {
+    min-height: max(600px, calc(100svh - 6rem));
+    max-height: 760px;
+  }
+
+  .home-hero-tone {
+    background-color: rgb(6 11 7 / 0.3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-scan-line { animation: none; }
+}

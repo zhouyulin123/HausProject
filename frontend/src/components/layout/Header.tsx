@@ -18,6 +18,9 @@ export default function Header() {
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const location = useLocation();
+  const usesStudioTheme =
+    ["/", "/customize", "/upload", "/chat", "/results", "/styles", "/furniture", "/my-designs"].includes(location.pathname) ||
+    location.pathname.startsWith("/design/");
   const navigate = useNavigate();
   const shop = useShopStore((s) => s.shop);
   const user = useAuthStore((s) => s.user);
@@ -82,7 +85,9 @@ export default function Header() {
   return (
     <header
       className={`sticky top-0 z-40 border-b transition-all duration-300 ${
-        scrolled
+        usesStudioTheme
+          ? "border-white/10 bg-[#0b0f0c]/92 shadow-[0_8px_30px_rgb(0_0_0/.12)] backdrop-blur-xl"
+          : scrolled
           ? "border-cream-200 bg-cream-50/90 shadow-card backdrop-blur-md"
           : "border-transparent bg-cream-50/70 backdrop-blur-sm"
       }`}
@@ -96,11 +101,11 @@ export default function Header() {
               className="h-9 w-9 rounded-xl object-cover"
             />
           ) : (
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-sage-600 text-white">
+            <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${usesStudioTheme ? "bg-[#d5ff67] text-[#11150f]" : "bg-sage-600 text-white"}`}>
               <Home className="h-5 w-5" strokeWidth={1.8} />
             </span>
           )}
-          <span className="font-display text-lg font-semibold text-stone-800">
+          <span className={`font-display text-lg font-semibold ${usesStudioTheme ? "text-[#f0eee6]" : "text-stone-800"}`}>
             {shopName}
           </span>
         </Link>
@@ -112,9 +117,13 @@ export default function Header() {
               to={item.to}
               className={({ isActive }) =>
                 `rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
-                  isActive
-                    ? "bg-sage-100 text-sage-700"
-                    : "text-stone-600 hover:bg-cream-100 hover:text-stone-800"
+                  usesStudioTheme
+                    ? isActive
+                      ? "bg-white/10 text-[#d5ff67]"
+                      : "text-[#aab4aa] hover:bg-white/5 hover:text-white"
+                    : isActive
+                      ? "bg-sage-100 text-sage-700"
+                      : "text-stone-600 hover:bg-cream-100 hover:text-stone-800"
                 }`
               }
             >
@@ -131,26 +140,26 @@ export default function Header() {
         <div className="hidden items-center gap-2 lg:flex">
           {user ? (
             <>
-              <span className="max-w-[160px] truncate text-sm text-stone-500">
+              <span className={`max-w-[160px] truncate text-sm ${usesStudioTheme ? "text-[#aab4aa]" : "text-stone-500"}`}>
                 {user.nickname || user.phone}
                 <span className="ml-1.5 rounded bg-sage-100 px-1.5 py-0.5 text-xs text-sage-700">
                   {roleLabel(user.role)}
                 </span>
               </span>
-              <Button variant="ghost" size="sm" onClick={handleLogout}>
+              <Button variant="ghost" size="sm" onClick={handleLogout} className={usesStudioTheme ? "text-[#aab4aa] hover:bg-white/10 hover:text-white" : ""}>
                 <LogOut className="h-4 w-4" />
                 退出
               </Button>
             </>
           ) : (
             <Link to="/login">
-              <Button variant="ghost" size="sm">
+              <Button variant="ghost" size="sm" className={usesStudioTheme ? "text-[#aab4aa] hover:bg-white/10 hover:text-white" : ""}>
                 登录 / 注册
               </Button>
             </Link>
           )}
           <Link to="/customize">
-            <Button size="sm">
+            <Button size="sm" className={usesStudioTheme ? "!bg-[#d5ff67] !text-[#11150f] hover:!bg-[#e0ff91]" : ""}>
               <Sparkles className="h-4 w-4" />
               开始定制
             </Button>
@@ -158,7 +167,7 @@ export default function Header() {
         </div>
 
         <button
-          className="flex h-10 w-10 items-center justify-center rounded-xl text-stone-600 hover:bg-cream-100 lg:hidden"
+          className={`flex h-10 w-10 items-center justify-center rounded-xl lg:hidden ${usesStudioTheme ? "text-[#d5ddd4] hover:bg-white/10" : "text-stone-600 hover:bg-cream-100"}`}
           onClick={() => setMenuOpen((v) => !v)}
           aria-label="打开菜单"
         >
@@ -173,7 +182,7 @@ export default function Header() {
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.25 }}
-            className="overflow-hidden border-t border-cream-200 bg-cream-50 lg:hidden"
+            className={`overflow-hidden border-t lg:hidden ${usesStudioTheme ? "border-white/10 bg-[#0b0f0c]" : "border-cream-200 bg-cream-50"}`}
           >
             <div className="flex flex-col gap-1 px-4 py-3">
               {navItems.map((item) => (
@@ -182,9 +191,13 @@ export default function Header() {
                   to={item.to}
                   className={({ isActive }) =>
                     `rounded-lg px-3 py-2.5 text-sm font-medium ${
-                      isActive
-                        ? "bg-sage-100 text-sage-700"
-                        : "text-stone-600 hover:bg-cream-100"
+                      usesStudioTheme
+                        ? isActive
+                          ? "bg-white/10 text-[#d5ff67]"
+                          : "text-[#aab4aa] hover:bg-white/5"
+                        : isActive
+                          ? "bg-sage-100 text-sage-700"
+                          : "text-stone-600 hover:bg-cream-100"
                     }`
                   }
                 >
@@ -196,7 +209,7 @@ export default function Header() {
                   )}
                 </NavLink>
               ))}
-              <div className="mt-2 flex gap-2 border-t border-cream-200 pt-3">
+              <div className={`mt-2 flex gap-2 border-t pt-3 ${usesStudioTheme ? "border-white/10" : "border-cream-200"}`}>
                 {user ? (
                   <Button
                     variant="outline"

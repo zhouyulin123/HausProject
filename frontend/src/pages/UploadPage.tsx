@@ -5,7 +5,7 @@ import UploadPanel from "@/components/upload/UploadPanel";
 import AnalysisResult from "@/components/upload/AnalysisResult";
 import RoomCalibration from "@/components/upload/RoomCalibration";
 import type { AnalysisStatus } from "@/components/upload/AnalysisResult";
-import PageTitle from "@/components/common/PageTitle";
+import StudioPage from "@/components/layout/StudioPage";
 import Button from "@/components/common/Button";
 import { analyzeRoomImage } from "@/api/designApi";
 import { useRoomModelStore } from "@/store/useRoomModelStore";
@@ -73,13 +73,12 @@ export default function UploadPage() {
   };
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-10 sm:px-6">
-      <PageTitle
-        title="上传户型图或房间照片"
-        description="上传户型图后，AI 可以更准确地识别空间比例、动线和家具摆放方式。也可以暂时跳过，直接与 AI 沟通需求。"
-      />
-
-      <div className="mt-8 space-y-6">
+    <StudioPage
+      width="medium"
+      title="让 AI 读取空间现场。"
+      description="户型图给出尺度与边界，房间照片补充光线和材质。两者都没有也没关系，你仍然可以继续完成方案。"
+    >
+      <div className="space-y-6 rounded-[2rem] border border-[#1d241f]/15 bg-[#f4f1e9] p-4 shadow-[0_30px_80px_rgb(20_28_22/.12)] sm:p-7">
         <UploadPanel onFile={runAnalysis} />
 
         {!uploaded && (
@@ -148,6 +147,6 @@ export default function UploadPage() {
           </Button>
         </div>
       </div>
-    </div>
+    </StudioPage>
   );
 }

@@ -28,7 +28,9 @@ def test_core_customer_routes_are_registered():
     assert ("/api/design/scenes/{scene_id}", "PUT") in routes
     assert ("/api/auth/send-code", "POST") in routes
     assert ("/api/auth/login", "POST") in routes
+    assert ("/api/auth/logout", "POST") in routes
     assert ("/api/auth/me", "GET") in routes
+    assert ("/ready", "GET") in routes
     assert ("/api/orders", "POST") in routes
     assert ("/api/orders", "GET") in routes
     assert ("/api/orders/mine", "GET") in routes

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, Heart, Plus, X } from "lucide-react";
+import { Box, Check, Heart, Image, Plus, X } from "lucide-react";
 import type { FurnitureItem } from "@/types/furniture";
 import { furnitureMaterials, furniturePriceRanges } from "@/data/mockFurniture";
 import { fetchFurnitureCatalog } from "@/api/designApi";
@@ -9,11 +9,19 @@ import FurnitureFilter, {
   defaultFilters,
 } from "@/components/furniture/FurnitureFilter";
 import type { FurnitureFilters } from "@/components/furniture/FurnitureFilter";
-import PageTitle from "@/components/common/PageTitle";
+import CollectionPage from "@/components/layout/CollectionPage";
 import EmptyState from "@/components/common/EmptyState";
 import Button from "@/components/common/Button";
 import Tag from "@/components/common/Tag";
 import { useDesignStore } from "@/store/useDesignStore";
+import {
+  furnitureMediaModes,
+  initialFurnitureViewMode,
+} from "@/lib/furnitureMedia";
+
+const FurnitureModelViewer = lazy(
+  () => import("@/components/furniture/FurnitureModelViewer"),
+);
 
 /** 从价格区间文本中提取最低价，用于价格筛选 */
 function minPrice(priceRange: string): number {
@@ -40,6 +48,7 @@ function matchPrice(item: FurnitureItem, band: string): boolean {
 export default function FurniturePage() {
   const [filters, setFilters] = useState<FurnitureFilters>(defaultFilters);
   const [detail, setDetail] = useState<FurnitureItem | null>(null);
+  const [viewMode, setViewMode] = useState<"image" | "3d">("image");
   const [catalog, setCatalog] = useState<FurnitureItem[]>([]);
   const [loading, setLoading] = useState(true);
   const {
@@ -90,18 +99,12 @@ export default function FurniturePage() {
   );
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6">
-      <PageTitle
-        title="AI 家具推荐"
-        description="每一件推荐都基于你的空间尺寸、风格偏好与生活习惯，附上推荐理由。"
-        extra={
-          pickedFurnitureIds.length > 0 ? (
-            <Tag tone="sage">已加入方案 {pickedFurnitureIds.length} 件</Tag>
-          ) : undefined
-        }
-      />
-
-      <div className="mt-8 space-y-6">
+    <CollectionPage>
+      <div className="mb-6 flex items-center justify-between border-b border-[#1d241f]/15 pb-5">
+        <p className="font-mono text-[10px] tracking-[0.16em] text-[#6e786f] uppercase">Catalog / {loading ? "Syncing" : `${filtered.length} objects`}</p>
+        {pickedFurnitureIds.length > 0 && <Tag tone="sage">已加入方案 {pickedFurnitureIds.length} 件</Tag>}
+      </div>
+      <div className="space-y-6">
         <FurnitureFilter
           filters={filters}
           onChange={(patch) => setFilters((f) => ({ ...f, ...patch }))}
@@ -130,7 +133,14 @@ export default function FurniturePage() {
         ) : (
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {filtered.map((item) => (
-              <FurnitureCard key={item.id} item={item} onOpen={setDetail} />
+              <FurnitureCard
+                key={item.id}
+                item={item}
+                onOpen={(it) => {
+                  setDetail(it);
+                  setViewMode(initialFurnitureViewMode(it));
+                }}
+              />
             ))}
           </div>
         )}
@@ -154,13 +164,31 @@ export default function FurniturePage() {
               className="w-full max-w-lg overflow-hidden rounded-3xl bg-cream-50 shadow-lift"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className={`relative h-48 overflow-hidden ${detail.gradient}`}>
-                {detail.imageUrl && (
-                  <img
-                    src={detail.imageUrl}
-                    alt={detail.name}
-                    className="absolute inset-0 h-full w-full object-cover"
-                  />
+              <div className="relative h-64 overflow-hidden bg-[#EFE8DB]">
+                {viewMode === "image" && detail.imageUrl ? (
+                  <div className={`absolute inset-0 ${detail.gradient}`}>
+                    {detail.imageUrl && (
+                      <img
+                        src={detail.imageUrl}
+                        alt={detail.name}
+                        className="absolute inset-0 h-full w-full object-cover"
+                      />
+                    )}
+                  </div>
+                ) : detail.modelSpecJson ? (
+                  <Suspense
+                    fallback={
+                      <div className="flex h-full items-center justify-center text-sm text-stone-500">
+                        正在加载 3D 模型…
+                      </div>
+                    }
+                  >
+                    <FurnitureModelViewer spec={detail.modelSpecJson} />
+                  </Suspense>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-stone-400">
+                    暂无 3D 建模参数
+                  </div>
                 )}
                 <button
                   type="button"
@@ -172,6 +200,34 @@ export default function FurniturePage() {
                 <span className="absolute bottom-3 left-4 rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-sage-700">
                   匹配 {detail.matchScore}%
                 </span>
+                {furnitureMediaModes(detail).length > 1 && (
+                  <div className="absolute right-3 bottom-3 flex gap-1 rounded-full bg-white/85 p-1 backdrop-blur">
+                    <button
+                      type="button"
+                      onClick={() => setViewMode("image")}
+                      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                        viewMode === "image"
+                          ? "bg-sage-700 text-white"
+                          : "text-stone-600 hover:bg-cream-100"
+                      }`}
+                    >
+                      <Image className="h-3.5 w-3.5" />
+                      图片
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setViewMode("3d")}
+                      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                        viewMode === "3d"
+                          ? "bg-sage-700 text-white"
+                          : "text-stone-600 hover:bg-cream-100"
+                      }`}
+                    >
+                      <Box className="h-3.5 w-3.5" />
+                      3D
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="p-6">
                 <div className="flex items-start justify-between gap-3">
@@ -237,6 +293,6 @@ export default function FurniturePage() {
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+    </CollectionPage>
   );
 }

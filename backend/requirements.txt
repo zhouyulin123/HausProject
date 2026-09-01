@@ -13,15 +13,4 @@ reportlab>=4.0.0 # 品牌提案 PDF
 openpyxl>=3.1.0 # 商品 Excel 模板与导入
 PyJWT>=2.8.0 # 登录态 JWT 签发与校验
 
-# 本地效果图生成（SD1.5 + ControlNet，需 NVIDIA GPU + cu128 版 PyTorch）
-# 注：torch 需按显卡架构单独安装（RTX 50 系需 cu128 构建），故不锁在此处
-diffusers>=0.39.0
-transformers>=4.40.0
-accelerate>=1.0.0
-safetensors>=0.4.0
-controlnet_aux>=0.0.9
-opencv-python>=4.9.0
-
-# 以下留待后续阶段启用：
-# alembic>=1.12.0 # 数据库迁移
-# redis>=5.0.0 / celery>=5.3.0 # 效果图并发时的异步队列
+# GPU 效果图能力是可选运行层，使用 requirements-gpu.txt 安装。

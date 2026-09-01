@@ -74,6 +74,43 @@ def _load_product(db: Session, sku: str) -> Product:
     return product
 
 
+def _is_ceiling_anchored(product: Product) -> bool:
+    spec = product.model_spec_json or {}
+    installation = spec.get("安装参数") or {}
+    return installation.get("锚点") == "ceiling"
+
+
+def _vertical_center(
+    document: SceneDocument,
+    product: Product,
+    dimensions: PositiveVector3,
+) -> float:
+    if _is_ceiling_anchored(product):
+        return document.room.ceiling_height - dimensions.y / 2
+    return dimensions.y / 2
+
+
+def _hydrate_scene_items(db: Session, document: SceneDocument) -> None:
+    """用商品库补齐 demo 场景缺失的类别、尺寸和垂直锚点。"""
+    for item in document.items:
+        if item.dimensions is not None and item.category:
+            continue
+        product = _load_product(db, item.sku)
+        dimensions = PositiveVector3(
+            x=product.model_width_mm / 1000,
+            y=product.model_height_mm / 1000,
+            z=product.model_depth_mm / 1000,
+        )
+        item.category = product.category
+        item.dimensions = dimensions
+        if _is_ceiling_anchored(product):
+            item.transform.position.y = _vertical_center(
+                document, product, dimensions
+            )
+        elif item.transform.position.y <= 0:
+            item.transform.position.y = dimensions.y / 2
+
+
 def apply_scene_operations(
     db: Session,
     source: SceneDocument,
@@ -81,14 +118,23 @@ def apply_scene_operations(
 ) -> SceneDocument:
     """顺序执行已通过 Pydantic 鉴别联合校验的操作并返回新文档。"""
     document = source.model_copy(deep=True)
+    _hydrate_scene_items(db, document)
     for operation in operations:
         if isinstance(operation, MoveSceneItem):
             item = _find_item(document, operation.instance_id)
             item.transform.position.x = operation.position.x
             item.transform.position.z = operation.position.z
             if item.dimensions is not None:
-                item.transform.position.y = (
-                    item.dimensions.y * item.transform.scale.y / 2
+                product = _load_product(db, item.sku)
+                scaled_dimensions = PositiveVector3(
+                    x=item.dimensions.x * item.transform.scale.x,
+                    y=item.dimensions.y * item.transform.scale.y,
+                    z=item.dimensions.z * item.transform.scale.z,
+                )
+                item.transform.position.y = _vertical_center(
+                    document,
+                    product,
+                    scaled_dimensions,
                 )
         elif isinstance(operation, RotateSceneItem):
             item = _find_item(document, operation.instance_id)
@@ -109,6 +155,7 @@ def apply_scene_operations(
                 y=product.model_height_mm / 1000,
                 z=product.model_depth_mm / 1000,
             )
+            position_y = _vertical_center(document, product, dimensions)
             document.items.append(
                 SceneItem(
                     instance_id=_next_instance_id(document, product.sku),
@@ -118,7 +165,7 @@ def apply_scene_operations(
                     transform=Transform(
                         position=Vector3(
                             x=operation.position.x,
-                            y=dimensions.y / 2,
+                            y=position_y,
                             z=operation.position.z,
                         ),
                         rotation=Vector3(

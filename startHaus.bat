@@ -1,13 +1,16 @@
-@echo off
+﻿@echo off
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 title 豪斯 AI 家装 - 启动器
 
-REM Python 解析顺序：显式 HAUS_PYTHON > 项目虚拟环境 > py 3.14 > PATH python
+REM Python 解析顺序：显式 HAUS_PYTHON > 项目虚拟环境 > py 3.12 > py 3.14 > PATH python
 set "PYTHON_CMD="
 if defined HAUS_PYTHON if exist "%HAUS_PYTHON%" set PYTHON_CMD="%HAUS_PYTHON%"
 if not defined PYTHON_CMD if exist "backend\.venv\Scripts\python.exe" set PYTHON_CMD="%CD%\backend\.venv\Scripts\python.exe"
+if not defined PYTHON_CMD (
+    where py >nul 2>nul && py -3.12 -c "import fastapi, alembic" >nul 2>nul && set "PYTHON_CMD=py -3.12"
+)
 if not defined PYTHON_CMD (
     where py >nul 2>nul && py -3.14 -c "import fastapi, alembic" >nul 2>nul && set "PYTHON_CMD=py -3.14"
 )
@@ -42,16 +45,16 @@ start "豪斯-前端" cmd /k "npm --prefix frontend run dev"
 
 echo.
 echo 正在等待前后端服务就绪...
-call :wait_for_url "http://127.0.0.1:8081/health" 45 "后端服务"
+call :wait_for_url "http://127.0.0.1:8081/ready" 45 "后端服务"
 if errorlevel 1 exit /b 1
-call :wait_for_url "http://localhost:8080/" 45 "前端服务"
+call :wait_for_url "http://127.0.0.1:8080/" 45 "前端服务"
 if errorlevel 1 exit /b 1
-start http://localhost:8080
+start http://127.0.0.1:8080
 
 echo.
 echo ============================================
 echo   已启动完成！
-echo   - 网页地址: http://localhost:8080
+echo   - 网页地址: http://127.0.0.1:8080
 echo   - 关闭服务: 直接关掉弹出的两个命令行窗口
 echo ============================================
 echo.

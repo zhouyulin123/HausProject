@@ -272,3 +272,96 @@ def test_catalog_rules_use_only_supported_explicit_geometry() -> None:
     )
     assert sum(part["几何"] == "sphere" for part in pendant["部件"]) == 6
     assert sum(part["几何"] == "torus" for part in pendant["部件"]) == 1
+
+
+def _catalog_rules_by_name() -> dict[str, dict]:
+    catalog = json.loads(SPEC_40_FILE.read_text(encoding="utf-8"))
+    entries = build_deterministic_rule_catalog(catalog)["模型目录"]
+    return {entry["家具名称"]: entry["确定性规则"] for entry in entries}
+
+
+def test_sectional_sofas_use_an_l_shaped_support_structure() -> None:
+    by_name = _catalog_rules_by_name()
+
+    for name in ("奶油白猫抓布转角沙发", "浅灰羽绒感转角沙发"):
+        rule = by_name[name]
+        parts = {part["部件ID"]: part for part in rule["部件"]}
+        total_depth = rule["包围尺寸_mm"]["深"]
+
+        assert "main_seat_frame" in parts
+        assert "chaise_frame" in parts
+        assert parts["main_seat_frame"]["尺寸_mm"][2] < total_depth * 0.7
+        assert parts["chaise_frame"]["尺寸_mm"][2] > total_depth * 0.8
+        assert "chaise_outer_arm" in parts
+        assert "right_arm" not in parts
+
+
+def test_sofa_seat_cushions_connect_to_the_back_instead_of_floating_forward() -> None:
+    by_name = _catalog_rules_by_name()
+
+    for rule in (item for item in by_name.values() if item["生成器"] == "sofa_v2"):
+        total_depth = rule["包围尺寸_mm"]["深"]
+        back = next(part for part in rule["部件"] if part["部件ID"] == "back_cushion_1")
+        seat = next(part for part in rule["部件"] if part["部件ID"] == "seat_cushion_1")
+        back_front = back["位置_mm"][2] + back["尺寸_mm"][2] / 2
+        seat_rear = seat["位置_mm"][2] - seat["尺寸_mm"][2] / 2
+
+        assert abs(back_front - seat_rear) < total_depth * 0.06
+
+
+def test_nested_table_legs_are_evenly_distributed_around_each_top() -> None:
+    rule = _catalog_rules_by_name()["岩板套几（大小两件）"]
+    parts = {part["部件ID"]: part for part in rule["部件"]}
+
+    for prefix in ("large", "small"):
+        center_x = parts[f"{prefix}_top"]["位置_mm"][0]
+        offsets = [
+            (
+                parts[f"{prefix}_leg_{index}"]["位置_mm"][0] - center_x,
+                parts[f"{prefix}_leg_{index}"]["位置_mm"][2],
+            )
+            for index in range(1, 4)
+        ]
+        radii = [(x * x + z * z) ** 0.5 for x, z in offsets]
+
+        assert max(radii) - min(radii) < 0.01
+        assert abs(sum(x for x, _ in offsets)) < 0.01
+        assert abs(sum(z for _, z in offsets)) < 0.01
+
+
+def test_chair_materials_follow_part_semantics_instead_of_slot_order() -> None:
+    by_name = _catalog_rules_by_name()
+
+    for name in ("藤编靠背餐椅", "白橡木藤编餐椅"):
+        rule = by_name[name]
+        parts = {part["部件ID"]: part for part in rule["部件"]}
+        surfaces = {slot["槽位ID"]: slot["表面类型"] for slot in rule["材质槽"]}
+        assert parts["back"]["几何"] == "mesh_panel"
+        assert surfaces[parts["back"]["材质槽"]] == "rattan"
+        assert surfaces[parts["seat"]["材质槽"]] == "fabric"
+        assert surfaces[parts["leg_fl"]["材质槽"]] == "wood"
+
+    upholstered = by_name["奶油白软包餐椅"]
+    parts = {part["部件ID"]: part for part in upholstered["部件"]}
+    surfaces = {
+        slot["槽位ID"]: slot["表面类型"]
+        for slot in upholstered["材质槽"]
+    }
+    assert surfaces[parts["seat"]["材质槽"]] == "fabric"
+    assert surfaces[parts["back"]["材质槽"]] == "fabric"
+    assert surfaces[parts["leg_fl"]["材质槽"]] == "metal"
+
+
+def test_ergonomic_chair_spokes_point_radially_from_the_hub() -> None:
+    rule = _catalog_rules_by_name()["人体工学椅"]
+    parts = {part["部件ID"]: part for part in rule["部件"]}
+
+    for index, angle in enumerate((0, 72, 144, 216, 288), start=1):
+        assert parts[f"star_spoke_{index}"]["旋转_deg"] == [90, angle, 0]
+
+    for side in ("left", "right"):
+        support = parts[f"{side}_arm_support"]
+        pad = parts[f"{side}_arm_pad"]
+        assert support["尺寸_mm"][1] > support["尺寸_mm"][2]
+        assert pad["尺寸_mm"][2] > pad["尺寸_mm"][1] * 5
+        assert pad["位置_mm"][1] > support["位置_mm"][1]

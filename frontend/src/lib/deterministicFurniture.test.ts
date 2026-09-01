@@ -5,6 +5,8 @@ import {
   deterministicFurnitureRule,
   modelPartTransform,
   previewLighting,
+  roundPartScale,
+  structuralSurfacePixels,
   taperedPartPivotTransform,
   resolveFurnitureRenderer,
   upholsteryAppearance,
@@ -123,6 +125,27 @@ describe("确定性家具模型分发", () => {
       position: [-0.344, 0.17, -0.374],
       rotation: [-8 * Math.PI / 180, 0, 0],
     });
+  });
+
+  it("圆柱类部件保留 X/Z 轴尺寸比例", () => {
+    expect(roundPartScale({
+      部件ID: "ceiling_plate",
+      几何: "cylinder",
+      尺寸_mm: [420, 24, 140],
+      位置_mm: [0, 1200, 0],
+      旋转_deg: [0, 0, 0],
+      材质槽: "metal",
+    })).toEqual([1, 1, 1 / 3]);
+  });
+
+  it("结构纹理用 RGBA 灰度像素，避免藤编和网布偏红", () => {
+    const pixels = structuralSurfacePixels(4, true);
+    expect(pixels).toHaveLength(4 * 4 * 4);
+    for (let index = 0; index < pixels.length; index += 4) {
+      expect(pixels[index]).toBe(pixels[index + 1]);
+      expect(pixels[index + 1]).toBe(pixels[index + 2]);
+      expect(pixels[index + 3]).toBe(255);
+    }
   });
 
   it("锥形木构件围绕底部中心旋转，连接点不会漂移", () => {

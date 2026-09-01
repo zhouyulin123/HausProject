@@ -16,7 +16,6 @@ export interface AuthUser {
 }
 
 export interface LoginResult {
-  token: string;
   user: AuthUser;
 }
 
@@ -68,7 +67,11 @@ async function authRequest<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const token = readToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const resp = await fetch(path, { ...init, headers });
+  const resp = await fetch(path, {
+    ...init,
+    headers,
+    credentials: "same-origin",
+  });
   if (!resp.ok) {
     let message = `${path} -> ${resp.status}`;
     try {
@@ -102,4 +105,8 @@ export async function login(phone: string, code: string): Promise<LoginResult> {
 export async function fetchMe(): Promise<AuthUser> {
   const data = await authRequest<{ user: AuthUser }>("/api/auth/me");
   return data.user;
+}
+
+export async function logoutSession(): Promise<void> {
+  await authRequest<{ status: string }>("/api/auth/logout", { method: "POST" });
 }

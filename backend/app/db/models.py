@@ -187,6 +187,17 @@ class Product(Base):
     model_depth_mm = Column(Integer, nullable=True)
     model_license = Column(String(100), nullable=True)
     model_source = Column(String(255), nullable=True)
+    model_spec_json = Column(JSON, nullable=True)  # 3D 建模真实参数（尺寸/结构/造型/材质PBR/工艺）
+    data_origin = Column(
+        String(30), nullable=False, default="unknown", server_default="unknown", index=True
+    )  # unknown / merchant / demo / public_reference
+    source_name = Column(String(100), nullable=True)
+    source_url = Column(String(500), nullable=True)
+    source_product_id = Column(String(100), nullable=True)
+    source_retrieved_at = Column(DateTime(timezone=True), nullable=True)
+    price_observed_at = Column(DateTime(timezone=True), nullable=True)
+    price_note = Column(String(500), nullable=True)
+    source_metadata = Column(JSON, nullable=True)
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

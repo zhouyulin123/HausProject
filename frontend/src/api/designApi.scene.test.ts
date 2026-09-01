@@ -254,6 +254,95 @@ describe("3D 场景 API", () => {
     );
   });
 
+  it("demo 场景命令携带最近的结构化执行历史", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const history = [
+      {
+        instruction: "加一把餐椅",
+        message: "已添加餐椅",
+        operations: [
+          {
+            type: "add" as const,
+            sku: "CY-001",
+            position: { x: 0, z: 0.75 },
+            rotationY: 0,
+          },
+        ],
+        affectedInstanceIds: ["item-CY-001-1"],
+      },
+    ];
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(
+        jsonResponse({ message: "已移走", operations: [], scene }),
+      );
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { runDemoAgentCommand } = await import("./designApi");
+    await runDemoAgentCommand("把刚才那个移走", scene, history);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/demo/agent-command",
+      expect.objectContaining({
+        body: JSON.stringify({
+          instruction: "把刚才那个移走",
+          scene,
+          history,
+        }),
+      }),
+    );
+  });
+
+  it("严格商品库模式在后端失败时拒绝静默 mock 降级", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const unavailable = new Response(JSON.stringify({ detail: "不可用" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(unavailable);
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchFurnitureCatalog } = await import("./designApi");
+
+    await expect(
+      fetchFurnitureCatalog({ fallbackToMock: false }),
+    ).rejects.toThrow("商品库加载失败");
+  });
+
+  it("未显式开启 Demo 模式时商品库默认拒绝静默 mock 降级", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const unavailable = new Response(JSON.stringify({ detail: "不可用" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(unavailable);
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchFurnitureCatalog } = await import("./designApi");
+
+    await expect(fetchFurnitureCatalog()).rejects.toThrow("商品库加载失败");
+  });
+
   it("创建并轮询绑定场景版本的 Blender 渲染任务", async () => {
     const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
     const storage = createLocalStorage({

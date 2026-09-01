@@ -77,6 +77,9 @@ def scene_api_context():
                     style="奶油风",
                     price=8999,
                     is_active=True,
+                    model_width_mm=1600,
+                    model_height_mm=800,
+                    model_depth_mm=800,
                 ),
             ]
         )

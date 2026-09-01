@@ -33,6 +33,7 @@ import { useSceneEditor } from "@/hooks/useSceneEditor";
 import ProductModel3D from "./ProductModel3D";
 import type { ProductModelAsset } from "@/lib/productModel";
 import { getProductModelAsset } from "@/lib/productModel";
+import { CATEGORY_COLOR } from "@/lib/scenePalette";
 import type { TransformMode } from "@/hooks/useSceneEditor";
 import type { DesignPlan } from "@/types/design";
 import type { RoomModel } from "@/types/roomModel";
@@ -41,20 +42,6 @@ import type {
   SceneItem,
   SceneTransform,
 } from "@/types/scene";
-
-const CATEGORY_COLOR: Record<string, string> = {
-  沙发: "#D8C7A8",
-  茶几: "#A6835B",
-  柜子: "#CDB68F",
-  床: "#DAC9AC",
-  餐桌: "#A6835B",
-  餐椅: "#B89A6D",
-  书桌: "#B08F63",
-  书椅: "#9C8467",
-  灯具: "#E8D9A8",
-  窗帘: "#E5DCC6",
-  地毯: "#B7A98C",
-};
 
 function SceneRoom({ scene }: { scene: SceneDocument }) {
   const floorShape = useMemo(() => {

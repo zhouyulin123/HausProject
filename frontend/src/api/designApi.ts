@@ -1,5 +1,5 @@
 import type { DesignPlan } from "@/types/design";
-import type { FurnitureItem } from "@/types/furniture";
+import type { FurnitureItem, Furniture3DSpec } from "@/types/furniture";
 import type { ImageAnalysis, UserRequirement } from "@/types/requirement";
 import type { RoomModel } from "@/types/roomModel";
 import type {
@@ -9,6 +9,7 @@ import type {
   DesignSceneVersion,
   SceneDocument,
   SceneAgentCommandResult,
+  SceneOperation,
   SceneSource,
   SceneValidationReport,
 } from "@/types/scene";
@@ -38,6 +39,7 @@ import { readToken } from "./authApi";
  */
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const demoFallbackEnabled = import.meta.env.VITE_DEMO_MODE === "true";
 
 const browserStorage =
   typeof window !== "undefined" ? window.localStorage : null;
@@ -258,6 +260,7 @@ async function doGenerateDesigns(
     console.info(`[designApi] 方案生成完成（generator=${result.generator}）`);
     return result.plans.map(decoratePlan);
   } catch (error) {
+    if (!demoFallbackEnabled) throw error;
     console.warn("[designApi] 后端不可用，降级到本地 mock 方案", error);
     await delay(2200);
     const plans = [...mockDesigns];
@@ -328,6 +331,7 @@ export async function analyzeRoomImage(file: File): Promise<ImageAnalysis> {
       roomModel: data.analysis.room_model ?? null,
     };
   } catch (error) {
+    if (!demoFallbackEnabled) throw error;
     console.warn("[designApi] 上传接口不可用，降级到本地 mock 分析", error);
     await delay(1800);
     return {
@@ -388,10 +392,13 @@ interface BackendProduct {
   model_depth_mm: number | null;
   model_license: string | null;
   model_source: string | null;
+  model_spec_json: Furniture3DSpec | null;
 }
 
 /** 从后端商品库拉取自家家具；后端不可用时降级到本地 mock 数据。 */
-export async function fetchFurnitureCatalog(): Promise<FurnitureItem[]> {
+export async function fetchFurnitureCatalog(
+  options: { fallbackToMock?: boolean } = {},
+): Promise<FurnitureItem[]> {
   try {
     const data = await request<{ products: BackendProduct[] }>("/api/products");
     if (!data.products.length) throw new Error("商品库为空");
@@ -419,8 +426,15 @@ export async function fetchFurnitureCatalog(): Promise<FurnitureItem[]> {
         height: p.model_height_mm,
         depth: p.model_depth_mm,
       },
+      modelSpecJson: p.model_spec_json ?? undefined,
     }));
   } catch (error) {
+    const fallbackToMock = options.fallbackToMock ?? demoFallbackEnabled;
+    if (!fallbackToMock) {
+      const catalogError = new Error("商品库加载失败，请检查后端服务和商品数据");
+      (catalogError as Error & { cause?: unknown }).cause = error;
+      throw catalogError;
+    }
     console.warn("[designApi] 商品库不可用，降级到本地 mock 家具", error);
     return mockFurniture;
   }
@@ -825,6 +839,31 @@ export async function runSceneAgentCommand(
       }),
     },
   );
+}
+
+export interface DemoAgentCommandResult {
+  message: string;
+  operations: SceneOperation[];
+  scene: SceneDocument;
+}
+
+export interface DemoConversationTurn {
+  instruction: string;
+  message: string;
+  operations: SceneOperation[];
+  affectedInstanceIds: string[];
+}
+
+/** demo 3D 页：让 AI 把指令解析成白名单操作，前端本地执行。 */
+export async function runDemoAgentCommand(
+  instruction: string,
+  scene: SceneDocument,
+  history: DemoConversationTurn[] = [],
+): Promise<DemoAgentCommandResult> {
+  return request<DemoAgentCommandResult>("/api/demo/agent-command", {
+    method: "POST",
+    body: JSON.stringify({ instruction, scene, history: history.slice(-8) }),
+  });
 }
 
 /** 创建独立 Blender Worker 消费的版本化渲染任务。 */

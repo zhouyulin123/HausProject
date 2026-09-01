@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Home } from "lucide-react";
 import { useShopStore } from "@/store/useShopStore";
 
@@ -21,12 +21,16 @@ const columns = [
 ];
 
 export default function Footer() {
+  const pathname = useLocation().pathname;
+  const usesStudioTheme =
+    ["/", "/customize", "/upload", "/chat", "/results", "/styles", "/furniture", "/my-designs"].includes(pathname) ||
+    pathname.startsWith("/design/");
   const shop = useShopStore((s) => s.shop);
   const shopName = shop?.shop_name || "AI 家装定制助手";
   const slogan = shop?.slogan || "让每个家都有自己的样子";
 
   return (
-    <footer className="mt-auto border-t border-cream-200 bg-cream-100/60">
+    <footer className={`mt-auto border-t ${usesStudioTheme ? "border-white/10 bg-[#0b0f0c] text-[#d8ded6]" : "border-cream-200 bg-cream-100/60"}`}>
       <div className="mx-auto grid max-w-7xl gap-10 px-4 py-12 sm:px-6 md:grid-cols-[1.5fr_1fr_1fr]">
         <div>
           <div className="flex items-center gap-2">
@@ -37,28 +41,28 @@ export default function Footer() {
                 className="h-8 w-8 rounded-lg object-cover"
               />
             ) : (
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sage-600 text-white">
+              <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${usesStudioTheme ? "bg-[#d5ff67] text-[#11150f]" : "bg-sage-600 text-white"}`}>
                 <Home className="h-4 w-4" />
               </span>
             )}
-            <span className="font-display text-base font-semibold text-stone-800">
+            <span className={`font-display text-base font-semibold ${usesStudioTheme ? "text-[#f0eee6]" : "text-stone-800"}`}>
               {shopName}
             </span>
           </div>
-          <p className="mt-4 max-w-sm text-sm leading-relaxed text-stone-500">
+          <p className={`mt-4 max-w-sm text-sm leading-relaxed ${usesStudioTheme ? "text-[#899489]" : "text-stone-500"}`}>
             不用懂设计，也能得到一套清晰的装修方案。从户型、预算到生活习惯，AI
             会综合生成更适合你的家装建议。
           </p>
         </div>
         {columns.map((col) => (
           <div key={col.title}>
-            <h4 className="text-sm font-semibold text-stone-700">{col.title}</h4>
+            <h4 className={`text-sm font-semibold ${usesStudioTheme ? "text-[#d8ded6]" : "text-stone-700"}`}>{col.title}</h4>
             <ul className="mt-4 space-y-2.5">
               {col.links.map((link) => (
                 <li key={link.to + link.label}>
                   <Link
                     to={link.to}
-                    className="text-sm text-stone-500 transition-colors hover:text-sage-700"
+                    className={`text-sm transition-colors ${usesStudioTheme ? "text-[#899489] hover:text-[#d5ff67]" : "text-stone-500 hover:text-sage-700"}`}
                   >
                     {link.label}
                   </Link>
@@ -68,7 +72,7 @@ export default function Footer() {
           </div>
         ))}
       </div>
-      <div className="border-t border-cream-200 py-5 text-center text-xs text-stone-400">
+      <div className={`border-t py-5 text-center text-xs ${usesStudioTheme ? "border-white/10 text-[#687269]" : "border-cream-200 text-stone-400"}`}>
         © 2026 {shopName} · {slogan}
       </div>
     </footer>

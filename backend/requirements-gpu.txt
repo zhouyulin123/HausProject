@@ -1,0 +1,10 @@
+-r requirements.txt
+
+# 本地效果图生成（SD1.5 + ControlNet，需 NVIDIA GPU）。
+# torch 必须按实际显卡和 CUDA 版本从官方源单独安装，因此不在此锁定。
+diffusers>=0.39.0
+transformers>=4.40.0
+accelerate>=1.0.0
+safetensors>=0.4.0
+controlnet_aux>=0.0.9
+opencv-python>=4.9.0

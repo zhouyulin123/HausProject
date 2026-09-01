@@ -52,6 +52,14 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             for column in inspect(inspection_engine).get_columns("products")
         }
         assert {
+            "data_origin",
+            "source_name",
+            "source_url",
+            "source_product_id",
+            "source_retrieved_at",
+            "price_observed_at",
+            "price_note",
+            "source_metadata",
             "model_url",
             "model_status",
             "model_width_mm",
@@ -59,6 +67,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "model_depth_mm",
             "model_license",
             "model_source",
+            "model_spec_json",
         } <= product_columns
         render_job_columns = {
             column["name"]

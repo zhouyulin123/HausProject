@@ -55,7 +55,7 @@ export default function ChatPanel() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-12rem)] min-h-[480px] flex-col rounded-3xl border border-cream-200 bg-cream-100/50">
+    <div className="flex h-[calc(100vh-12rem)] min-h-[520px] flex-col overflow-hidden rounded-[2rem] border border-[#1d241f]/15 bg-[#e2e0d7] shadow-[0_30px_80px_rgb(20_28_22/.12)]">
       {/* 消息区 */}
       <div ref={scrollRef} className="thin-scrollbar flex-1 space-y-5 overflow-y-auto p-5">
         {messages.map((message) => (
@@ -101,7 +101,7 @@ export default function ChatPanel() {
       </div>
 
       {/* 快捷指令 + 输入框 */}
-      <div className="border-t border-cream-200 bg-white/70 p-4 rounded-b-3xl">
+      <div className="border-t border-[#1d241f]/15 bg-[#f4f1e9]/95 p-4">
         <QuickActions commands={quickCommands} onSelect={send} disabled={loading} />
         <div className="mt-3 flex items-end gap-2">
           <textarea

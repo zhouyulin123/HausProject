@@ -1,16 +1,14 @@
 import StepForm from "@/components/customize/StepForm";
 import RequirementSummary from "@/components/customize/RequirementSummary";
-import PageTitle from "@/components/common/PageTitle";
+import StudioPage from "@/components/layout/StudioPage";
 
 export default function CustomizePage() {
   return (
-    <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6">
-      <PageTitle
-        title="告诉 AI 你想要的家"
-        description="从户型、预算到生活习惯，AI 会综合生成更适合你的家装建议。全程约 2 分钟。"
-      />
-
-      <div className="mt-8 grid items-start gap-6 lg:grid-cols-[1fr_320px]">
+    <StudioPage
+      title="先定义生活，再设计空间。"
+      description="告诉 AI 你的户型、预算和日常习惯。每一个选择都会成为空间推演中的真实约束，而不是一份被遗忘的问卷。"
+    >
+      <div className="grid items-start gap-6 lg:grid-cols-[1fr_320px]">
         <StepForm />
 
         {/* 桌面端：右侧固定摘要 */}
@@ -28,6 +26,6 @@ export default function CustomizePage() {
           </div>
         </details>
       </div>
-    </div>
+    </StudioPage>
   );
 }

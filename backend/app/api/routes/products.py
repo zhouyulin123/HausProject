@@ -48,6 +48,15 @@ def _product_to_dict(p: Product) -> dict:
         "model_depth_mm": p.model_depth_mm,
         "model_license": p.model_license,
         "model_source": p.model_source,
+        "model_spec_json": p.model_spec_json,
+        "data_origin": p.data_origin,
+        "source_name": p.source_name,
+        "source_url": p.source_url,
+        "source_product_id": p.source_product_id,
+        "source_retrieved_at": p.source_retrieved_at,
+        "price_observed_at": p.price_observed_at,
+        "price_note": p.price_note,
+        "source_metadata": p.source_metadata,
     }
 
 

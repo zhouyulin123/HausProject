@@ -1,4 +1,4 @@
-import { Check, Heart, Plus } from "lucide-react";
+import { Box, Check, Heart, Plus } from "lucide-react";
 import type { FurnitureItem } from "@/types/furniture";
 import { useDesignStore } from "@/store/useDesignStore";
 import Tag from "@/components/common/Tag";
@@ -21,11 +21,11 @@ export default function FurnitureCard({
   const picked = pickedFurnitureIds.includes(item.id);
 
   return (
-    <div className="group flex flex-col overflow-hidden rounded-3xl border border-cream-200 bg-white/80 transition-all duration-300 hover:-translate-y-1 hover:shadow-soft">
+    <div className="group flex flex-col overflow-hidden rounded-[1.5rem] border border-[#1d241f]/15 bg-[#e7e4da] transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_24px_55px_rgb(20_28_22/.14)]">
       <button
         type="button"
         onClick={() => onOpen(item)}
-        className={`relative h-40 cursor-pointer overflow-hidden ${item.gradient}`}
+        className={`relative h-48 cursor-pointer overflow-hidden ${item.gradient}`}
       >
         {item.imageUrl && (
           <img
@@ -34,9 +34,22 @@ export default function FurnitureCard({
             className="absolute inset-0 h-full w-full object-cover"
           />
         )}
+        {!item.imageUrl && item.modelSpecJson && (
+          <div className="absolute inset-0 overflow-hidden bg-[#202820] text-[#dfe8d7]">
+            <div className="home-plan-grid absolute inset-0 opacity-45" />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_66%_34%,rgba(213,255,103,.16),transparent_42%)]" />
+            <div className="absolute top-1/2 left-1/2 flex h-24 w-24 -translate-x-1/2 -translate-y-1/2 items-center justify-center border border-[#d5ff67]/30 [transform:translate(-50%,-50%)_rotate(45deg)]">
+              <Box className="h-10 w-10 -rotate-45 text-[#d5ff67]" strokeWidth={1.2} />
+            </div>
+            <span className="absolute right-3 bottom-3 rounded-full border border-white/15 bg-black/20 px-2.5 py-1 font-mono text-[9px] tracking-[0.14em] uppercase backdrop-blur">
+              3D Model
+            </span>
+          </div>
+        )}
         <span className="absolute top-3 left-3 rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-sage-700 backdrop-blur">
           匹配 {item.matchScore}%
         </span>
+        <span className="absolute bottom-3 left-3 font-mono text-[9px] tracking-[0.14em] text-white/80 uppercase">Object / {item.sku ?? item.id}</span>
         <span
           role="button"
           tabIndex={0}

@@ -268,6 +268,33 @@ export function modelPartTransform(part: DeterministicModelPart) {
   };
 }
 
+export function roundPartScale(
+  part: DeterministicModelPart,
+): [number, number, number] {
+  const [diameterX, , diameterZ] = part.尺寸_mm;
+  return [1, 1, diameterX > 0 ? diameterZ / diameterX : 1];
+}
+
+export function structuralSurfacePixels(
+  resolution: number,
+  mesh: boolean,
+): Uint8Array {
+  const data = new Uint8Array(resolution * resolution * 4);
+  for (let y = 0; y < resolution; y += 1) {
+    for (let x = 0; x < resolution; x += 1) {
+      const value = mesh
+        ? (x % 8 < 2 || y % 8 < 2 ? 82 : 205)
+        : Math.round(184 + Math.sin(x * 0.72) * 20 + Math.sin(y * 0.58) * 16);
+      const offset = (y * resolution + x) * 4;
+      data[offset] = value;
+      data[offset + 1] = value;
+      data[offset + 2] = value;
+      data[offset + 3] = 255;
+    }
+  }
+  return data;
+}
+
 export function taperedPartPivotTransform(part: DeterministicModelPart) {
   const { size, position, rotation } = modelPartTransform(part);
   const topPivot = part.几何 === "top_pivot_tapered_wood_leg";

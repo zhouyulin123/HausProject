@@ -41,13 +41,13 @@ export default function RequirementSummary({ compact = false }: { compact?: bool
 
   return (
     <div
-      className={`rounded-3xl border border-cream-200 bg-white/80 ${compact ? "p-4" : "p-5"}`}
+      className={`rounded-[2rem] border border-[#1d241f]/15 bg-[#e0ded4] shadow-[0_20px_50px_rgb(20_28_22/.08)] ${compact ? "p-4" : "p-5"}`}
     >
       <div className="flex items-center gap-2">
-        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-sage-600 text-white">
+        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#182019] text-[#d5ff67]">
           <Sparkles className="h-4 w-4" />
         </span>
-        <h3 className="text-sm font-semibold text-stone-700">AI 已理解的重点</h3>
+        <div><p className="font-mono text-[9px] tracking-[0.16em] text-[#747f76] uppercase">Live brief</p><h3 className="text-sm font-semibold text-stone-700">AI 已理解的重点</h3></div>
       </div>
       {isEmpty ? (
         <p className="mt-4 text-sm leading-relaxed text-stone-400">

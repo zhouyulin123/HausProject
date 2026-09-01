@@ -17,7 +17,7 @@ export default function StyleCard({
   const [favorite, setFavorite] = useState(false);
 
   return (
-    <div className="group flex flex-col overflow-hidden rounded-3xl border border-cream-200 bg-white/80 transition-all duration-300 hover:-translate-y-1 hover:shadow-soft">
+    <div className="group flex flex-col overflow-hidden rounded-[1.5rem] border border-[#1d241f]/15 bg-[#e7e4da] transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_24px_55px_rgb(20_28_22/.14)]">
       <StyleImageCarousel
         images={style.images}
         label={style.name}

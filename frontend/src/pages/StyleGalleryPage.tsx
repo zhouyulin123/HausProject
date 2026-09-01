@@ -6,7 +6,7 @@ import type { StyleCase } from "@/types/design";
 import { mockStyles, styleCategories } from "@/data/mockStyles";
 import { useRequirementStore } from "@/store/useRequirementStore";
 import StyleCard from "@/components/common/StyleCard";
-import PageTitle from "@/components/common/PageTitle";
+import CollectionPage from "@/components/layout/CollectionPage";
 import Button from "@/components/common/Button";
 import Tag from "@/components/common/Tag";
 import StyleImageCarousel from "@/components/common/StyleImageCarousel";
@@ -40,14 +40,9 @@ export default function StyleGalleryPage() {
   };
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6">
-      <PageTitle
-        title="发现你的理想家装风格"
-        description="浏览不同风格的适用场景、配色与材质，一键套用到你的方案中。"
-      />
-
+    <CollectionPage>
       {/* 分类标签 */}
-      <div className="thin-scrollbar mt-8 flex gap-2 overflow-x-auto pb-1">
+      <div className="thin-scrollbar flex gap-2 overflow-x-auto border-b border-[#1d241f]/15 pb-5">
         {styleCategories.map((c) => (
           <button
             key={c}
@@ -55,7 +50,7 @@ export default function StyleGalleryPage() {
             onClick={() => setCategory(c)}
             className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-all ${
               category === c
-                ? "bg-sage-600 text-white shadow-card"
+                ? "bg-[#182019] text-[#d5ff67] shadow-card"
                 : "border border-cream-300 bg-white/70 text-stone-600 hover:border-sage-400"
             }`}
           >
@@ -180,6 +175,6 @@ export default function StyleGalleryPage() {
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+    </CollectionPage>
   );
 }

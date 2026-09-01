@@ -3,7 +3,7 @@
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -46,8 +46,20 @@ def send_code(req: SendCodeRequest, db: Session = Depends(get_db)):
     return payload
 
 
+def _set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=settings.auth_cookie_name,
+        value=token,
+        max_age=settings.jwt_expire_minutes * 60,
+        path="/api",
+        secure=settings.app_env == "production",
+        httponly=True,
+        samesite="strict",
+    )
+
+
 @router.post("/login")
-def login(req: LoginRequest, db: Session = Depends(get_db)):
+def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     _validate_phone(req.phone)
     try:
         user = auth_service.login_or_register(db, req.phone, req.code)
@@ -63,9 +75,24 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 
             logging.getLogger(__name__).exception("合并匿名会话失败")
     token = auth_service.issue_token(user)
-    return {"token": token, "user": auth_service.user_to_dict(user)}
+    _set_auth_cookie(response, token)
+    return {"user": auth_service.user_to_dict(user)}
 
 
 @router.get("/me")
-def me(user: User = Depends(get_current_user)):
+def me(response: Response, user: User = Depends(get_current_user)):
+    # 旧版 Bearer 登录访问一次 /me 后即可迁移到 Cookie 会话。
+    _set_auth_cookie(response, auth_service.issue_token(user))
     return {"user": auth_service.user_to_dict(user)}
+
+
+@router.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(
+        key=settings.auth_cookie_name,
+        path="/api",
+        secure=settings.app_env == "production",
+        httponly=True,
+        samesite="strict",
+    )
+    return {"status": "ok"}

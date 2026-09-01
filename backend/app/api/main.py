@@ -5,6 +5,7 @@ from app.api.routes import (
     auth,
     chat,
     customers,
+    demo,
     orders,
     products,
     proposal,
@@ -30,3 +31,4 @@ api_router.include_router(customers.router, prefix="/customers", tags=["customer
 api_router.include_router(shop.router, prefix="/shop", tags=["shop"])
 api_router.include_router(orders.router, prefix="/orders", tags=["orders"])
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
+api_router.include_router(demo.router, prefix="", tags=["demo"])

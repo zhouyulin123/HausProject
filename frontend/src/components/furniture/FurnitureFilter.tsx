@@ -38,7 +38,7 @@ function FilterRow({
             onClick={() => onChange(option)}
             className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all ${
               value === option
-                ? "bg-sage-600 text-white"
+                ? "bg-[#182019] text-[#d5ff67]"
                 : "bg-cream-100 text-stone-500 hover:bg-cream-200 hover:text-stone-700"
             }`}
           >
@@ -66,7 +66,7 @@ export default function FurnitureFilter({
   };
 }) {
   return (
-    <div className="space-y-3.5 rounded-3xl border border-cream-200 bg-white/80 p-5">
+    <div className="space-y-3.5 rounded-[1.5rem] border border-[#1d241f]/15 bg-[#e2e0d7] p-5">
       <FilterRow
         label="空间"
         options={optionGroups.rooms}

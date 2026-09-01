@@ -1,11 +1,18 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+import os
+import uuid
+
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.api.main import api_router
 from app.core.config import settings
+from app.db.database import get_db
 
 
 app = FastAPI(
@@ -18,7 +25,8 @@ app = FastAPI(
 # 前端开发服务器直连时需要 CORS（生产环境走同域或网关时可收紧）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -30,6 +38,46 @@ Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
 
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "environment": settings.app_env}
+
+
+@app.get("/ready")
+def readiness_check(db: Session = Depends(get_db)):
+    checks = {
+        "database": "ok",
+        "storage": "ok",
+        "llm": "configured" if settings.llm_api_key else "not_configured",
+    }
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        checks["database"] = "unavailable"
+
+    upload_path = Path(settings.upload_dir)
+    if not upload_path.is_dir() or not os.access(upload_path, os.W_OK):
+        checks["storage"] = "unavailable"
+
+    required_checks_ok = all(
+        checks[name] == "ok" for name in ("database", "storage")
+    )
+    payload = {
+        "status": "ready" if required_checks_ok else "unavailable",
+        "environment": settings.app_env,
+        "checks": checks,
+    }
+    if not required_checks_ok:
+        return JSONResponse(status_code=503, content=payload)
+    return payload

@@ -1,9 +1,10 @@
 from typing import Annotated, Optional
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Cookie, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
+from app.core.config import settings
 from app.db.models import AnonymousSession, DesignTask, User
 from app.services import anonymous_session_service, auth_service
 
@@ -25,13 +26,18 @@ AuthorizationHeader = Annotated[
 
 
 def get_current_user(
-    authorization: AuthorizationHeader,
     db: Session = Depends(get_db),
+    authorization: AuthorizationHeader = None,
+    session_cookie: Annotated[
+        Optional[str], Cookie(alias=settings.auth_cookie_name)
+    ] = None,
 ) -> User:
-    """解析 Bearer JWT 并返回当前用户；未登录返回 401。"""
-    if not authorization or not authorization.startswith("Bearer "):
+    """优先解析 HttpOnly Cookie，同时兼容现有 Bearer JWT 客户端。"""
+    token = session_cookie
+    if not token and authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+    if not token:
         raise HTTPException(status_code=401, detail="未登录")
-    token = authorization.removeprefix("Bearer ").strip()
     try:
         payload = auth_service.decode_token(token)
     except auth_service.AuthError as exc:

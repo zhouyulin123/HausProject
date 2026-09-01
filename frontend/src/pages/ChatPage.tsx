@@ -3,12 +3,16 @@ import { ArrowRight, Lightbulb } from "lucide-react";
 import ChatPanel from "@/components/chat/ChatPanel";
 import RequirementSummary from "@/components/customize/RequirementSummary";
 import { mockStyles } from "@/data/mockStyles";
+import StudioPage from "@/components/layout/StudioPage";
 
 const inspirations = mockStyles.slice(0, 3);
 
 export default function ChatPage() {
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+    <StudioPage
+      title="把模糊的喜欢，说清楚。"
+      description="像面对真正的设计师一样交流。AI 会追问影响空间决策的细节，并把每次回答同步回你的设计简报。"
+    >
       <div className="grid items-start gap-6 xl:grid-cols-[300px_1fr_280px]">
         {/* 左侧：需求摘要（桌面端） */}
         <div className="sticky top-24 hidden xl:block">
@@ -17,11 +21,12 @@ export default function ChatPage() {
 
         {/* 中间：对话区 */}
         <div>
-          <div className="mb-4">
-            <h1 className="text-xl font-semibold sm:text-2xl">和 AI 设计师聊聊</h1>
-            <p className="mt-1.5 text-sm text-stone-500">
-              像和设计师沟通一样补充需求，AI 会记住每一个细节。
-            </p>
+          <div className="mb-4 flex items-center justify-between border-b border-[#1d241f]/15 pb-3">
+            <div className="flex items-center gap-2 text-[10px] tracking-[0.18em] text-[#59645b] uppercase">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#5f7350]" />
+              AI Designer / Online
+            </div>
+            <span className="font-mono text-[10px] text-[#7c867e]">SESSION 03</span>
           </div>
           <ChatPanel />
         </div>
@@ -58,6 +63,6 @@ export default function ChatPage() {
           </div>
         </div>
       </div>
-    </div>
+    </StudioPage>
   );
 }

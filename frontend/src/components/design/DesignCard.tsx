@@ -18,15 +18,16 @@ export default function DesignCard({ plan, index = 0 }: { plan: DesignPlan; inde
       initial={{ opacity: 0, y: 24 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.45, delay: index * 0.1 }}
-      className="group flex flex-col overflow-hidden rounded-3xl border border-cream-200 bg-white/80 transition-all duration-300 hover:-translate-y-1.5 hover:shadow-lift"
+      className="group flex flex-col overflow-hidden rounded-[1.6rem] border border-[#1d241f]/15 bg-[#e7e4da] transition-all duration-300 hover:-translate-y-1.5 hover:shadow-[0_26px_60px_rgb(20_28_22/.16)]"
     >
       {/* 封面占位 */}
-      <Link to={`/design/${plan.id}`} className={`relative block h-44 ${plan.coverGradient}`}>
+      <Link to={`/design/${plan.id}`} className={`relative block h-52 overflow-hidden ${plan.coverGradient}`}>
+        <span className="absolute top-3 right-3 font-mono text-[9px] tracking-[0.16em] text-white/70 uppercase">Design output / 0{index + 1}</span>
         <span className="absolute top-3 left-3 inline-flex items-center gap-1 rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-sage-700 backdrop-blur">
           <Sparkles className="h-3 w-3" />
           AI 推荐指数 {plan.score}%
         </span>
-        <span className="absolute bottom-3 left-4 font-display text-lg font-semibold text-white drop-shadow-sm">
+        <span className="absolute bottom-4 left-5 font-display text-2xl font-semibold text-white drop-shadow-sm">
           {plan.style}
         </span>
       </Link>

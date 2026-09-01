@@ -125,7 +125,7 @@ export default function StepForm() {
   const canNext = step !== 0 || requirement.rooms.length > 0;
 
   return (
-    <div className="rounded-3xl border border-cream-200 bg-white/70 p-5 sm:p-8">
+    <div className="rounded-[2rem] border border-[#1d241f]/15 bg-[#f4f1e9] p-5 shadow-[0_30px_80px_rgb(20_28_22/.12)] sm:p-8">
       {/* Stepper */}
       <div className="flex items-center gap-2 sm:gap-3">
         {steps.map((label, i) => (
@@ -138,9 +138,9 @@ export default function StepForm() {
               <span
                 className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold transition-colors ${
                   i < step
-                    ? "bg-sage-600 text-white"
+                    ? "bg-[#182019] text-[#d5ff67]"
                     : i === step
-                      ? "bg-terra-500 text-white shadow-card"
+                      ? "bg-[#d5ff67] text-[#182019] shadow-[0_0_0_4px_rgb(213_255_103/.18)]"
                       : "bg-cream-200 text-stone-400"
                 }`}
               >
@@ -156,7 +156,7 @@ export default function StepForm() {
             </button>
             {i < steps.length - 1 && (
               <div
-                className={`h-px flex-1 ${i < step ? "bg-sage-400" : "bg-cream-200"}`}
+                className={`h-px flex-1 ${i < step ? "bg-[#66785f]" : "bg-[#d5d1c5]"}`}
               />
             )}
           </div>
@@ -167,7 +167,7 @@ export default function StepForm() {
       </p>
 
       {/* 步骤内容 */}
-      <div className="relative mt-8 overflow-hidden">
+      <div className="relative mt-8 min-h-[410px] overflow-hidden border-t border-[#1d241f]/10 pt-8">
         <AnimatePresence mode="wait" custom={direction}>
           <motion.div
             key={step}

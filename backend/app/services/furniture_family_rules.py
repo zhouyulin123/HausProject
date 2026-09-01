@@ -131,6 +131,24 @@ def _appearance(slots: list[dict[str, Any]]) -> dict[str, Any]:
     return appearance
 
 
+def _material_slot_for(
+    spec: dict[str, Any],
+    *,
+    surfaces: tuple[str, ...] = (),
+    part_words: tuple[str, ...] = (),
+    fallback: int = 0,
+) -> str:
+    materials = spec["材质参数"]
+    for index, material in enumerate(materials):
+        part = str(material.get("部位", ""))
+        if part_words and any(word in part for word in part_words):
+            return f"material_{index}"
+    for index, material in enumerate(materials):
+        if surfaces and _surface_type(material) in surfaces:
+            return f"material_{index}"
+    return f"material_{min(fallback, len(materials) - 1)}"
+
+
 def _base_rule(
     spec: dict[str, Any],
     model_id: str,
@@ -208,15 +226,29 @@ def _sofa_rule(spec: dict[str, Any], model_id: str) -> dict[str, Any]:
     frame_material = "material_0" if wood_frame else "material_1"
     soft_material = "material_1" if wood_frame else "material_0"
     base_height = max(90, seat_height - cushion_height - leg_height)
+    seat_rear = -depth / 2 + back_thickness
+    main_depth = min(depth - 70, seat_depth + back_thickness * 0.72)
+    main_z = -depth / 2 + main_depth / 2
+    arm_height = min(height - leg_height, seat_height + 145 - leg_height)
+    body_material = frame_material if wood_frame else soft_material
     parts = [
-        _part("seat_frame", "rounded_box", [width - 40, base_height, depth - 90], [0, leg_height + base_height / 2, 0], frame_material if wood_frame else soft_material, 圆角_mm=24),
-        _part("left_arm", "rounded_box", [arm_width, height - leg_height, depth], [-(width - arm_width) / 2, leg_height + (height - leg_height) / 2, 0], soft_material if not wood_frame else frame_material, 圆角_mm=36),
-        _part("right_arm", "rounded_box", [arm_width, height - leg_height, depth], [(width - arm_width) / 2, leg_height + (height - leg_height) / 2, 0], soft_material if not wood_frame else frame_material, 圆角_mm=36),
+        _part("main_seat_frame" if sectional else "seat_frame", "rounded_box", [width - 40, base_height, main_depth], [0, leg_height + base_height / 2, main_z], body_material, 圆角_mm=24),
+        _part("left_arm", "rounded_box", [arm_width, arm_height, main_depth], [-(width - arm_width) / 2, leg_height + arm_height / 2, main_z], soft_material if not wood_frame else frame_material, 圆角_mm=36),
     ]
+    if sectional:
+        chaise_x = inner_width / 2 - cushion_width / 2
+        chaise_depth = depth - back_thickness
+        chaise_z = back_thickness / 2
+        parts.extend([
+            _part("chaise_frame", "rounded_box", [cushion_width + 50, base_height, chaise_depth], [chaise_x, leg_height + base_height / 2, chaise_z], body_material, 圆角_mm=24),
+            _part("chaise_outer_arm", "rounded_box", [arm_width, arm_height, chaise_depth], [(width - arm_width) / 2, leg_height + arm_height / 2, chaise_z], soft_material if not wood_frame else frame_material, 圆角_mm=36),
+        ])
+    else:
+        parts.append(_part("right_arm", "rounded_box", [arm_width, arm_height, main_depth], [(width - arm_width) / 2, leg_height + arm_height / 2, main_z], soft_material if not wood_frame else frame_material, 圆角_mm=36))
     for index in range(seats):
         x = -inner_width / 2 + cushion_width / 2 + index * (cushion_width + gap)
-        current_depth = depth if sectional and index == seats - 1 else seat_depth
-        z = (depth - current_depth) / 2
+        current_depth = depth - back_thickness if sectional and index == seats - 1 else seat_depth
+        z = seat_rear + current_depth / 2
         parts.extend(
             [
                 _part(f"seat_cushion_{index + 1}", "rounded_cushion", [cushion_width, cushion_height, current_depth], [x, seat_height - cushion_height / 2 + 25, z], soft_material),
@@ -224,11 +256,20 @@ def _sofa_rule(spec: dict[str, Any], model_id: str) -> dict[str, Any]:
             ]
         )
     leg_x = width / 2 - 110
-    leg_z = depth / 2 - 100
-    for part_id, x, z in (
-        ("front_left_foot", -leg_x, leg_z), ("front_right_foot", leg_x, leg_z),
-        ("rear_left_foot", -leg_x, -leg_z), ("rear_right_foot", leg_x, -leg_z),
-    ):
+    rear_z = -depth / 2 + 100
+    main_front_z = main_z + main_depth / 2 - 80
+    foot_positions = [
+        ("rear_left_foot", -leg_x, rear_z),
+        ("rear_right_foot", leg_x, rear_z),
+        ("main_front_left_foot", -leg_x, main_front_z),
+        ("main_front_right_foot", leg_x, main_front_z),
+    ]
+    if sectional:
+        foot_positions.extend([
+            ("chaise_front_inner_foot", inner_width / 2 - cushion_width + 70, depth / 2 - 90),
+            ("chaise_front_outer_foot", leg_x, depth / 2 - 90),
+        ])
+    for part_id, x, z in foot_positions:
         parts.append(_part(part_id, "tapered_wood_leg" if wood_frame else "rounded_box", [42, leg_height, 42], [x, leg_height / 2, z], frame_material, 圆角_mm=6))
     return _base_rule(
         spec, model_id, "sofa_v2", (width, height, depth), parts,
@@ -267,8 +308,10 @@ def _table_rule(spec: dict[str, Any], model_id: str) -> dict[str, Any]:
         for prefix, item, x in (("large", large, -170), ("small", small, 260)):
             diameter, height, top = item["直径"], item["高"], item["台面厚"]
             parts.append(_part(f"{prefix}_top", "cylinder", [diameter, top, diameter], [x, height - top / 2, 0], m0))
+            leg_radius = diameter * 0.27
             for index, angle in enumerate((0, 120, 240)):
-                parts.append(_part(f"{prefix}_leg_{index + 1}", "tube", [16, height - top, 16], [x + (-1 if index == 0 else 1) * diameter * 0.24, (height - top) / 2, (index - 1) * diameter * 0.16], m1, [0, angle, 0]))
+                radians = angle * pi / 180
+                parts.append(_part(f"{prefix}_leg_{index + 1}", "tube", [16, height - top, 16], [x + sin(radians) * leg_radius, (height - top) / 2, cos(radians) * leg_radius], m1))
         bounds = (1210, 460, 800)
         frozen = {"双几中心距_mm": 430, "三脚径向内缩比例": 0.24}
     elif name in {"岩板圆形餐桌", "暖白岩板圆餐桌"}:
@@ -353,21 +396,45 @@ def _chair_rule(spec: dict[str, Any], model_id: str) -> dict[str, Any]:
         ]
         frozen = {"钢管直径_mm": 28, "座垫厚度_mm": 55, "悬臂回弹行程_mm": 12}
     else:
-        wood_slot = "material_0"
-        soft_slot = "material_2" if len(spec["材质参数"]) > 2 else "material_1"
+        frame_slot = _material_slot_for(
+            spec,
+            surfaces=("wood", "metal"),
+            part_words=("木框", "椅腿", "框架"),
+        )
+        soft_slot = _material_slot_for(
+            spec,
+            surfaces=("fabric",),
+            part_words=("座垫", "软包", "座面"),
+            fallback=1,
+        )
+        rattan_slot = _material_slot_for(
+            spec,
+            surfaces=("rattan",),
+            part_words=("藤编",),
+            fallback=1,
+        )
+        frame_surface = _surface_type(
+            spec["材质参数"][int(frame_slot.removeprefix("material_"))]
+        )
+        rattan_back = any(
+            _surface_type(material) == "rattan"
+            for material in spec["材质参数"]
+        )
         parts = [
             _part("seat", "rounded_cushion", [seat_width, 60, seat_depth], [0, seat_height, 20], soft_slot),
-            _part("back", "curved_cushion", [seat_width - 35, back_height, 42], [0, seat_height + back_height / 2 - 12, -depth / 2 + 36], soft_slot, [-lean, 0, 0]),
+            _part("back", "mesh_panel" if rattan_back else "curved_cushion", [seat_width - 35, back_height, 42], [0, seat_height + back_height / 2 - 12, -depth / 2 + 36], rattan_slot if rattan_back else soft_slot, [-lean, 0, 0], 网格间距_mm=14),
         ]
         leg_x, front_z, rear_z = width / 2 - 42, depth / 2 - 65, -depth / 2 + 55
+        leg_geometry = "tapered_wood_leg" if frame_surface == "wood" else "rounded_box"
+        rail_geometry = "wood_rail" if frame_surface == "wood" else "rounded_box"
         for part_id, x, z, rx in (("fl", -leg_x, front_z, 0), ("fr", leg_x, front_z, 0), ("rl", -leg_x, rear_z, 6), ("rr", leg_x, rear_z, 6)):
-            parts.append(_part(f"leg_{part_id}", "tapered_wood_leg", [32, seat_height - 45, 32], [x, (seat_height - 45) / 2, z], wood_slot, [rx, 0, 0]))
+            parts.append(_part(f"leg_{part_id}", leg_geometry, [32, seat_height - 45, 32], [x, (seat_height - 45) / 2, z], frame_slot, [rx, 0, 0], 圆角_mm=5))
         parts.extend([
-            _part("left_seat_rail", "wood_rail", [32, 46, seat_depth - 65], [-leg_x, seat_height - 52, 0], wood_slot),
-            _part("right_seat_rail", "wood_rail", [32, 46, seat_depth - 65], [leg_x, seat_height - 52, 0], wood_slot),
-            _part("front_rail", "wood_rail", [width - 84, 46, 32], [0, seat_height - 52, front_z], wood_slot),
-            _part("left_back_post", "tapered_wood_post", [34, back_height, 34], [-leg_x, seat_height + back_height / 2 - 25, rear_z], wood_slot, [-lean, 0, 0]),
-            _part("right_back_post", "tapered_wood_post", [34, back_height, 34], [leg_x, seat_height + back_height / 2 - 25, rear_z], wood_slot, [-lean, 0, 0]),
+            _part("left_seat_rail", rail_geometry, [32, 46, seat_depth - 65], [-leg_x, seat_height - 52, 0], frame_slot, 圆角_mm=5),
+            _part("right_seat_rail", rail_geometry, [32, 46, seat_depth - 65], [leg_x, seat_height - 52, 0], frame_slot, 圆角_mm=5),
+            _part("front_rail", rail_geometry, [width - 84, 46, 32], [0, seat_height - 52, front_z], frame_slot, 圆角_mm=5),
+            _part("left_back_post", "tapered_wood_post" if frame_surface == "wood" else "rounded_box", [34, back_height, 34], [-leg_x, seat_height + back_height / 2 - 25, rear_z], frame_slot, [-lean, 0, 0], 圆角_mm=5),
+            _part("right_back_post", "tapered_wood_post" if frame_surface == "wood" else "rounded_box", [34, back_height, 34], [leg_x, seat_height + back_height / 2 - 25, rear_z], frame_slot, [-lean, 0, 0], 圆角_mm=5),
         ])
         frozen = {"座垫厚度_mm": 60, "木腿截面_mm": [32, 32], "靠背厚度_mm": 42, "座框横梁高度_mm": 46}
     return _base_rule(spec, model_id, "chair_v2", (width, height, depth), parts, frozen)
@@ -569,13 +636,14 @@ def _ergonomic_chair_rule(spec: dict[str, Any], model_id: str) -> dict[str, Any]
         caster_x = sin(radians) * 300
         caster_z = cos(radians) * 300
         parts.extend([
-            _part(f"star_spoke_{index + 1}", "tube", [34, 300, 34], [spoke_x, 62, spoke_z], "material_2", [0, angle, 90]),
+            _part(f"star_spoke_{index + 1}", "tube", [34, 300, 34], [spoke_x, 62, spoke_z], "material_2", [90, angle, 0]),
             _part(f"caster_{index + 1}", "cylinder", [54, 22, 54], [caster_x, 30, caster_z], "material_1", [90, angle, 0]),
         ])
-    parts.extend([
-        _part("left_arm", "rounded_box", [55, 230, 80], [-width / 2 + 70, seat_height + 115, 0], "material_1", 圆角_mm=16),
-        _part("right_arm", "rounded_box", [55, 230, 80], [width / 2 - 70, seat_height + 115, 0], "material_1", 圆角_mm=16),
-    ])
+    for side, x in (("left", -width / 2 + 70), ("right", width / 2 - 70)):
+        parts.extend([
+            _part(f"{side}_arm_support", "rounded_box", [36, 170, 42], [x, seat_height + 85, 0], "material_1", 圆角_mm=12),
+            _part(f"{side}_arm_pad", "rounded_box", [78, 28, 220], [x, seat_height + 184, 18], "material_1", 圆角_mm=13),
+        ])
     return _base_rule(spec, model_id, "ergonomic_chair_v2", (width, height, depth), parts, {"展示座高_mm": seat_height, "五星脚辐条长度_mm": 300, "网布网格_mm": 8, "气压杆直径_mm": 48})
 
 

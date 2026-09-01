@@ -13,7 +13,7 @@ import { useDesignStore } from "@/store/useDesignStore";
 import { useAuthStore } from "@/store/useAuthStore";
 import { fetchMyDesigns } from "@/api/designApi";
 import type { DesignPlan, SavedDesign } from "@/types/design";
-import PageTitle from "@/components/common/PageTitle";
+import CollectionPage from "@/components/layout/CollectionPage";
 import EmptyState from "@/components/common/EmptyState";
 import Button from "@/components/common/Button";
 import Tag from "@/components/common/Tag";
@@ -117,18 +117,13 @@ export default function MyDesignsPage() {
   }, [displayDesigns, keyword, filter]);
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-      <PageTitle
-        title="我的方案"
-        description="保存过的家装方案都在这里，随时查看、优化或导出。"
-      />
-
+    <CollectionPage>
       {loadingServer ? (
-        <p className="mt-8 py-10 text-center text-sm text-stone-400">
+        <p className="py-10 text-center text-sm text-stone-400">
           正在加载你的方案...
         </p>
       ) : displayDesigns.length === 0 ? (
-        <div className="mt-8">
+        <div>
           <EmptyState
             icon={Home}
             title={user ? "还没有生成过方案" : "还没有保存的家装方案"}
@@ -143,7 +138,7 @@ export default function MyDesignsPage() {
       ) : (
         <>
           {/* 搜索 + 筛选 */}
-          <div className="mt-8 flex flex-col gap-4 sm:flex-row sm:items-center">
+          <div className="flex flex-col gap-4 border-b border-[#1d241f]/15 pb-5 sm:flex-row sm:items-center">
             <div className="relative sm:w-72">
               <Search className="absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-stone-300" />
               <input
@@ -162,7 +157,7 @@ export default function MyDesignsPage() {
                   onClick={() => setFilter(option)}
                   className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-medium transition-all ${
                     filter === option
-                      ? "bg-sage-600 text-white"
+                      ? "bg-[#182019] text-[#d5ff67]"
                       : "bg-cream-100 text-stone-500 hover:bg-cream-200"
                   }`}
                 >
@@ -184,7 +179,7 @@ export default function MyDesignsPage() {
               {filtered.map((design) => (
                 <div
                   key={design.id}
-                  className="flex flex-col gap-4 rounded-3xl border border-cream-200 bg-white/80 p-4 transition-all hover:shadow-card sm:flex-row sm:items-center"
+                  className="flex flex-col gap-4 rounded-[1.5rem] border border-[#1d241f]/15 bg-[#e7e4da] p-4 transition-all hover:shadow-[0_20px_45px_rgb(20_28_22/.12)] sm:flex-row sm:items-center"
                 >
                   <div
                     className={`h-24 w-full shrink-0 rounded-2xl sm:w-36 ${design.coverGradient}`}
@@ -286,6 +281,6 @@ export default function MyDesignsPage() {
           )}
         </>
       )}
-    </div>
+    </CollectionPage>
   );
 }
