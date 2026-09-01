@@ -126,6 +126,70 @@ describe("方案到 3D 场景转换", () => {
     expect(scene.room.ceilingHeight).toBe(3.0);
   });
 
+  it("保留 RoomModel 的非矩形轮廓并把门窗转换为米制洞口", () => {
+    const roomModel = livingRoomModel({
+      rooms: [
+        {
+          ...livingRoomModel().rooms[0],
+          floorPolygon: [
+            { x: 0, z: 0 },
+            { x: 1, z: 0 },
+            { x: 1, z: 0.5 },
+            { x: 0.6, z: 0.5 },
+            { x: 0.6, z: 1 },
+            { x: 0, z: 1 },
+          ],
+        },
+      ],
+      doors: [
+        {
+          id: "door-main",
+          roomId: "living-room",
+          type: "door",
+          wallIndex: 0,
+          offset: 0.1,
+          width: 0.2,
+          height: 2.1,
+          sillHeight: 0,
+          confidence: 0.93,
+        },
+      ],
+      windows: [
+        {
+          id: "window-south",
+          roomId: "living-room",
+          type: "window",
+          wallIndex: 5,
+          offset: 0.25,
+          width: 0.5,
+          height: 1.4,
+          sillHeight: 0.9,
+          confidence: 0.82,
+        },
+      ],
+    });
+
+    const scene = buildSceneDocument(mockDesigns[0], "客厅", roomModel);
+
+    expect(scene.room.id).toBe("living-room");
+    expect(scene.room.floorPolygon).toHaveLength(6);
+    expect(scene.room.floorPolygon[3]).toEqual({ x: 0.6, z: 0 });
+    expect(scene.openings).toEqual([
+      expect.objectContaining({
+        id: "door-main",
+        wallIndex: 0,
+        offset: 0.6,
+        width: 1.2,
+      }),
+      expect.objectContaining({
+        id: "window-south",
+        wallIndex: 5,
+        offset: 1.75,
+        width: 3.5,
+      }),
+    ]);
+  });
+
   it("RoomModel 与房间类型不匹配时回退默认尺寸", () => {
     const roomModel = livingRoomModel({
       rooms: [{ ...livingRoomModel().rooms[0], name: "卧室" }],
