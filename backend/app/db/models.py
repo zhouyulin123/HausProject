@@ -85,6 +85,11 @@ class DesignTask(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
     error_message = Column(Text, nullable=True)
+    agent_state_json = Column(JSON, nullable=True)
+    agent_state_version = Column(Integer, nullable=False, default=0)
+    active_mode = Column(
+        String(30), nullable=False, default="catalog_design", index=True
+    )
 
 
 class UploadedImage(Base):
@@ -129,9 +134,74 @@ class DesignResult(Base):
 class ChatLog(Base):
     __tablename__ = "chat_logs"
     id = Column(Integer, primary_key=True, index=True)
+    # 兼容历史孤立记录；应用层所有新写入必须提供 task_id。
     task_id = Column(Integer, ForeignKey("design_tasks.id"), nullable=True, index=True)
     role = Column(String(10))  # user / ai
     content = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DesignAgentTurn(Base):
+    """客户端幂等键绑定的一轮智能体请求与最终响应。"""
+
+    __tablename__ = "design_agent_turns"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "client_turn_id",
+            name="uq_design_agent_turns_task_client_turn",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    client_turn_id = Column(String(100), nullable=False)
+    active_mode = Column(String(30), nullable=False)
+    intent = Column(String(50), nullable=False, default="unknown")
+    status = Column(String(30), nullable=False, default="running", index=True)
+    request_json = Column(JSON, nullable=False)
+    response_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class DesignAgentEvent(Base):
+    """不含思维链的可审计 Agent 工具与状态事件。"""
+
+    __tablename__ = "design_agent_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "turn_id",
+            "sequence",
+            name="uq_design_agent_events_turn_sequence",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    turn_id = Column(
+        Integer,
+        ForeignKey("design_agent_turns.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence = Column(Integer, nullable=False)
+    event_type = Column(String(30), nullable=False)
+    node = Column(String(50), nullable=False)
+    status = Column(String(30), nullable=False)
+    source = Column(String(30), nullable=False)
+    summary = Column(String(500), nullable=False)
+    details_json = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

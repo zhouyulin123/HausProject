@@ -3,14 +3,16 @@
 真实实现位于 ``design_workflow``；保留此模块避免旧导入路径失效。
 """
 
+from app.agents.design_agent import DesignAgentState
 from app.agents.design_workflow import (
-    DesignAgentState,
+    DesignGenerationState,
     DesignWorkflow,
     WorkflowQualityError,
 )
 
 __all__ = [
     "DesignAgentState",
+    "DesignGenerationState",
     "DesignWorkflow",
     "WorkflowQualityError",
 ]

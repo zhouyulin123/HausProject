@@ -34,7 +34,7 @@ class WorkflowStep(TypedDict, total=False):
     fallback_reason: str
 
 
-class DesignAgentState(TypedDict):
+class DesignGenerationState(TypedDict):
     requirement: dict[str, Any]
     image_context: list[str]
     catalog_context: str
@@ -75,7 +75,7 @@ class DesignWorkflow:
         self._graph = self._build_graph()
 
     def _build_graph(self):
-        workflow = StateGraph(DesignAgentState)
+        workflow = StateGraph(DesignGenerationState)
         workflow.add_node("prepare_context", self._prepare_context)
         workflow.add_node("generate_plans", self._generate)
         workflow.add_node("calculate_quote", self._calculate_quote)
@@ -92,7 +92,7 @@ class DesignWorkflow:
             self._on_step(deepcopy(step))
         return step
 
-    def _prepare_context(self, state: DesignAgentState) -> dict[str, Any]:
+    def _prepare_context(self, state: DesignGenerationState) -> dict[str, Any]:
         started_at = perf_counter()
         requirement_for_llm = deepcopy(state["requirement"])
         if state["image_context"]:
@@ -108,7 +108,7 @@ class DesignWorkflow:
             ],
         }
 
-    def _generate(self, state: DesignAgentState) -> dict[str, Any]:
+    def _generate(self, state: DesignGenerationState) -> dict[str, Any]:
         started_at = perf_counter()
         try:
             plans = self._generate_plans(
@@ -140,7 +140,7 @@ class DesignWorkflow:
             "node_trace": [step],
         }
 
-    def _calculate_quote(self, state: DesignAgentState) -> dict[str, Any]:
+    def _calculate_quote(self, state: DesignGenerationState) -> dict[str, Any]:
         started_at = perf_counter()
         plans = deepcopy(state["plans"])
         self._enrich_plans(plans)
@@ -157,7 +157,7 @@ class DesignWorkflow:
             ],
         }
 
-    def _validate_quality(self, state: DesignAgentState) -> dict[str, Any]:
+    def _validate_quality(self, state: DesignGenerationState) -> dict[str, Any]:
         started_at = perf_counter()
         plans = state["plans"]
         if not plans:
@@ -202,7 +202,7 @@ class DesignWorkflow:
         requirement: dict[str, Any],
         image_context: list[str],
         catalog_context: str,
-    ) -> DesignAgentState:
+    ) -> DesignGenerationState:
         return self._graph.invoke(
             {
                 "requirement": deepcopy(requirement),

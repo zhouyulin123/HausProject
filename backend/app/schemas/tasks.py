@@ -108,6 +108,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     source: str  # llm
+    task_id: int
 
 
 class RenderRequest(BaseModel):

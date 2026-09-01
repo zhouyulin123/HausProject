@@ -118,6 +118,15 @@ def verify_and_enrich_plans(db: Session, plans: List[Dict[str, Any]]) -> None:
                     "reason": item.get("reason") or p.selling_point or "",
                     "alternative": item.get("alternative") or p.alternative or "可选同风格系列款",
                     "imageUrl": p.image_url,
+                    "dataOrigin": p.data_origin,
+                    "sourceName": p.source_name,
+                    "dataStatus": (
+                        "merchant_draft"
+                        if p.data_origin == "merchant_draft"
+                        else "unverified"
+                        if p.data_origin == "unknown"
+                        else "real"
+                    ),
                     "quantity": qty,
                     "unitPrice": p.price,
                     "subtotal": subtotal,

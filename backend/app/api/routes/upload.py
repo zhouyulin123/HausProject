@@ -2,10 +2,14 @@ import logging
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import SessionIdHeader, require_active_session
+from app.api.dependencies import (
+    SessionIdHeader,
+    require_active_session,
+    require_owned_design_task,
+)
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import UploadedImage
@@ -26,9 +30,16 @@ def _safe_filename(name: str) -> str:
 async def upload_image(
     x_session_id: SessionIdHeader,
     file: UploadFile = File(...),
+    task_id: int | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     require_active_session(db, x_session_id)
+    if task_id is not None:
+        require_owned_design_task(
+            db,
+            session_id=x_session_id,
+            task_id=task_id,
+        )
 
     content = await file.read()
     try:
@@ -42,6 +53,7 @@ async def upload_image(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     image = UploadedImage(
+        task_id=task_id,
         image_type="floor_plan" if "户型" in (file.filename or "") else "room_photo",
         file_name=file.filename,
         file_size=len(content),
@@ -89,6 +101,7 @@ async def upload_image(
 
     return {
         "image_id": image.id,
+        "task_id": image.task_id,
         "image_url": image.file_url,
         "file_name": image.file_name,
         "file_size": image.file_size,

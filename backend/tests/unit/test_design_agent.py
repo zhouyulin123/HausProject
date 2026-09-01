@@ -31,14 +31,15 @@ def test_agent_pauses_and_returns_minimal_missing_fact_questions():
 
     result = workflow.run(
         task_id=1,
-        turn_id="turn-1",
+        turn_id=1,
+        active_mode="catalog_design",
         intent="design",
         message="帮我设计客厅",
         facts={"space_type": "客厅"},
     )
 
-    assert result["exit_reason"] == "waiting_user"
-    assert result["status"] == "waiting_input"
+    assert result["exit_reason"] == "missing_facts"
+    assert result["status"] == "waiting_user"
     assert [item["field"] for item in result["pending_questions"]] == [
         "budget_max",
         "room_dimensions",
@@ -65,7 +66,8 @@ def test_agent_completes_design_through_registered_tools():
 
     result = workflow.run(
         task_id=1,
-        turn_id="turn-2",
+        turn_id=2,
+        active_mode="catalog_design",
         intent="design",
         message="开始设计",
         facts=_facts(),
@@ -73,7 +75,7 @@ def test_agent_completes_design_through_registered_tools():
 
     assert calls == ["catalog", "design"]
     assert result["status"] == "completed"
-    assert result["exit_reason"] == "completed"
+    assert result["exit_reason"] == "goal_completed"
     assert result["result"]["revision_version"] == 2
     assert [event["tool"] for event in result["tool_events"]] == [
         "catalog_search",
@@ -101,7 +103,8 @@ def test_agent_retries_bounded_tool_rejection_then_escalates():
 
     result = workflow.run(
         task_id=1,
-        turn_id="turn-3",
+        turn_id=3,
+        active_mode="catalog_design",
         intent="scene_edit",
         message="把沙发放到门口",
         facts=_facts(),
@@ -110,8 +113,8 @@ def test_agent_retries_bounded_tool_rejection_then_escalates():
 
     assert len(attempts) == 3
     assert result["retry_count"] == 2
-    assert result["status"] == "human_required"
-    assert result["exit_reason"] == "retry_exhausted"
+    assert result["status"] == "needs_human"
+    assert result["exit_reason"] == "safety_blocked"
     assert result["hard_errors"] == ["item_collision"]
     assert result["step_count"] <= result["max_steps"]
 
@@ -131,12 +134,13 @@ def test_agent_never_completes_invalid_quote_result():
 
     result = workflow.run(
         task_id=1,
-        turn_id="turn-4",
+        turn_id=4,
+        active_mode="catalog_design",
         intent="design",
         message="开始设计",
         facts=_facts(),
     )
 
-    assert result["status"] == "human_required"
-    assert result["exit_reason"] == "quality_gate_failed"
+    assert result["status"] == "needs_human"
+    assert result["exit_reason"] == "tool_failed"
     assert "invalid_quote" in result["hard_errors"]

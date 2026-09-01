@@ -122,8 +122,12 @@ def test_chat_requires_anonymous_session_header(design_access_context):
 
 
 @pytest.mark.integration
-def test_chat_requires_task_binding(design_access_context):
+def test_legacy_chat_creates_task_binding_when_task_id_is_absent(
+    design_access_context,
+    monkeypatch,
+):
     client, stranger_id, _ = design_access_context
+    monkeypatch.setattr(chat.llm_service, "chat_reply", lambda **_: "请继续")
 
     response = client.post(
         "/api/design/chat",
@@ -131,7 +135,8 @@ def test_chat_requires_task_binding(design_access_context):
         json={"message": "继续优化"},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert response.json()["task_id"] > 0
 
 
 @pytest.mark.integration

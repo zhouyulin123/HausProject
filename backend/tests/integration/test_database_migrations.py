@@ -42,7 +42,24 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "sms_codes",
             "orders",
             "order_quotes",
+            "design_agent_turns",
+            "design_agent_events",
         } <= tables
+        task_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("design_tasks")
+        }
+        assert {
+            "agent_state_json",
+            "agent_state_version",
+            "active_mode",
+        } <= task_columns
+        chat_columns = {
+            column["name"]: column
+            for column in inspect(inspection_engine).get_columns("chat_logs")
+        }
+        # 保留历史孤立记录兼容性；应用层的新写入由契约保证绑定。
+        assert chat_columns["task_id"]["nullable"] is True
         user_columns = {
             column["name"] for column in inspect(inspection_engine).get_columns("users")
         }
