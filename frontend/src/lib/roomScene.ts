@@ -198,10 +198,8 @@ export function buildRoomFactSummary(
 ): RoomFactSummary {
   const bounds = getRoomBounds(scene);
   const room = roomModel ? findMatchingRoom(scene, roomModel) : undefined;
-  const obstacles = roomModel
-    ? roomModel.fixedObstacles.filter(
-        (obstacle) => !room || obstacle.roomId === room.id,
-      )
+  const obstacles = roomModel && room
+    ? roomModel.fixedObstacles.filter((obstacle) => obstacle.roomId === room.id)
     : [];
   const scaleLabels = {
     user: "用户已校准",

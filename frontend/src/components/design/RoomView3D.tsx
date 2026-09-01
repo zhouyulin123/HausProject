@@ -1,10 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import {
-  Html,
-  OrbitControls,
-  TransformControls,
-} from "@react-three/drei";
+import { Html, TransformControls } from "@react-three/drei";
 import {
   AlertTriangle,
   ArrowDown,
@@ -14,132 +10,40 @@ import {
   Bot,
   Box,
   Camera,
+  CircleAlert,
   Cloud,
   CloudOff,
   Cpu,
   Download,
+  Eye,
+  LayoutGrid,
   Move3D,
   Loader2,
   Redo2,
   RefreshCw,
   Rotate3D,
+  Ruler,
   Save,
   Send,
   ShieldCheck,
   Undo2,
 } from "lucide-react";
-import { Shape, type Group } from "three";
+import { type Group } from "three";
 import { useSceneEditor } from "@/hooks/useSceneEditor";
 import ProductModel3D from "./ProductModel3D";
 import type { ProductModelAsset } from "@/lib/productModel";
 import { getProductModelAsset } from "@/lib/productModel";
 import { CATEGORY_COLOR } from "@/lib/scenePalette";
+import {
+  buildRoomFactSummary,
+  getRoomCameraPose,
+  type RoomCameraPreset,
+} from "@/lib/roomScene";
 import type { TransformMode } from "@/hooks/useSceneEditor";
 import type { DesignPlan } from "@/types/design";
 import type { RoomModel } from "@/types/roomModel";
-import type {
-  SceneDocument,
-  SceneItem,
-  SceneTransform,
-} from "@/types/scene";
-
-function SceneRoom({ scene }: { scene: SceneDocument }) {
-  const floorShape = useMemo(() => {
-    const shape = new Shape();
-    scene.room.floorPolygon.forEach((point, index) => {
-      const method = index === 0 ? "moveTo" : "lineTo";
-      shape[method](point.x, -point.z);
-    });
-    shape.closePath();
-    return shape;
-  }, [scene.room.floorPolygon]);
-
-  const walls = useMemo(() => {
-    const points = scene.room.floorPolygon;
-    const center = points.reduce(
-      (current, point) => ({
-        x: current.x + point.x / points.length,
-        z: current.z + point.z / points.length,
-      }),
-      { x: 0, z: 0 },
-    );
-    const camera = scene.camera?.position ?? { x: 6, y: 5, z: 7 };
-    return points
-      .map((start, index) => {
-        const end = points[(index + 1) % points.length];
-        const deltaX = end.x - start.x;
-        const deltaZ = end.z - start.z;
-        const centerSide =
-          deltaX * (center.z - start.z) -
-          deltaZ * (center.x - start.x);
-        const cameraSide =
-          deltaX * (camera.z - start.z) -
-          deltaZ * (camera.x - start.x);
-        return {
-          id: `wall-${index}`,
-          visible: centerSide * cameraSide >= 0,
-          length: Math.hypot(deltaX, deltaZ),
-          position: [
-            (start.x + end.x) / 2,
-            scene.room.ceilingHeight / 2,
-            (start.z + end.z) / 2,
-          ] as [number, number, number],
-          rotationY: -Math.atan2(deltaZ, deltaX),
-        };
-      })
-      .filter((wall) => wall.visible);
-  }, [
-    scene.camera?.position,
-    scene.room.ceilingHeight,
-    scene.room.floorPolygon,
-  ]);
-
-  const xs = scene.room.floorPolygon.map((point) => point.x);
-  const zs = scene.room.floorPolygon.map((point) => point.z);
-  const gridSize = Math.max(
-    Math.max(...xs) - Math.min(...xs),
-    Math.max(...zs) - Math.min(...zs),
-  );
-
-  return (
-    <group>
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, -0.002, 0]}
-        receiveShadow
-      >
-        <shapeGeometry args={[floorShape]} />
-        <meshStandardMaterial color="#E4D3B8" roughness={0.92} />
-      </mesh>
-      {walls.map((wall) => (
-        <mesh
-          key={wall.id}
-          position={wall.position}
-          rotation={[0, wall.rotationY, 0]}
-          receiveShadow
-        >
-          <planeGeometry args={[wall.length, scene.room.ceilingHeight]} />
-          <meshStandardMaterial
-            color="#F3ECDD"
-            roughness={1}
-            side={2}
-            transparent
-            opacity={0.82}
-          />
-        </mesh>
-      ))}
-      <gridHelper
-        args={[
-          Math.ceil(gridSize),
-          Math.ceil(gridSize * 10),
-          "#B9AA8E",
-          "#D8CDB7",
-        ]}
-        position={[0, 0.004, 0]}
-      />
-    </group>
-  );
-}
+import type { SceneItem, SceneTransform } from "@/types/scene";
+import { RoomCameraControls, RoomShell3D } from "./RoomShell3D";
 
 interface FurnitureBoxProps {
   item: SceneItem;
@@ -388,7 +292,17 @@ export default function RoomView3D({
 }) {
   const editor = useSceneEditor(plan, roomType, roomModel);
   const [agentInstruction, setAgentInstruction] = useState("");
+  const [cameraPreset, setCameraPreset] =
+    useState<RoomCameraPreset>("perspective");
   const scene = editor.history.present;
+  const roomFacts = useMemo(
+    () => buildRoomFactSummary(scene, roomModel),
+    [roomModel, scene],
+  );
+  const initialCamera = useMemo(
+    () => getRoomCameraPose(scene, "perspective"),
+    [scene],
+  );
   const selectedItem = scene.items.find(
     (item) => item.instanceId === editor.selectedItemId,
   );
@@ -495,22 +409,79 @@ export default function RoomView3D({
 
   return (
     <div className="space-y-3">
-    <div
-      role="application"
-      aria-label="3D 空间编辑器"
-      tabIndex={0}
-      onKeyDown={handleKeyDown}
-      className="relative h-[620px] overflow-hidden rounded-[28px] border border-cream-200 bg-[#ded5c5] shadow-[0_24px_70px_rgba(86,70,47,0.16)] outline-none focus-visible:ring-2 focus-visible:ring-sage-500"
-    >
+      <section
+        aria-label="数字房间空间事实"
+        className="border-y border-cream-200 bg-white/55 px-1 py-3"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold text-stone-800">
+                {scene.room.name}数字房间
+              </h3>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                  roomModel?.scale.source === "user"
+                    ? "bg-sage-100 text-sage-800"
+                    : "bg-amber-100 text-amber-800"
+                }`}
+              >
+                {roomFacts.scaleLabel}
+              </span>
+            </div>
+            <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
+              <span className="inline-flex items-center gap-1">
+                <Ruler className="h-3.5 w-3.5" />
+                {roomFacts.dimensionsLabel}
+              </span>
+              <span>{roomFacts.openingCount} 个门窗/开口</span>
+              <span>空间置信度 {roomFacts.confidenceLabel}</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap justify-end gap-2 text-[10px]">
+            {roomFacts.fixedObstacleCount > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-stone-100 px-2.5 py-1 text-stone-600">
+                <CircleAlert className="h-3 w-3" />
+                固定障碍：{roomFacts.obstacleNames.join("、")}（位置待确认）
+              </span>
+            )}
+            {roomFacts.pendingConfirmationCount > 0 && (
+              <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-800">
+                {roomFacts.pendingConfirmationCount} 项空间事实待确认
+              </span>
+            )}
+            <span
+              className={`rounded-full px-2.5 py-1 ${
+                editor.validation?.valid === false
+                  ? "bg-red-50 text-red-700"
+                  : "bg-sage-50 text-sage-800"
+              }`}
+            >
+              {editor.validation?.valid === false
+                ? `${editor.validation.errors.length} 项空间冲突`
+                : editor.validation
+                  ? "空间校验通过"
+                  : "本地边界保护已开启"}
+            </span>
+          </div>
+        </div>
+      </section>
+      <div
+        role="application"
+        aria-label="3D 空间编辑器"
+        tabIndex={0}
+        onKeyDown={handleKeyDown}
+        className="relative h-[620px] overflow-hidden rounded-[28px] border border-cream-200 bg-[#ded5c5] shadow-[0_24px_70px_rgba(86,70,47,0.16)] outline-none focus-visible:ring-2 focus-visible:ring-sage-500"
+      >
       <Canvas
         shadows
         frameloop="demand"
         gl={{ preserveDrawingBuffer: true, antialias: true }}
         camera={{
           position: [
-            scene.camera?.position.x ?? 6,
-            scene.camera?.position.y ?? 5,
-            scene.camera?.position.z ?? 7,
+            initialCamera.position.x,
+            initialCamera.position.y,
+            initialCamera.position.z,
           ],
           fov: scene.camera?.fov ?? 45,
         }}
@@ -526,7 +497,7 @@ export default function RoomView3D({
           shadow-mapSize-width={1024}
           shadow-mapSize-height={1024}
         />
-        <SceneRoom scene={scene} />
+        <RoomShell3D scene={scene} />
         {scene.items.map((item) => (
           <FurnitureBox
             key={item.instanceId}
@@ -541,18 +512,7 @@ export default function RoomView3D({
             modelAsset={itemModels[item.instanceId]}
           />
         ))}
-        <OrbitControls
-          makeDefault
-          enablePan
-          minDistance={3}
-          maxDistance={18}
-          maxPolarAngle={Math.PI / 2.05}
-          target={[
-            scene.camera?.target.x ?? 0,
-            scene.camera?.target.y ?? 0.5,
-            scene.camera?.target.z ?? 0,
-          ]}
-        />
+        <RoomCameraControls scene={scene} preset={cameraPreset} />
       </Canvas>
 
       <div className="absolute top-16 left-4 sm:top-4">
@@ -597,7 +557,40 @@ export default function RoomView3D({
         </ToolButton>
       </div>
 
-      <div className="pointer-events-none absolute bottom-4 left-4 rounded-full border border-white/50 bg-stone-900/72 px-3 py-1.5 text-[11px] text-white/90 backdrop-blur">
+      <div
+        role="group"
+        aria-label="3D 视角"
+        className={`absolute left-4 flex items-center gap-1 rounded-xl border border-white/60 bg-white/90 p-1 shadow-lg backdrop-blur-md ${
+          selectedItem ? "bottom-[276px] sm:bottom-4" : "bottom-4"
+        }`}
+      >
+        <ToolButton
+          label="全景视角"
+          active={cameraPreset === "perspective"}
+          onClick={() => setCameraPreset("perspective")}
+        >
+          <Box className="h-4 w-4" />
+          <span className="hidden sm:inline">全景</span>
+        </ToolButton>
+        <ToolButton
+          label="俯视平面"
+          active={cameraPreset === "top"}
+          onClick={() => setCameraPreset("top")}
+        >
+          <LayoutGrid className="h-4 w-4" />
+          <span className="hidden sm:inline">俯视</span>
+        </ToolButton>
+        <ToolButton
+          label="室内视角"
+          active={cameraPreset === "inside"}
+          onClick={() => setCameraPreset("inside")}
+        >
+          <Eye className="h-4 w-4" />
+          <span className="hidden sm:inline">室内</span>
+        </ToolButton>
+      </div>
+
+      <div className="pointer-events-none absolute bottom-4 left-1/2 hidden -translate-x-1/2 rounded-full border border-white/50 bg-stone-900/72 px-3 py-1.5 text-[11px] text-white/90 backdrop-blur md:block">
         点击家具开始编辑 · 拖动画布查看空间 · 滚轮缩放
       </div>
 

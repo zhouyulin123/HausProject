@@ -134,4 +134,27 @@ describe("数字房间可视化数据", () => {
       }),
     );
   });
+
+  it("VL 和默认尺度不会被标记为已校准", () => {
+    expect(
+      buildRoomFactSummary(scene, {
+        ...roomModel,
+        scale: { source: "vl", confidence: 0.58 },
+      }).scaleLabel,
+    ).toBe("AI 尺度估算");
+    expect(buildRoomFactSummary(scene, null).scaleLabel).toBe("默认尺寸");
+  });
+
+  it("场景与 RoomModel 房间不匹配时不叠加其他房间障碍", () => {
+    const summary = buildRoomFactSummary(
+      {
+        ...scene,
+        room: { ...scene.room, id: "bedroom", name: "卧室" },
+      },
+      roomModel,
+    );
+
+    expect(summary.fixedObstacleCount).toBe(0);
+    expect(summary.obstacleNames).toEqual([]);
+  });
 });
