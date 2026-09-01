@@ -94,6 +94,20 @@ def test_owner_can_queue_and_query_persistent_generation(
 
 
 @pytest.mark.integration
+def test_legacy_synchronous_generation_is_deprecated_in_openapi(
+    async_generation_context,
+):
+    client, _, _, _, _ = async_generation_context
+
+    operation = client.get("/openapi.json").json()["paths"][
+        "/api/design/tasks/{task_id}/generate"
+    ]["post"]
+
+    assert operation["deprecated"] is True
+    assert "generate-async" in operation["description"]
+
+
+@pytest.mark.integration
 def test_foreign_session_cannot_queue_generation(async_generation_context):
     client, _, stranger_id, task_id, scheduled = async_generation_context
 

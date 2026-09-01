@@ -347,12 +347,17 @@ def _execute_generation(
         raise HTTPException(status_code=500, detail="方案生成失败，请稍后重试") from exc
 
 
-@router.post("/{task_id}/generate", response_model=GenerateResponse)
+@router.post(
+    "/{task_id}/generate",
+    response_model=GenerateResponse,
+    deprecated=True,
+)
 def generate_design(
     task_id: int,
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
+    """仅兼容旧客户端；新客户端必须使用 `generate-async` 持久化队列。"""
     task = require_owned_design_task(
         db,
         session_id=x_session_id,

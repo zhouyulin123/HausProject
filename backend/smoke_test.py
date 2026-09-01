@@ -3,8 +3,9 @@
     python smoke_test.py
 
 覆盖：健康检查 → 图片上传 → 创建任务（结构化需求）→ LLM 对话 →
-方案生成（LLM，失败自动降级模板）→ 状态 / 结果 / 导出。
+方案生成（legacy 同步兼容验证，LLM 失败自动降级模板）→ 状态 / 结果 / 导出。
 注意：会产生 1 次 DeepSeek 方案生成调用和 1 次对话调用。
+主产品新客户端必须使用 generate-async，并由独立 Generation Worker 执行。
 """
 
 import io
@@ -103,6 +104,7 @@ def main():
     )
     passed &= ok("chat", len(chat.get("reply", "")) > 10)
 
+    # 仅验证旧客户端兼容性；主产品流程使用 generate-async + Generation Worker。
     t0 = time.time()
     gen = post_json(f"/api/design/tasks/{tid}/generate", {})
     print(f"     generator={gen['generator']}, {time.time() - t0:.0f}s")
