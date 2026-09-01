@@ -17,7 +17,10 @@ import {
   fetchFurnitureCatalog,
 } from "@/api/designApi";
 import { buildWorkspacePlan, DESIGN_ENTRY_MODES } from "@/lib/designProject";
-import { parseDesignProjectId } from "@/lib/designWorkspaceRouting";
+import {
+  parseDesignProjectId,
+  WORKSPACE_CATALOG_OPTIONS,
+} from "@/lib/designWorkspaceRouting";
 import { useDesignProjectStore } from "@/store/useDesignProjectStore";
 import { useDesignStore } from "@/store/useDesignStore";
 import type { FurnitureItem } from "@/types/furniture";
@@ -80,7 +83,7 @@ export default function DesignWorkspacePage() {
 
   useEffect(() => {
     let cancelled = false;
-    void fetchFurnitureCatalog()
+    void fetchFurnitureCatalog(WORKSPACE_CATALOG_OPTIONS)
       .then((items) => {
         if (!cancelled) setCatalog(items);
       })

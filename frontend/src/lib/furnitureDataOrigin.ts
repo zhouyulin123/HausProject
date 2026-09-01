@@ -1,7 +1,7 @@
 import type { FurnitureDataOrigin } from "@/types/furniture";
 
 const labels: Record<FurnitureDataOrigin, string> = {
-  merchant: "商家草稿",
+  merchant: "商家提供",
   merchant_draft: "商家草稿",
   public_reference: "公开参考",
   verified: "已核验",
