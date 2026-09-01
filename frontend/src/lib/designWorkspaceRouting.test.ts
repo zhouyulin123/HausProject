@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DESIGN_START_PATH,
   parseDesignProjectId,
+  WORKSPACE_CATALOG_OPTIONS,
 } from "./designWorkspaceRouting";
 
 describe("统一设计工作台路由", () => {
@@ -11,5 +12,9 @@ describe("统一设计工作台路由", () => {
     expect(parseDesignProjectId("draft-42")).toBeNull();
     expect(parseDesignProjectId("0")).toBeNull();
     expect(parseDesignProjectId(undefined)).toBeNull();
+  });
+
+  it("工作台商品库禁止静默回退到演示数据", () => {
+    expect(WORKSPACE_CATALOG_OPTIONS).toEqual({ fallbackToMock: false });
   });
 });
