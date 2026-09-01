@@ -8,6 +8,11 @@ import type { RoomModel } from "@/types/roomModel";
 import { computeRoomLayout } from "./roomLayout";
 
 const DEMO_SKU_PREFIX = "DEMO-";
+const OPENING_DEFAULTS = {
+  door: { height: 2.1, sillHeight: 0 },
+  passage: { height: 2.1, sillHeight: 0 },
+  window: { height: 1.5, sillHeight: 0.9 },
+} as const;
 
 function safeIdentifier(value: string): string {
   const normalized = value.replace(/[^A-Za-z0-9._-]+/g, "-");
@@ -36,24 +41,77 @@ export function buildSceneDocument(
   const halfWidth = layout.width / 2;
   const halfDepth = layout.depth / 2;
   const ceilingHeight = room?.ceilingHeight ?? layout.height;
+  const normalizedPoints = room?.floorPolygon ?? [];
+  const normalizedXs = normalizedPoints.map((point) => point.x);
+  const normalizedZs = normalizedPoints.map((point) => point.z);
+  const minimumNormalizedX = Math.min(...normalizedXs);
+  const maximumNormalizedX = Math.max(...normalizedXs);
+  const minimumNormalizedZ = Math.min(...normalizedZs);
+  const maximumNormalizedZ = Math.max(...normalizedZs);
+  const normalizedWidth = maximumNormalizedX - minimumNormalizedX;
+  const normalizedDepth = maximumNormalizedZ - minimumNormalizedZ;
+  const hasValidRoomPolygon =
+    normalizedPoints.length >= 3 &&
+    Number.isFinite(normalizedWidth) &&
+    Number.isFinite(normalizedDepth) &&
+    normalizedWidth > 0 &&
+    normalizedDepth > 0;
+  const floorPolygon = hasValidRoomPolygon
+    ? normalizedPoints.map((point) => ({
+        x:
+          ((point.x - minimumNormalizedX) / normalizedWidth - 0.5) *
+          layout.width,
+        z:
+          ((point.z - minimumNormalizedZ) / normalizedDepth - 0.5) *
+          layout.depth,
+      }))
+    : [
+        { x: -halfWidth, z: -halfDepth },
+        { x: halfWidth, z: -halfDepth },
+        { x: halfWidth, z: halfDepth },
+        { x: -halfWidth, z: halfDepth },
+      ];
+  const openings = room
+    ? [...(roomModel?.doors ?? []), ...(roomModel?.windows ?? [])]
+        .filter(
+          (opening) =>
+            opening.roomId === room.id &&
+            opening.wallIndex >= 0 &&
+            opening.wallIndex < floorPolygon.length,
+        )
+        .map((opening) => {
+          const start = floorPolygon[opening.wallIndex];
+          const end =
+            floorPolygon[(opening.wallIndex + 1) % floorPolygon.length];
+          const wallLength = Math.hypot(end.x - start.x, end.z - start.z);
+          const defaults = OPENING_DEFAULTS[opening.type];
+          return {
+            id: opening.id,
+            type: opening.type,
+            wallIndex: opening.wallIndex,
+            offset: opening.offset * wallLength,
+            width: opening.width * wallLength,
+            height: opening.height ?? defaults.height,
+            sillHeight:
+              opening.sillHeight > 0
+                ? opening.sillHeight
+                : defaults.sillHeight,
+          };
+        })
+    : [];
 
   return {
     schemaVersion: "1.0",
     unit: "m",
     coordinateSystem: "right-handed-y-up",
     room: {
-      id: `room-${safeIdentifier(roomType)}`,
-      name: roomType,
-      floorPolygon: [
-        { x: -halfWidth, z: -halfDepth },
-        { x: halfWidth, z: -halfDepth },
-        { x: halfWidth, z: halfDepth },
-        { x: -halfWidth, z: halfDepth },
-      ],
+      id: room?.id ?? `room-${safeIdentifier(roomType)}`,
+      name: room?.name ?? roomType,
+      floorPolygon,
       ceilingHeight,
       wallThickness: 0.12,
     },
-    openings: [],
+    openings,
     items: layout.items.map((layoutItem, index) => {
       const furniture = plan.furnitureSuggestions.find(
         (item) =>

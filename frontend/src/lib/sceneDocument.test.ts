@@ -173,21 +173,19 @@ describe("方案到 3D 场景转换", () => {
 
     expect(scene.room.id).toBe("living-room");
     expect(scene.room.floorPolygon).toHaveLength(6);
-    expect(scene.room.floorPolygon[3]).toEqual({ x: 0.6, z: 0 });
-    expect(scene.openings).toEqual([
-      expect.objectContaining({
-        id: "door-main",
-        wallIndex: 0,
-        offset: 0.6,
-        width: 1.2,
-      }),
-      expect.objectContaining({
-        id: "window-south",
-        wallIndex: 5,
-        offset: 1.75,
-        width: 3.5,
-      }),
-    ]);
+    expect(scene.room.floorPolygon[3].x).toBeCloseTo(0.6);
+    expect(scene.room.floorPolygon[3].z).toBeCloseTo(0);
+    expect(scene.openings).toHaveLength(2);
+    expect(scene.openings[0]).toEqual(
+      expect.objectContaining({ id: "door-main", wallIndex: 0 }),
+    );
+    expect(scene.openings[0].offset).toBeCloseTo(0.6);
+    expect(scene.openings[0].width).toBeCloseTo(1.2);
+    expect(scene.openings[1]).toEqual(
+      expect.objectContaining({ id: "window-south", wallIndex: 5 }),
+    );
+    expect(scene.openings[1].offset).toBeCloseTo(1.75);
+    expect(scene.openings[1].width).toBeCloseTo(3.5);
   });
 
   it("RoomModel 与房间类型不匹配时回退默认尺寸", () => {
