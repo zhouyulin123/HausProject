@@ -187,10 +187,10 @@ def summarize(
             f"judge 与人工标注一致 {judge_correct}/{len(constraint_rows)}",
         ]
         for row in constraint_rows:
-            mark = "✓" if row["judge_correct"] else "✗"
+            mark = "PASS" if row["judge_correct"] else "FAIL"
             lines.append(
                 f"  {row['id']} {mark} 遵守={row['compliant']} "
-                f"(标注={row['expected']}) {row['name']} —— {row['reason']}"
+                f"(标注={row['expected']}) {row['name']} - {row['reason']}"
             )
     return "\n".join(lines)
 

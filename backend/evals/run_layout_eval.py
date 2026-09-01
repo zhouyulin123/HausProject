@@ -102,7 +102,7 @@ def summarize(rows: list[dict[str, Any]]) -> str:
     lines.append("")
     lines.append("逐例明细：")
     for row in rows:
-        mark = "✓" if row["valid"] else "✗"
+        mark = "PASS" if row["valid"] else "FAIL"
         lines.append(
             f"  {row['case_id']} {mark} {row['total']:>3}分 "
             f"[{row['group']}] {row['name']}"
