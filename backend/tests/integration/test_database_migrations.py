@@ -117,6 +117,14 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "output_snapshot",
             "usage_json",
             "cost_cny",
+            "worker_id",
+            "lease_expires_at",
+            "heartbeat_at",
+            "next_retry_at",
+            "attempt_count",
+            "max_attempts",
+            "cancel_requested_at",
+            "idempotency_key",
         } <= generation_run_columns
     finally:
         if inspection_engine is not None:

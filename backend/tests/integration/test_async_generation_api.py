@@ -75,16 +75,20 @@ def test_owner_can_queue_and_query_persistent_generation(
 
     assert queued.status_code == 202
     assert queued.json()["status"] == "queued"
-    assert scheduled == [queued.json()["run_id"]]
+    assert scheduled == []
     assert status.status_code == 200
     assert status.json() == {
         "run_id": queued.json()["run_id"],
         "attempt": 1,
+        "attempt_count": 0,
+        "max_attempts": 3,
         "status": "queued",
         "progress": 0,
         "current_node": "queued",
         "generator": None,
         "error_message": None,
+        "cancel_requested_at": None,
+        "next_retry_at": None,
         "events": [],
     }
 
@@ -100,3 +104,48 @@ def test_foreign_session_cannot_queue_generation(async_generation_context):
 
     assert response.status_code == 404
     assert scheduled == []
+
+
+@pytest.mark.integration
+def test_idempotent_queue_and_owner_cancel(async_generation_context):
+    client, owner_id, _, task_id, _ = async_generation_context
+    headers = {
+        "X-Session-ID": owner_id,
+        "Idempotency-Key": "customer-design-001",
+    }
+
+    first = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers=headers,
+    )
+    cancelled = client.post(
+        f"/api/design/tasks/{task_id}/generation/cancel",
+        headers={"X-Session-ID": owner_id},
+    )
+    duplicate = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers=headers,
+    )
+
+    assert first.status_code == 202
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert duplicate.status_code == 202
+    assert duplicate.json()["run_id"] == first.json()["run_id"]
+    assert duplicate.json()["status"] == "cancelled"
+
+
+@pytest.mark.integration
+def test_foreign_session_cannot_cancel_generation(async_generation_context):
+    client, owner_id, stranger_id, task_id, _ = async_generation_context
+    client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers={"X-Session-ID": owner_id},
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/generation/cancel",
+        headers={"X-Session-ID": stranger_id},
+    )
+
+    assert response.status_code == 404
