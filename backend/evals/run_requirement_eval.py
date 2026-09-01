@@ -1,12 +1,12 @@
 """需求级指标评测：需求提取准确率 / 约束遵守率 / 预算偏差率。
 
-需求提取准确率与预算偏差率为确定性计算；约束遵守率需 LLM judge（默认开启，
-可用 --skip-llm 跳过）。本脚本为可选评测，不纳入 CI 回归。
+需求提取准确率与预算偏差率为确定性计算；需求解析和约束 Judge 默认可调用
+LLM，使用 --skip-llm 时两者都只走本地确定性路径。本脚本为可选评测。
 
 用法：
     cd backend
     python -m evals.run_requirement_eval            # 全量（含 LLM judge）
-    python -m evals.run_requirement_eval --skip-llm # 只跑确定性指标
+    python -m evals.run_requirement_eval --skip-llm # 完全离线，只跑确定性路径
 """
 
 from __future__ import annotations
@@ -149,6 +149,16 @@ def evaluate_constraints(
     return rows
 
 
+def select_requirement_parser(
+    *,
+    skip_llm: bool,
+    online_parser: Callable[[str], dict[str, Any]],
+    deterministic_parser: Callable[[str], dict[str, Any]],
+) -> Callable[[str], dict[str, Any]]:
+    """离线模式直接选择本地解析器，保证不会触发在线模型调用。"""
+    return deterministic_parser if skip_llm else online_parser
+
+
 # ---------------------------------------------------------------- 报告
 
 def _avg(values: list[float]) -> float:
@@ -197,17 +207,27 @@ def summarize(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--skip-llm", action="store_true", help="跳过约束遵守率（LLM judge）")
+    parser.add_argument(
+        "--skip-llm",
+        action="store_true",
+        help="完全离线：需求提取使用本地解析器，并跳过 LLM Judge",
+    )
     args = parser.parse_args()
 
     from app.services import llm_service, task_service
     from app.services.llm_service import LLMUnavailable
 
-    def parse_fn(text: str) -> dict[str, Any]:
+    def online_parse_with_fallback(text: str) -> dict[str, Any]:
         try:
             return llm_service.parse_requirement(text)
         except LLMUnavailable:
             return task_service.parse_requirement(text)
+
+    parse_fn = select_requirement_parser(
+        skip_llm=args.skip_llm,
+        online_parser=online_parse_with_fallback,
+        deterministic_parser=task_service.parse_requirement,
+    )
 
     extraction_rows = evaluate_extraction(REQUIREMENT_CASES, parse_fn)
     budget_rows = evaluate_budget(BUDGET_CASES)
