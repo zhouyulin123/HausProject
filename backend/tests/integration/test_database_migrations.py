@@ -126,6 +126,15 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "cancel_requested_at",
             "idempotency_key",
         } <= generation_run_columns
+        generation_run_constraints = {
+            constraint["name"]: set(constraint["column_names"])
+            for constraint in inspect(inspection_engine).get_unique_constraints(
+                "generation_runs"
+            )
+        }
+        assert generation_run_constraints[
+            "uq_generation_runs_task_idempotency"
+        ] == {"task_id", "idempotency_key"}
     finally:
         if inspection_engine is not None:
             inspection_engine.dispose()

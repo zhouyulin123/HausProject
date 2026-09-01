@@ -589,6 +589,11 @@ class GenerationRun(Base):
             "attempt",
             name="uq_generation_runs_task_attempt",
         ),
+        UniqueConstraint(
+            "task_id",
+            "idempotency_key",
+            name="uq_generation_runs_task_idempotency",
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -611,6 +616,14 @@ class GenerationRun(Base):
     output_snapshot = Column(JSON, nullable=True)  # 方案摘要（名称/风格/预算/评分/家具数）
     usage_json = Column(JSON, nullable=True)  # token 用量（prompt/completion/total）
     cost_cny = Column(Float, nullable=True)  # 估算成本（配置单价后才有值）
+    worker_id = Column(String(100), nullable=True, index=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=3)
+    cancel_requested_at = Column(DateTime(timezone=True), nullable=True)
+    idempotency_key = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)

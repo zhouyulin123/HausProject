@@ -48,6 +48,15 @@ def test_debug_is_disabled_by_default():
     assert config.app_debug is False
 
 
+def test_generation_worker_heartbeat_must_be_shorter_than_lease():
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            generation_worker_heartbeat_seconds=60,
+            generation_worker_lease_seconds=60,
+        )
+
+
 @pytest.mark.parametrize(
     ("database_url", "jwt_secret_key"),
     [
@@ -90,3 +99,18 @@ def test_production_accepts_explicit_safe_configuration():
 
     assert config.app_env == "production"
     assert config.cors_origin_list == ["https://app.example.com"]
+
+
+def test_production_rejects_inline_generation_fallback():
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            app_debug=False,
+            database_url=(
+                "mysql+pymysql://haus_app:a-strong-database-password@db:3306/houseproject_db"
+            ),
+            jwt_secret_key="a-production-jwt-secret-with-at-least-32-characters",
+            cors_origins="https://app.example.com",
+            generation_inline_fallback=True,
+        )

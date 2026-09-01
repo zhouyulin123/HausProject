@@ -1,7 +1,8 @@
 import json
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,11 +13,11 @@ from app.api.dependencies import (
     require_active_session,
     require_owned_design_task,
 )
-from app.db.database import SessionLocal, get_db
+from app.core.config import settings
+from app.db.database import get_db
 from app.db.models import (
     DesignResult,
     DesignTask,
-    GenerationRun,
     RequirementParseResult,
     UploadedImage,
     User,
@@ -211,6 +212,8 @@ def _execute_generation(
     task: DesignTask,
     on_step=None,
     on_meta=None,
+    before_persist=None,
+    on_success=None,
 ) -> GenerateResponse:
     task_id = task.id
     task.status = "generating"
@@ -275,6 +278,9 @@ def _execute_generation(
                 generation_step.get("fallback_reason", "未知原因"),
             )
 
+        if before_persist is not None:
+            before_persist()
+
         result = DesignResult(
             task_id=task.id,
             plans_json=plans,
@@ -290,10 +296,6 @@ def _execute_generation(
             image_context=image_context,
             workflow_trace=workflow_trace,
         )
-        task.status = "completed"
-        task.progress = 100
-        db.commit()
-
         # 收集方案生成元数据（模型/Prompt/输入/输出/成本），由后台执行器写入 generation_run
         if on_meta is not None and generator == "llm":
             meta = llm_service.last_generation_meta()
@@ -319,6 +321,13 @@ def _execute_generation(
                     }
                 )
 
+        task.status = "completed"
+        task.progress = 100
+        if on_success is not None:
+            on_success(generator)
+        else:
+            db.commit()
+
         return GenerateResponse(
             task_id=task.id,
             status="completed",
@@ -326,6 +335,8 @@ def _execute_generation(
         )
     except Exception as exc:
         db.rollback()
+        if isinstance(exc, generation_run_service.GenerationRunOwnershipError):
+            raise
         failed_task = db.get(DesignTask, task_id)
         if failed_task:
             failed_task.status = "failed"
@@ -351,56 +362,10 @@ def generate_design(
 
 
 def execute_generation_run(run_id: int) -> None:
-    """执行已入库的后台生成任务；重复调度只允许首个 queued worker 运行。"""
-    with SessionLocal() as db:
-        run = db.get(GenerationRun, run_id)
-        if run is None or run.status != "queued":
-            return
-        generation_run_service.mark_running(db, run=run)
-        task = db.get(DesignTask, run.task_id)
-        if task is None:
-            generation_run_service.mark_failed(
-                db,
-                run=run,
-                error_message="设计任务不存在",
-            )
-            return
+    """开发环境显式回退入口；默认生产路径不从请求进程执行。"""
+    from app.workers.generation_worker import execute_specific_run
 
-        def persist_step(step):
-            generation_run_service.record_step(db, run=run, step=step)
-            task.progress = min(99, 50 + run.progress // 2)
-            db.commit()
-
-        def persist_meta(payload):
-            generation_run_service.record_generation_meta(
-                db,
-                run=run,
-                meta=payload["meta"],
-                output_snapshot=payload["output_snapshot"],
-            )
-
-        try:
-            response = _execute_generation(
-                db,
-                task=task,
-                on_step=persist_step,
-                on_meta=persist_meta,
-            )
-            generation_run_service.mark_completed(
-                db,
-                run=run,
-                generator=response.generator,
-            )
-        except Exception as exc:
-            db.rollback()
-            failed_run = db.get(GenerationRun, run_id)
-            if failed_run is not None:
-                generation_run_service.mark_failed(
-                    db,
-                    run=failed_run,
-                    error_message=str(exc),
-                )
-            logger.exception("后台方案生成失败: run_id=%s", run_id)
+    execute_specific_run(run_id)
 
 
 @router.post(
@@ -413,20 +378,56 @@ def queue_design_generation(
     background_tasks: BackgroundTasks,
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            min_length=8,
+            max_length=100,
+            pattern=r"^[A-Za-z0-9._:-]+$",
+        ),
+    ] = None,
 ):
     task = require_owned_design_task(
         db,
         session_id=x_session_id,
         task_id=task_id,
     )
-    run = generation_run_service.create_run(db, task=task)
+    run = generation_run_service.create_run(
+        db,
+        task=task,
+        idempotency_key=idempotency_key,
+        max_attempts=settings.generation_worker_max_attempts,
+    )
     if run.status == "queued":
         task.status = "queued"
         task.progress = 50
         task.error_message = None
         db.commit()
-        background_tasks.add_task(execute_generation_run, run.id)
+        if settings.generation_inline_fallback:
+            background_tasks.add_task(execute_generation_run, run.id)
     return GenerationQueuedResponse(run_id=run.id, status=run.status)
+
+
+@router.post(
+    "/{task_id}/generation/cancel",
+    response_model=GenerationQueuedResponse,
+)
+def cancel_design_generation(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
+    run = generation_run_service.get_latest_run(db, task_id=task_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="生成任务不存在")
+    status = generation_run_service.request_cancel(db, run=run)
+    return GenerationQueuedResponse(run_id=run.id, status=status)
 
 
 @router.get(
@@ -449,11 +450,15 @@ def get_generation_status(
     return GenerationStatusResponse(
         run_id=run.id,
         attempt=run.attempt,
+        attempt_count=run.attempt_count,
+        max_attempts=run.max_attempts,
         status=run.status,
         progress=run.progress,
         current_node=run.current_node,
         generator=run.generator,
         error_message=run.error_message,
+        cancel_requested_at=run.cancel_requested_at,
+        next_retry_at=run.next_retry_at,
         events=[
             GenerationEventResponse(
                 node=event.node,

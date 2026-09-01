@@ -26,10 +26,11 @@ def test_worker_claims_and_completes_one_generation(monkeypatch):
     monkeypatch.setattr(generation_worker, "SessionLocal", factory)
     executed: list[int] = []
 
-    def executor(db, *, task, on_step, on_meta, before_persist):
+    def executor(db, *, task, on_step, on_meta, before_persist, on_success):
         executed.append(task.id)
         on_step({"node": "prepare_context", "status": "completed"})
         before_persist()
+        on_success("template")
         return type("Response", (), {"generator": "template"})()
 
     assert generation_worker.process_one_run(

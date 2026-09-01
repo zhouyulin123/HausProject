@@ -107,6 +107,23 @@ def test_foreign_session_cannot_queue_generation(async_generation_context):
 
 
 @pytest.mark.integration
+def test_explicit_development_inline_fallback_schedules_run(
+    async_generation_context,
+    monkeypatch,
+):
+    client, owner_id, _, task_id, scheduled = async_generation_context
+    monkeypatch.setattr(tasks.settings, "generation_inline_fallback", True)
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers={"X-Session-ID": owner_id},
+    )
+
+    assert response.status_code == 202
+    assert scheduled == [response.json()["run_id"]]
+
+
+@pytest.mark.integration
 def test_idempotent_queue_and_owner_cancel(async_generation_context):
     client, owner_id, _, task_id, _ = async_generation_context
     headers = {

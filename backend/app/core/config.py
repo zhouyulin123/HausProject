@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     blender_worker_max_attempts: int = Field(default=2, ge=1, le=5)
     blender_render_requests_per_hour: int = Field(default=10, ge=1, le=100)
     blender_allow_uploaded_models: bool = False
+    generation_worker_poll_seconds: float = Field(default=1.0, ge=0.2, le=60)
+    generation_worker_max_attempts: int = Field(default=3, ge=1, le=10)
+    generation_worker_lease_seconds: int = Field(default=180, ge=30, le=3600)
+    generation_worker_heartbeat_seconds: int = Field(default=15, ge=5, le=300)
+    generation_worker_retry_base_seconds: int = Field(default=5, ge=1, le=600)
+    generation_inline_fallback: bool = False
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"
@@ -107,11 +113,20 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
+        if (
+            self.generation_worker_heartbeat_seconds
+            >= self.generation_worker_lease_seconds
+        ):
+            raise ValueError("方案生成 Worker 心跳间隔必须小于租约有效期")
+
         if self.app_env != "production":
             return self
 
         if self.app_debug:
             raise ValueError("生产环境不能启用 APP_DEBUG")
+
+        if self.generation_inline_fallback:
+            raise ValueError("生产环境不能启用 GENERATION_INLINE_FALLBACK")
 
         weak_jwt_values = {
             "dev-secret-change-me-in-production",

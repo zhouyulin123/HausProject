@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -36,12 +36,12 @@ class GenerateResponse(BaseModel):
 
 class GenerationQueuedResponse(BaseModel):
     run_id: int
-    status: str
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
 
 
 class GenerationEventResponse(BaseModel):
     node: str
-    status: str
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
     progress: int
     source: Optional[str] = None
     duration_ms: Optional[int] = None
@@ -51,11 +51,15 @@ class GenerationEventResponse(BaseModel):
 class GenerationStatusResponse(BaseModel):
     run_id: int
     attempt: int
+    attempt_count: int
+    max_attempts: int
     status: str
     progress: int
     current_node: Optional[str] = None
     generator: Optional[str] = None
     error_message: Optional[str] = None
+    cancel_requested_at: Optional[datetime] = None
+    next_retry_at: Optional[datetime] = None
     events: List[GenerationEventResponse] = Field(default_factory=list)
 
 
