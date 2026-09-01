@@ -122,6 +122,19 @@ def test_chat_requires_anonymous_session_header(design_access_context):
 
 
 @pytest.mark.integration
+def test_chat_requires_task_binding(design_access_context):
+    client, stranger_id, _ = design_access_context
+
+    response = client.post(
+        "/api/design/chat",
+        headers={"X-Session-ID": stranger_id},
+        json={"message": "继续优化"},
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.integration
 def test_proposal_uses_server_plan_snapshot(monkeypatch):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
