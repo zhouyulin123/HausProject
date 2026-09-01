@@ -937,18 +937,30 @@ export async function attachCurrentTaskToCustomer(customerId: number): Promise<b
 
 // ---------------------------------------------------------------- 对话
 
-export async function sendChatMessage(text: string): Promise<string> {
+export interface DesignChatContext {
+  /** 由工作台项目显式绑定的服务端任务；null 表示项目尚未创建服务端任务。 */
+  taskId: number | null;
+  history: { role: string; content: string }[];
+}
+
+export async function sendChatMessage(
+  text: string,
+  context?: DesignChatContext,
+): Promise<string> {
   try {
     const data = await request<{ reply: string }>("/api/design/chat", {
       method: "POST",
       body: JSON.stringify({
         message: text,
-        task_id: currentTaskId,
-        history: chatHistory.slice(-8),
+        task_id: context ? context.taskId : currentTaskId,
+        history: context ? context.history.slice(-8) : chatHistory.slice(-8),
       }),
     });
-    chatHistory.push({ role: "user", content: text });
-    chatHistory.push({ role: "ai", content: data.reply });
+    // 旧页面仍使用模块内历史；工作台项目的历史由项目 Store 独立持久化。
+    if (!context) {
+      chatHistory.push({ role: "user", content: text });
+      chatHistory.push({ role: "ai", content: data.reply });
+    }
     return data.reply;
   } catch (error) {
     console.warn("[designApi] 对话接口不可用", error);
