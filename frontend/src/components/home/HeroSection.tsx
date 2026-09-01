@@ -122,7 +122,7 @@ export default function HeroSection() {
             </p>
             <div className="pointer-events-auto mt-7 flex flex-wrap items-center gap-3 sm:mt-9">
               <Link
-                to="/customize"
+                to="/design/new"
                 className="group inline-flex items-center gap-7 rounded-full bg-[#d5ff67] px-6 py-3.5 text-sm font-semibold text-[#11150f] transition-colors hover:bg-[#e0ff91]"
               >
                 开始设计我的家

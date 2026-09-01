@@ -9,6 +9,7 @@ import {
 } from "@/components/auth/RouteGuard";
 import HomePage from "@/pages/HomePage";
 import { importWithRetry } from "@/lib/lazyImport";
+import { DESIGN_START_PATH } from "@/lib/designWorkspaceRouting";
 
 type PageModule = { default: ComponentType };
 const lazyPage = (importer: () => Promise<PageModule>) =>
@@ -19,6 +20,10 @@ const UploadPage = lazyPage(() => import("@/pages/UploadPage"));
 const ChatPage = lazyPage(() => import("@/pages/ChatPage"));
 const ResultsPage = lazyPage(() => import("@/pages/ResultsPage"));
 const DesignDetailPage = lazyPage(() => import("@/pages/DesignDetailPage"));
+const DesignStartPage = lazyPage(() => import("@/pages/DesignStartPage"));
+const DesignWorkspacePage = lazyPage(
+  () => import("@/pages/DesignWorkspacePage"),
+);
 const FurniturePage = lazyPage(() => import("@/pages/FurniturePage"));
 const StyleGalleryPage = lazyPage(() => import("@/pages/StyleGalleryPage"));
 const MyDesignsPage = lazyPage(() => import("@/pages/MyDesignsPage"));
@@ -57,6 +62,11 @@ export const router = createBrowserRouter(
         { path: "upload", element: <UploadPage /> },
         { path: "chat", element: <ChatPage /> },
         { path: "results", element: <ResultsPage /> },
+        { path: DESIGN_START_PATH.slice(1), element: <DesignStartPage /> },
+        {
+          path: "design/:projectId/workspace",
+          element: <DesignWorkspacePage />,
+        },
         { path: "design/:id", element: <DesignDetailPage /> },
         { path: "furniture", element: <FurniturePage /> },
         { path: "styles", element: <StyleGalleryPage /> },

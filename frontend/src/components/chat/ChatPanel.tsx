@@ -4,31 +4,68 @@ import { motion } from "framer-motion";
 import { Send, Sparkles } from "lucide-react";
 import type { ChatMessage as ChatMessageType } from "@/types/chat";
 import { quickCommands, quickReplies } from "@/data/mockChat";
-import { sendChatMessage } from "@/api/designApi";
+import {
+  sendAgentTurn,
+  sendChatMessage,
+  type AgentActiveMode,
+  type AgentTurnResponse,
+} from "@/api/designApi";
 import { buildOpeningMessage } from "@/lib/openingMessage";
 import { useRequirementStore } from "@/store/useRequirementStore";
 import ChatMessage from "./ChatMessage";
 import QuickActions from "./QuickActions";
 import LoadingAI from "./LoadingAI";
 import Button from "@/components/common/Button";
+import type { AgentPendingQuestion } from "@/types/agent";
 
-export default function ChatPanel() {
+interface ChatPanelProps {
+  projectId?: number;
+  activeMode?: AgentActiveMode;
+  activeRoomId?: string | null;
+  sceneId?: number | null;
+  baseSceneVersion?: number | null;
+  initialMessages?: ChatMessageType[];
+  pendingQuestions?: AgentPendingQuestion[];
+  onMessagesChange?: (messages: ChatMessageType[]) => void;
+  onAgentResponse?: (response: AgentTurnResponse) => void;
+  onGenerate?: () => void;
+  workspace?: boolean;
+}
+
+export default function ChatPanel({
+  projectId,
+  activeMode,
+  activeRoomId = null,
+  sceneId = null,
+  baseSceneVersion = null,
+  initialMessages,
+  pendingQuestions = [],
+  onMessagesChange,
+  onAgentResponse,
+  onGenerate,
+  workspace = false,
+}: ChatPanelProps = {}) {
   const navigate = useNavigate();
   const requirement = useRequirementStore((s) => s.requirement);
-  const [messages, setMessages] = useState<ChatMessageType[]>(() => [
-    {
-      id: "m0",
-      role: "ai",
-      content: buildOpeningMessage(requirement),
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessageType[]>(() =>
+    initialMessages !== undefined
+      ? initialMessages
+      : [
+          {
+            id: "m0",
+            role: "ai",
+            content: buildOpeningMessage(requirement),
+          },
+        ],
+  );
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sendError, setSendError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const aiReplyCount = messages.filter((m) => m.role === "ai").length;
   const showQuickReplies = messages.length === 1;
-  const showGenerate = aiReplyCount >= 2;
+  const showGenerate = !workspace && aiReplyCount >= 2;
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -37,25 +74,68 @@ export default function ChatPanel() {
     });
   }, [messages, loading]);
 
+  useEffect(() => {
+    if (initialMessages !== undefined) setMessages(initialMessages);
+  }, [initialMessages]);
+
   const send = async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed || loading) return;
     setInput("");
-    setMessages((prev) => [
-      ...prev,
-      { id: `u-${Date.now()}`, role: "user", content: trimmed },
-    ]);
+    const userMessage: ChatMessageType = {
+      id: `u-${Date.now()}`,
+      role: "user",
+      content: trimmed,
+    };
+    const nextWithUser = [...messages, userMessage];
+    setMessages(nextWithUser);
+    onMessagesChange?.(nextWithUser);
     setLoading(true);
-    const reply = await sendChatMessage(trimmed);
-    setMessages((prev) => [
-      ...prev,
-      { id: `a-${Date.now()}`, role: "ai", content: reply },
-    ]);
-    setLoading(false);
+    setSendError("");
+    try {
+      let reply: string;
+      if (projectId && activeMode) {
+        const response = await sendAgentTurn(projectId, {
+          client_turn_id:
+            typeof crypto !== "undefined" && "randomUUID" in crypto
+              ? crypto.randomUUID()
+              : `turn-${projectId}-${Date.now()}`,
+          message: trimmed,
+          active_mode: activeMode,
+          active_room_id: activeRoomId,
+          scene_id: sceneId,
+          base_scene_version: baseSceneVersion,
+        });
+        reply = response.reply;
+        onAgentResponse?.(response);
+      } else {
+        reply = await sendChatMessage(trimmed);
+      }
+      const nextWithReply = [
+        ...nextWithUser,
+        { id: `a-${Date.now()}`, role: "ai" as const, content: reply },
+      ];
+      setMessages(nextWithReply);
+      onMessagesChange?.(nextWithReply);
+    } catch {
+      setSendError(
+        workspace
+          ? "智能体服务暂未连接，本轮没有执行任何设计操作。"
+          : "消息发送失败，请稍后重试。",
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <div className="flex h-[calc(100vh-12rem)] min-h-[520px] flex-col overflow-hidden rounded-[2rem] border border-[#1d241f]/15 bg-[#e2e0d7] shadow-[0_30px_80px_rgb(20_28_22/.12)]">
+    <div
+      className={`flex flex-col overflow-hidden border border-[#1d241f]/15 bg-[#e2e0d7] shadow-[0_30px_80px_rgb(20_28_22/.12)] ${
+        workspace
+          ? "h-[680px] rounded-lg xl:h-[calc(100vh-8.5rem)] xl:min-h-[620px]"
+          : "h-[calc(100vh-12rem)] min-h-[520px] rounded-[2rem]"
+      }`}
+    >
       {/* 消息区 */}
       <div ref={scrollRef} className="thin-scrollbar flex-1 space-y-5 overflow-y-auto p-5">
         {messages.map((message) => (
@@ -86,13 +166,34 @@ export default function ChatPanel() {
           </div>
         )}
 
+        {workspace && pendingQuestions.length > 0 && !loading && (
+          <div className="ml-12 space-y-2 border-l-2 border-sage-500 pl-3">
+            {pendingQuestions.map((question) => (
+              <div key={`${question.field}-${question.prompt}`}>
+                <p className="text-xs font-medium text-stone-700">{question.prompt}</p>
+                <p className="mt-0.5 text-[10px] leading-4 text-stone-400">{question.reason}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {sendError && (
+          <p role="alert" className="ml-12 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">
+            {sendError}
+          </p>
+        )}
+
         {showGenerate && !loading && (
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             className="flex justify-center pt-2"
           >
-            <Button variant="terra" size="lg" onClick={() => navigate("/results")}>
+            <Button
+              variant="terra"
+              size="lg"
+              onClick={() => (onGenerate ? onGenerate() : navigate("/results"))}
+            >
               <Sparkles className="h-4 w-4" />
               需求确认完毕，生成我的方案
             </Button>

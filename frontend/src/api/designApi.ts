@@ -1,7 +1,16 @@
 import type { DesignPlan } from "@/types/design";
-import type { FurnitureItem, Furniture3DSpec } from "@/types/furniture";
+import type {
+  FurnitureDataOrigin,
+  FurnitureItem,
+  Furniture3DSpec,
+} from "@/types/furniture";
 import type { ImageAnalysis, UserRequirement } from "@/types/requirement";
 import type { RoomModel } from "@/types/roomModel";
+import type {
+  AgentExitReason,
+  AgentPendingQuestion,
+  AgentSceneReference,
+} from "@/types/agent";
 import type {
   BlenderRenderJob,
   BlenderRenderProfile,
@@ -232,33 +241,8 @@ async function doGenerateDesigns(
   requirement: UserRequirement,
 ): Promise<DesignPlan[]> {
   try {
-    const task = await request<{ task_id: number }>("/api/design/tasks", {
-      method: "POST",
-      body: JSON.stringify({
-        session_id: await getAnonymousSessionId(),
-        user_input: summarizeRequirement(requirement),
-        requirement,
-        image_ids: uploadedImageIds,
-      }),
-    });
-    currentTaskId = task.task_id;
-    if (browserStorage) writeTaskId(browserStorage, currentTaskId);
-
-    await request<{ run_id: number; status: string }>(
-      `/api/design/tasks/${task.task_id}/generate-async`,
-      {
-        method: "POST",
-        body: JSON.stringify({}),
-      },
-    );
-
-    await waitForGeneration(task.task_id);
-
-    const result = await request<{ plans: DesignPlan[]; generator: string }>(
-      `/api/design/tasks/${task.task_id}/result`,
-    );
-    console.info(`[designApi] 方案生成完成（generator=${result.generator}）`);
-    return result.plans.map(decoratePlan);
+    const taskId = await createDesignTask(requirement);
+    return await generateDesignsForTask(taskId);
   } catch (error) {
     if (!demoFallbackEnabled) throw error;
     console.warn("[designApi] 后端不可用，降级到本地 mock 方案", error);
@@ -298,7 +282,10 @@ async function waitForGeneration(
 
 // ---------------------------------------------------------------- 图片上传
 
-export async function analyzeRoomImage(file: File): Promise<ImageAnalysis> {
+export async function analyzeRoomImage(
+  file: File,
+  taskId?: number,
+): Promise<ImageAnalysis> {
   const sizeText =
     file.size > 1024 * 1024
       ? `${(file.size / 1024 / 1024).toFixed(1)} MB`
@@ -306,6 +293,7 @@ export async function analyzeRoomImage(file: File): Promise<ImageAnalysis> {
   try {
     const form = new FormData();
     form.append("file", file);
+    if (taskId) form.append("task_id", String(taskId));
     const data = await request<{
       image_id: number;
       analysis: {
@@ -393,6 +381,9 @@ interface BackendProduct {
   model_license: string | null;
   model_source: string | null;
   model_spec_json: Furniture3DSpec | null;
+  data_origin: FurnitureDataOrigin;
+  source_name: string | null;
+  source_url: string | null;
 }
 
 /** 从后端商品库拉取自家家具；后端不可用时降级到本地 mock 数据。 */
@@ -427,6 +418,9 @@ export async function fetchFurnitureCatalog(
         depth: p.model_depth_mm,
       },
       modelSpecJson: p.model_spec_json ?? undefined,
+      dataOrigin: p.data_origin ?? "unknown",
+      sourceName: p.source_name ?? undefined,
+      sourceUrl: p.source_url ?? undefined,
     }));
   } catch (error) {
     const fallbackToMock = options.fallbackToMock ?? demoFallbackEnabled;
@@ -941,6 +935,168 @@ export interface DesignChatContext {
   /** 由工作台项目显式绑定的服务端任务；null 表示项目尚未创建服务端任务。 */
   taskId: number | null;
   history: { role: string; content: string }[];
+}
+
+/** 创建统一工作台项目。返回值就是路由 projectId，不生成前端替代编号。 */
+export async function createDesignTask(
+  requirement: UserRequirement,
+): Promise<number> {
+  const task = await request<{ task_id: number }>("/api/design/tasks", {
+    method: "POST",
+    body: JSON.stringify({
+      session_id: await getAnonymousSessionId(),
+      user_input: summarizeRequirement(requirement),
+      requirement,
+      image_ids: uploadedImageIds,
+    }),
+  });
+  currentTaskId = task.task_id;
+  if (browserStorage) writeTaskId(browserStorage, currentTaskId);
+  return task.task_id;
+}
+
+/** 在已有 DesignTask 上生成方案，避免工作台另建第二个任务。 */
+export async function generateDesignsForTask(taskId: number): Promise<DesignPlan[]> {
+  currentTaskId = taskId;
+  if (browserStorage) writeTaskId(browserStorage, currentTaskId);
+  await request<{ run_id: number; status: string }>(
+    `/api/design/tasks/${taskId}/generate-async`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+  await waitForGeneration(taskId);
+  const result = await request<{ plans: DesignPlan[]; generator: string }>(
+    `/api/design/tasks/${taskId}/result`,
+  );
+  console.info(`[designApi] 方案生成完成（generator=${result.generator}）`);
+  return result.plans.map(decoratePlan);
+}
+
+export type AgentActiveMode =
+  | "catalog_design"
+  | "custom_furniture"
+  | "room_reconstruction";
+
+export type AgentTaskStatus =
+  | "draft"
+  | "analyzing"
+  | "waiting_user"
+  | "ready"
+  | "running"
+  | "waiting_approval"
+  | "completed"
+  | "needs_human"
+  | "failed"
+  | "cancelled";
+
+export interface AgentTurnRequest {
+  client_turn_id: string;
+  message: string;
+  active_mode: AgentActiveMode;
+  active_room_id?: string | null;
+  scene_id?: number | null;
+  base_scene_version?: number | null;
+  selected_instance_id?: string | null;
+  answers?: {
+    space_type?: string;
+    style?: string;
+    budget_min?: number;
+    budget_max?: number;
+    room_width_m?: number;
+    room_depth_m?: number;
+    ceiling_height_m?: number;
+  };
+}
+
+export interface AgentEvent {
+  sequence: number;
+  type:
+    | "state_changed"
+    | "question_created"
+    | "tool_started"
+    | "tool_completed"
+    | "validation_failed"
+    | "scene_committed"
+    | "generation_queued"
+    | "fallback_used"
+    | "human_handoff"
+    | "failed";
+  node: string;
+  status: string;
+  source: string;
+  summary: string;
+  details: Record<string, unknown>;
+  created_at: string | null;
+}
+
+export interface AgentTurnResponse {
+  task_id: number;
+  turn_id: number;
+  state_version: number;
+  status: AgentTaskStatus;
+  active_mode: AgentActiveMode;
+  active_room_id: string | null;
+  intent: string;
+  reply: string;
+  state: {
+    status: AgentTaskStatus;
+    current_node: string;
+    active_room_id: string | null;
+    facts: Record<string, unknown>;
+    step_count: number;
+    retry_count: number;
+    max_steps: number;
+    max_retries: number;
+    pending_questions: AgentPendingQuestion[];
+    hard_errors: string[];
+    exit_reason: AgentExitReason;
+  };
+  pending_questions: AgentPendingQuestion[];
+  events: AgentEvent[];
+  scene_ref: AgentSceneReference | null;
+  exit_reason: AgentExitReason;
+  result: Record<string, unknown> | null;
+}
+
+export interface DesignAgentStateResponse {
+  task_id: number;
+  state_version: number;
+  status: AgentTaskStatus;
+  active_mode: AgentActiveMode;
+  active_room_id: string | null;
+  intent: string;
+  current_node: string;
+  facts: Record<string, unknown>;
+  pending_questions: AgentPendingQuestion[];
+  step_count: number;
+  retry_count: number;
+  max_steps: number;
+  max_retries: number;
+  hard_errors: string[];
+  scene_ref: AgentSceneReference | null;
+  exit_reason: AgentExitReason;
+  result: Record<string, unknown> | null;
+  /** 服务端持久化历史；刷新时覆盖本地瞬时消息缓存。 */
+  messages: { id: number; role: "user" | "ai"; content: string; created_at: string | null }[];
+}
+
+/** 新工作台唯一对话写入口；client_turn_id 为服务端幂等键。 */
+export async function sendAgentTurn(
+  taskId: number,
+  turn: AgentTurnRequest,
+): Promise<AgentTurnResponse> {
+  return request<AgentTurnResponse>(`/api/design/tasks/${taskId}/agent-turns`, {
+    method: "POST",
+    body: JSON.stringify(turn),
+  });
+}
+
+/** 刷新工作台时从服务端恢复编排状态，前端缓存不是事实源。 */
+export async function fetchDesignAgentState(
+  taskId: number,
+): Promise<DesignAgentStateResponse> {
+  return request<DesignAgentStateResponse>(
+    `/api/design/tasks/${taskId}/agent-state`,
+  );
 }
 
 export async function sendChatMessage(

@@ -115,7 +115,7 @@ export default function HomePage() {
           <div className="home-noise pointer-events-none absolute inset-0 opacity-20" />
           <div className="relative grid gap-12 lg:grid-cols-[1fr_auto] lg:items-end">
             <div><p className="text-[10px] tracking-[0.24em] text-[#ffd9c8] uppercase">Your home, before it exists.</p><h2 className="mt-6 max-w-4xl font-display text-5xl leading-[0.98] tracking-[-0.055em] sm:text-7xl lg:text-8xl">先让 AI 看见，<br />再让理想发生。</h2></div>
-            <Link to="/customize" className="group flex h-32 w-32 flex-col justify-between rounded-full bg-[#f7f0e5] p-6 text-[#291811] transition-transform hover:rotate-6 sm:h-40 sm:w-40"><ArrowUpRight className="ml-auto h-6 w-6 transition-transform group-hover:rotate-45" /><span className="text-sm font-semibold">创建我的<br />家装方案</span></Link>
+            <Link to="/design/new" className="group flex h-32 w-32 flex-col justify-between rounded-full bg-[#f7f0e5] p-6 text-[#291811] transition-transform hover:rotate-6 sm:h-40 sm:w-40"><ArrowUpRight className="ml-auto h-6 w-6 transition-transform group-hover:rotate-45" /><span className="text-sm font-semibold">创建我的<br />家装方案</span></Link>
           </div>
         </div>
       </section>

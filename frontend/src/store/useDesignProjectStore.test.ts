@@ -52,6 +52,7 @@ describe("useDesignProjectStore", () => {
     useDesignProjectStore.getState().applyAgentState(42, {
       stateVersion: 7,
       status: "waiting_user",
+      activeMode: "room_reconstruction",
       pendingQuestions: [
         { field: "room.width", prompt: "客厅实际宽度是多少？", reason: "空间尺度置信度不足" },
       ],

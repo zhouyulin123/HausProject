@@ -1,3 +1,11 @@
+export type FurnitureDataOrigin =
+  | "merchant"
+  | "merchant_draft"
+  | "public_reference"
+  | "verified"
+  | "demo"
+  | "unknown";
+
 export interface FurnitureItem {
   id: string;
   name: string;
@@ -29,6 +37,9 @@ export interface FurnitureItem {
   };
   /** 3D 建模真实参数（尺寸/结构/造型/材质PBR/工艺），用于程序化渲染。 */
   modelSpecJson?: Furniture3DSpec;
+  dataOrigin?: FurnitureDataOrigin;
+  sourceName?: string;
+  sourceUrl?: string;
   /** 以下字段由后端商品库回填（方案中的家具携带） */
   sku?: string;
   quantity?: number;

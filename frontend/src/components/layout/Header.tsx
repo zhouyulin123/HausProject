@@ -9,7 +9,7 @@ import { fetchUnreadQuoteCount } from "@/api/orderApi";
 
 const commonNavItems = [
   { label: "首页", to: "/" },
-  { label: "AI 定制", to: "/customize" },
+  { label: "AI 设计", to: "/design/new" },
   { label: "风格案例", to: "/styles" },
   { label: "家具推荐", to: "/furniture" },
 ];
@@ -158,7 +158,7 @@ export default function Header() {
               </Button>
             </Link>
           )}
-          <Link to="/customize">
+          <Link to="/design/new">
             <Button size="sm" className={usesStudioTheme ? "!bg-[#d5ff67] !text-[#11150f] hover:!bg-[#e0ff91]" : ""}>
               <Sparkles className="h-4 w-4" />
               开始定制
@@ -225,7 +225,7 @@ export default function Header() {
                     </Button>
                   </Link>
                 )}
-                <Link to="/customize" className="flex-1">
+                <Link to="/design/new" className="flex-1">
                   <Button className="w-full">开始定制</Button>
                 </Link>
               </div>

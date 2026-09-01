@@ -1,0 +1,246 @@
+import { useEffect, useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Box,
+  CircleDot,
+  MessageSquareText,
+  PanelRight,
+  Plus,
+} from "lucide-react";
+import ChatPanel from "@/components/chat/ChatPanel";
+import RoomView3D from "@/components/design/RoomView3D";
+import DesignWorkspaceInspector from "@/components/workspace/DesignWorkspaceInspector";
+import {
+  fetchDesignAgentState,
+  fetchFurnitureCatalog,
+} from "@/api/designApi";
+import { buildWorkspacePlan, DESIGN_ENTRY_MODES } from "@/lib/designProject";
+import { parseDesignProjectId } from "@/lib/designWorkspaceRouting";
+import { useDesignProjectStore } from "@/store/useDesignProjectStore";
+import { useDesignStore } from "@/store/useDesignStore";
+import type { FurnitureItem } from "@/types/furniture";
+
+type AgentConnection = "checking" | "connected" | "unavailable";
+type MobilePanel = "conversation" | "scene" | "context";
+
+export default function DesignWorkspacePage() {
+  const params = useParams();
+  const projectId = parseDesignProjectId(params.projectId);
+  const project = useDesignProjectStore((state) =>
+    projectId ? state.projects[projectId] : undefined,
+  );
+  const selectProject = useDesignProjectStore((state) => state.selectProject);
+  const setMessages = useDesignProjectStore((state) => state.setMessages);
+  const applyAgentState = useDesignProjectStore((state) => state.applyAgentState);
+  const generatedPlans = useDesignStore((state) => state.generatedPlans);
+  const [catalog, setCatalog] = useState<FurnitureItem[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState("");
+  const [agentConnection, setAgentConnection] = useState<AgentConnection>("checking");
+  const [mobilePanel, setMobilePanel] = useState<MobilePanel>("conversation");
+
+  useEffect(() => {
+    if (project) selectProject(project.id);
+  }, [project, selectProject]);
+
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    void fetchDesignAgentState(project.id)
+      .then((checkpoint) => {
+        if (cancelled) return;
+        applyAgentState(project.id, {
+          stateVersion: checkpoint.state_version,
+          status: checkpoint.status,
+          activeMode: checkpoint.active_mode,
+          pendingQuestions: checkpoint.pending_questions,
+          sceneRef: checkpoint.scene_ref,
+          exitReason: checkpoint.exit_reason,
+          activeRoomId: checkpoint.active_room_id,
+        });
+        setMessages(
+          project.id,
+          checkpoint.messages.map((message) => ({
+            id: `server-${message.id}`,
+            role: message.role,
+            content: message.content,
+          })),
+        );
+        setAgentConnection("connected");
+      })
+      .catch(() => {
+        if (!cancelled) setAgentConnection("unavailable");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyAgentState, project?.id, setMessages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchFurnitureCatalog()
+      .then((items) => {
+        if (!cancelled) setCatalog(items);
+      })
+      .catch(() => {
+        if (!cancelled) setCatalogError("商品库连接失败，未使用演示商品替代。");
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const activePlan = project?.activePlanId
+    ? generatedPlans.find((item) => item.id === project.activePlanId)
+    : undefined;
+  const selectedFurniture = useMemo(
+    () =>
+      project
+        ? catalog.filter((item) => project.selectedFurnitureIds.includes(item.id))
+        : [],
+    [catalog, project],
+  );
+  const plan = project
+    ? activePlan ?? buildWorkspacePlan(project, selectedFurniture)
+    : null;
+  const entry = project
+    ? DESIGN_ENTRY_MODES.find((item) => item.id === project.mode)
+    : null;
+
+  if (!project || !plan || !entry) {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center bg-[#111713] px-5 text-center text-[#e5e8e1]">
+        <div>
+          <AlertTriangle className="mx-auto h-8 w-8 text-[#f1c08b]" />
+          <h1 className="mt-5 text-2xl !text-white">找不到这个设计项目</h1>
+          <p className="mt-3 max-w-sm text-sm leading-6 text-[#8f9a90]">请从项目入口恢复当前会话中的设计任务。</p>
+          <Link to="/design/new" className="mt-5 inline-flex items-center gap-2 text-sm text-[#d5ff67]">
+            <ArrowLeft className="h-4 w-4" /> 返回项目入口
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const roomType = project.requirement.rooms[0] ?? project.roomModel?.spaceType ?? "客厅";
+  const activeRoomId = project.activeRoomId ?? project.roomModel?.rooms[0]?.id ?? null;
+  const sceneKey = `${plan.planVersionId ?? plan.id}-${project.selectedFurnitureIds.join("-")}-${activeRoomId ?? "no-room"}-${project.sceneRef?.version ?? 0}`;
+  const connectionLabel = {
+    checking: "正在连接智能体",
+    connected: "智能体已连接",
+    unavailable: "智能体暂未连接",
+  }[agentConnection];
+
+  return (
+    <div className="min-h-[calc(100vh-4rem)] bg-[#0f1511] px-3 py-3 text-[#e4e8e1] sm:px-5 lg:px-6">
+      <div className="mx-auto max-w-[1920px]">
+        <header className="mb-3 flex min-h-14 flex-wrap items-center justify-between gap-3 border border-[#293229] bg-[#171e18] px-4 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <Link
+              to="/design/new"
+              title="返回项目列表"
+              className="flex h-8 w-8 shrink-0 items-center justify-center border border-white/12 text-[#9ca69d] transition-colors hover:border-[#d5ff67] hover:text-[#d5ff67]"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <CircleDot className={`h-3.5 w-3.5 shrink-0 ${agentConnection === "connected" ? "text-[#d5ff67]" : "text-[#f1c08b]"}`} />
+                <h1 className="truncate text-sm font-medium !text-[#edf0e9]">{project.title}</h1>
+              </div>
+              <p className="mt-1 truncate font-mono text-[9px] tracking-[0.12em] text-[#778278] uppercase">
+                {entry.shortTitle} / TASK {project.id} / {connectionLabel}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link
+              to="/design/new"
+              className="inline-flex min-h-9 items-center gap-1.5 border border-white/12 px-3 text-xs text-[#aeb7af] transition-colors hover:border-[#d5ff67] hover:text-[#d5ff67]"
+            >
+              <Plus className="h-3.5 w-3.5" /> 新项目
+            </Link>
+          </div>
+        </header>
+
+        {catalogError && (
+          <p role="alert" className="mb-3 border border-[#8f7040] bg-[#2b2718] px-4 py-3 text-xs text-[#f0d39e]">{catalogError}</p>
+        )}
+
+        <nav aria-label="移动端工作台视图" className="mb-3 grid grid-cols-3 border border-[#293229] bg-[#171e18] xl:hidden">
+          {[
+            { id: "conversation" as const, label: "对话", icon: MessageSquareText },
+            { id: "scene" as const, label: "3D", icon: Box },
+            { id: "context" as const, label: "上下文", icon: PanelRight },
+          ].map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setMobilePanel(item.id)}
+                className={`flex min-h-11 items-center justify-center gap-2 text-xs font-medium ${mobilePanel === item.id ? "bg-[#d5ff67] text-[#111713]" : "text-[#9ca69d]"}`}
+              >
+                <Icon className="h-4 w-4" />
+                {item.label}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="grid items-start gap-3 xl:grid-cols-[300px_minmax(620px,1fr)_310px]">
+          <div className={mobilePanel === "conversation" ? "block" : "hidden xl:block"}>
+            <ChatPanel
+              key={project.id}
+              workspace
+              projectId={project.id}
+              activeMode={project.mode}
+              activeRoomId={activeRoomId}
+              sceneId={project.sceneRef?.scene_id}
+              baseSceneVersion={project.sceneRef?.version}
+              initialMessages={project.messages}
+              pendingQuestions={project.pendingQuestions}
+              onMessagesChange={(messages) => setMessages(project.id, messages)}
+              onAgentResponse={(response) =>
+                applyAgentState(project.id, {
+                  stateVersion: response.state_version,
+                  status: response.status,
+                  activeMode: response.active_mode,
+                  pendingQuestions: response.pending_questions,
+                  sceneRef: response.scene_ref,
+                  exitReason: response.exit_reason,
+                  activeRoomId: response.active_room_id,
+                })
+              }
+            />
+          </div>
+
+          <main className={`min-w-0 rounded-lg border border-[#293229] bg-[#d9d5ca] p-2 ${mobilePanel === "scene" ? "block" : "hidden xl:block"}`}>
+            <div className="mb-2 flex min-h-9 items-center justify-between gap-3 border-b border-[#1d241f]/15 px-2 pb-2 text-[#303831]">
+              <div>
+                <p className="font-mono text-[9px] tracking-[0.14em] text-[#69736a] uppercase">Live scene</p>
+                <p className="mt-0.5 text-xs font-medium">{roomType} · {selectedFurniture.length} 件家具</p>
+              </div>
+              <span className="text-[10px] text-[#69736a]">{plan.planVersionId ? `VERSION ${plan.planVersionId}` : "LOCAL DRAFT"}</span>
+            </div>
+            <RoomView3D key={sceneKey} plan={plan} roomType={roomType} roomModel={project.roomModel} />
+          </main>
+
+          <div className={mobilePanel === "context" ? "block" : "hidden xl:block"}>
+            <DesignWorkspaceInspector
+              project={project}
+              catalog={catalog}
+              catalogLoading={catalogLoading}
+              budget={plan.budget}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

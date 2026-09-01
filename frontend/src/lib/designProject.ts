@@ -3,12 +3,31 @@ import type { DesignPlan } from "@/types/design";
 import type { FurnitureItem } from "@/types/furniture";
 import type { UserRequirement } from "@/types/requirement";
 import type { RoomModel } from "@/types/roomModel";
+import type {
+  AgentExitReason,
+  AgentPendingQuestion,
+  AgentSceneReference,
+} from "@/types/agent";
 
-export type DesignProjectMode = "catalog" | "custom" | "scan";
-export type DesignProjectStatus = "draft" | "designing" | "ready";
+export type DesignProjectMode =
+  | "catalog_design"
+  | "custom_furniture"
+  | "room_reconstruction";
+export type DesignProjectStatus =
+  | "draft"
+  | "analyzing"
+  | "waiting_user"
+  | "ready"
+  | "running"
+  | "waiting_approval"
+  | "completed"
+  | "needs_human"
+  | "failed"
+  | "cancelled";
 
 export interface DesignProject {
-  id: string;
+  /** 与后端 DesignTask.id 完全一致。 */
+  id: number;
   mode: DesignProjectMode;
   title: string;
   status: DesignProjectStatus;
@@ -18,7 +37,11 @@ export interface DesignProject {
   roomModel: RoomModel | null;
   messages: ChatMessage[];
   selectedFurnitureIds: string[];
-  backendTaskId: number | null;
+  activeRoomId: string | null;
+  stateVersion: number;
+  pendingQuestions: AgentPendingQuestion[];
+  sceneRef: AgentSceneReference | null;
+  exitReason: AgentExitReason | null;
   activePlanId: string | null;
   activePlanVersionId: number | null;
 }
@@ -39,7 +62,7 @@ export interface DesignEntryMode {
 
 export const DESIGN_ENTRY_MODES: readonly DesignEntryMode[] = [
   {
-    id: "catalog",
+    id: "catalog_design",
     index: "01",
     title: "用现有家具搭配空间",
     shortTitle: "商品搭配",
@@ -48,7 +71,7 @@ export const DESIGN_ENTRY_MODES: readonly DesignEntryMode[] = [
       "我们从现有家具开始。告诉我需要设计哪个空间、预算范围，以及哪些家具必须保留；我会先补齐关键约束，再从商品库选择并摆放。",
   },
   {
-    id: "custom",
+    id: "custom_furniture",
     index: "02",
     title: "对话定制一件家具",
     shortTitle: "家具定制",
@@ -57,7 +80,7 @@ export const DESIGN_ENTRY_MODES: readonly DesignEntryMode[] = [
       "我们来定义一件自定义家具。先告诉我它的用途、准备放在哪里，以及大致尺寸；我会逐项确认结构、材料和预算。",
   },
   {
-    id: "scan",
+    id: "room_reconstruction",
     index: "03",
     title: "导入房间并建立 3D",
     shortTitle: "房间重建",
@@ -78,24 +101,17 @@ function cloneRequirement(requirement: UserRequirement): UserRequirement {
   };
 }
 
-function createProjectId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 export function createDesignProject(
   mode: DesignProjectMode,
   seed: DesignProjectSeed,
-  options: { id?: string; now?: string } = {},
+  options: { id: number; now?: string },
 ): DesignProject {
   const entry = DESIGN_ENTRY_MODES.find((item) => item.id === mode);
   if (!entry) throw new Error(`不支持的设计入口：${mode}`);
 
   const now = options.now ?? new Date().toISOString();
   return {
-    id: options.id ?? createProjectId(),
+    id: options.id,
     mode,
     title: `${entry.shortTitle} · ${new Date(now).toLocaleDateString("zh-CN")}`,
     status: "draft",
@@ -103,16 +119,20 @@ export function createDesignProject(
     updatedAt: now,
     requirement: cloneRequirement(seed.requirement),
     roomModel: seed.roomModel ? structuredClone(seed.roomModel) : null,
-    messages: [{ id: `opening-${options.id ?? now}`, role: "ai", content: entry.opening }],
+    messages: [{ id: `opening-${options.id}`, role: "ai", content: entry.opening }],
     selectedFurnitureIds: [],
-    backendTaskId: null,
+    activeRoomId: seed.roomModel?.rooms[0]?.id ?? null,
+    stateVersion: 0,
+    pendingQuestions: [],
+    sceneRef: null,
+    exitReason: null,
     activePlanId: null,
     activePlanVersionId: null,
   };
 }
 
-export function designWorkspacePath(projectId: string): string {
-  return `/design/${encodeURIComponent(projectId)}/workspace`;
+export function designWorkspacePath(projectId: number): string {
+  return `/design/${projectId}/workspace`;
 }
 
 function estimateBudget(budgetRange: string): number {
@@ -134,7 +154,7 @@ export function buildWorkspacePlan(
   return {
     id: `workspace-${project.id}`,
     planVersionId: project.activePlanVersionId ?? undefined,
-    task_id: project.backendTaskId ?? undefined,
+    task_id: project.id,
     name: project.title,
     style,
     coverGradient: "bg-gradient-to-br from-[#e5e7df] to-[#b7c2b1]",
