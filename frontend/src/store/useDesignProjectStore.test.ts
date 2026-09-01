@@ -10,10 +10,16 @@ describe("useDesignProjectStore", () => {
   it("不同项目的对话和家具选择互不污染", () => {
     const firstId = useDesignProjectStore
       .getState()
-      .createProject("catalog", { requirement: emptyRequirement, roomModel: null });
+      .registerProject(41, "catalog_design", {
+        requirement: emptyRequirement,
+        roomModel: null,
+      });
     const secondId = useDesignProjectStore
       .getState()
-      .createProject("custom", { requirement: emptyRequirement, roomModel: null });
+      .registerProject(42, "custom_furniture", {
+        requirement: emptyRequirement,
+        roomModel: null,
+      });
 
     useDesignProjectStore.getState().setMessages(firstId, [
       { id: "u-1", role: "user", content: "保留电视柜" },

@@ -21,7 +21,7 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
-describe("项目级设计对话", () => {
+describe("项目级智能体轮次", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.resetModules();
@@ -36,24 +36,20 @@ describe("项目级设计对话", () => {
     vi.stubGlobal("window", { localStorage: createLocalStorage({}) });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { sendChatMessage } = await import("./designApi");
-    const reply = await sendChatMessage("沙发换小一点", {
-      taskId: 42,
-      history: [
-        { role: "user", content: "电视柜保留" },
-        { role: "ai", content: "好的，我会保留电视柜。" },
-      ],
+    const { sendAgentTurn } = await import("./designApi");
+    const result = await sendAgentTurn(42, {
+      client_turn_id: "turn-42-1",
+      message: "沙发换小一点",
+      active_mode: "catalog_design",
     });
 
-    expect(reply).toBe("已保留电视柜");
+    expect(result.reply).toBe("已保留电视柜");
     const request = fetchMock.mock.calls[1];
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      client_turn_id: "turn-42-1",
       message: "沙发换小一点",
-      task_id: 42,
-      history: [
-        { role: "user", content: "电视柜保留" },
-        { role: "ai", content: "好的，我会保留电视柜。" },
-      ],
+      active_mode: "catalog_design",
     });
+    expect(String(request?.[0])).toBe("/api/design/tasks/42/agent-turns");
   });
 });

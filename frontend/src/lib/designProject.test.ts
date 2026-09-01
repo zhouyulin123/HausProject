@@ -11,9 +11,9 @@ import {
 describe("设计项目契约", () => {
   it("提供三个稳定且互斥的用户入口", () => {
     expect(DESIGN_ENTRY_MODES.map((entry) => entry.id)).toEqual([
-      "catalog",
-      "custom",
-      "scan",
+      "catalog_design",
+      "custom_furniture",
+      "room_reconstruction",
     ]);
   });
 
@@ -24,34 +24,34 @@ describe("设计项目契约", () => {
       budgetRange: "8-15 万",
     };
     const project = createDesignProject(
-      "catalog",
+      "catalog_design",
       { requirement, roomModel: null },
-      { id: "project-42", now: "2026-09-01T10:00:00.000Z" },
+      { id: 42, now: "2026-09-01T10:00:00.000Z" },
     );
 
     requirement.rooms.push("卧室");
 
-    expect(project.id).toBe("project-42");
-    expect(project.mode).toBe("catalog");
+    expect(project.id).toBe(42);
+    expect(project.mode).toBe("catalog_design");
     expect(project.requirement.rooms).toEqual(["客厅"]);
     expect(project.messages[0]?.content).toContain("现有家具");
     expect(designWorkspacePath(project.id)).toBe(
-      "/design/project-42/workspace",
+      "/design/42/workspace",
     );
   });
 
   it("根据项目家具选择生成可交互工作台草案", () => {
     const selected = mockFurniture.slice(0, 2);
     const project = createDesignProject(
-      "catalog",
+      "catalog_design",
       { requirement: emptyRequirement, roomModel: null },
-      { id: "project-42", now: "2026-09-01T10:00:00.000Z" },
+      { id: 42, now: "2026-09-01T10:00:00.000Z" },
     );
     project.selectedFurnitureIds = selected.map((item) => item.id);
 
     const plan = buildWorkspacePlan(project, selected);
 
-    expect(plan.id).toBe("workspace-project-42");
+    expect(plan.id).toBe("workspace-42");
     expect(plan.furnitureSuggestions.map((item) => item.id)).toEqual(
       selected.map((item) => item.id),
     );
