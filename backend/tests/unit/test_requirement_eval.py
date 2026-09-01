@@ -3,6 +3,7 @@ import pytest
 from evals.run_requirement_eval import (
     budget_deviation,
     field_accuracy,
+    select_requirement_parser,
     _field_match,
     _num_match,
     _text_match,
@@ -87,3 +88,24 @@ def test_list_field_requires_expected_subset():
     assert _field_match("constraints", ["不拆墙"], ["不拆墙", "不改水电"]) is True
     assert _field_match("constraints", ["不拆墙"], []) is False
     assert _field_match("custom_projects", [], ["衣柜"]) is True
+
+
+def test_skip_llm_selects_deterministic_requirement_parser():
+    calls = []
+
+    def online_parser(text):
+        calls.append(("online", text))
+        raise AssertionError("离线评测不应调用在线模型")
+
+    def deterministic_parser(text):
+        calls.append(("deterministic", text))
+        return {"space_type": "客厅"}
+
+    parser = select_requirement_parser(
+        skip_llm=True,
+        online_parser=online_parser,
+        deterministic_parser=deterministic_parser,
+    )
+
+    assert parser("设计客厅") == {"space_type": "客厅"}
+    assert calls == [("deterministic", "设计客厅")]
