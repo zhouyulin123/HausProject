@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "versions": {
+    "model": "填写实际模型及版本",
+    "prompt": "填写 Prompt 版本",
+    "rules": "填写布局与报价规则版本",
+    "data": "2026-09-01.1"
+  },
+  "results": []
+}
