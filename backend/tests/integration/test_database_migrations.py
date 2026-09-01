@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 
 @pytest.mark.integration
@@ -85,7 +85,30 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "model_license",
             "model_source",
             "model_spec_json",
+            "verification_status",
+            "availability_status",
+            "region_codes",
+            "stock_quantity",
+            "lead_time_days_min",
+            "lead_time_days_max",
+            "price_valid_from",
+            "price_valid_to",
+            "verified_at",
+            "verified_by",
+            "data_version",
+            "record_version",
+            "alternative_skus",
         } <= product_columns
+        quote_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("quote_snapshots")
+        }
+        assert {
+            "catalog_version",
+            "price_version",
+            "rule_version",
+            "sku_versions_json",
+        } <= quote_columns
         render_job_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns(
@@ -138,4 +161,50 @@ def test_alembic_upgrades_empty_database_to_current_schema():
     finally:
         if inspection_engine is not None:
             inspection_engine.dispose()
+        database_path.unlink(missing_ok=True)
+
+
+@pytest.mark.integration
+def test_catalog_migration_keeps_existing_merchant_draft_unverified():
+    backend_dir = Path(__file__).resolve().parents[2]
+    artifacts_dir = backend_dir / ".test_artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+    database_path = artifacts_dir / "catalog_lifecycle_migration_test.db"
+    database_path.unlink(missing_ok=True)
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.attributes["database_url"] = database_url
+    engine = None
+    try:
+        command.upgrade(config, "e6f8a0b2c4d6")
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO products "
+                    "(sku, name, category, room, style, price, data_origin, is_active) "
+                    "VALUES ('DRAFT-LEGACY', '历史草稿', '沙发', '客厅', "
+                    "'现代简约', 3999, 'merchant_draft', 1)"
+                )
+            )
+        engine.dispose()
+        engine = None
+
+        command.upgrade(config, "head")
+        engine = create_engine(database_url)
+        with engine.connect() as connection:
+            migrated = connection.execute(
+                text(
+                    "SELECT verification_status, availability_status, record_version "
+                    "FROM products WHERE sku = 'DRAFT-LEGACY'"
+                )
+            ).mappings().one()
+        assert migrated == {
+            "verification_status": "draft",
+            "availability_status": "unknown",
+            "record_version": 1,
+        }
+    finally:
+        if engine is not None:
+            engine.dispose()
         database_path.unlink(missing_ok=True)

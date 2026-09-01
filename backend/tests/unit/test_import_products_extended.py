@@ -41,6 +41,16 @@ def _row(**overrides):
         "替代选择": "双人位",
         "启用状态": "是",
         "人工复核状态": "已复核",
+        "可售状态": "现货",
+        "地区代码": "CN-SH,CN-ZJ",
+        "库存数量": 12,
+        "最短交期(天)": 3,
+        "最长交期(天)": 7,
+        "价格生效时间": "2026-09-01T00:00:00+00:00",
+        "价格失效时间": "2026-12-31T23:59:59+00:00",
+        "复核负责人": "factory:7",
+        "数据版本": "catalog-2026-q3",
+        "替代SKU": "SF-002,SF-003",
         "价格备注": "门店确认价",
     }
     values.update(overrides)
@@ -57,6 +67,14 @@ def test_parse_extended_product_row_keeps_numeric_and_review_fields() -> None:
     assert parsed["product"]["model_height_mm"] == 760
     assert parsed["product"]["is_active"] is True
     assert parsed["review_status"] == "manual_verified"
+    assert parsed["product"]["verification_status"] == "verified"
+    assert parsed["product"]["availability_status"] == "in_stock"
+    assert parsed["product"]["region_codes"] == ["CN-SH", "CN-ZJ"]
+    assert parsed["product"]["stock_quantity"] == 12
+    assert parsed["product"]["lead_time_days_min"] == 3
+    assert parsed["product"]["lead_time_days_max"] == 7
+    assert parsed["product"]["data_version"] == "catalog-2026-q3"
+    assert parsed["product"]["alternative_skus"] == ["SF-002", "SF-003"]
 
 
 def test_parse_keeps_legacy_price_column_compatible() -> None:
@@ -115,6 +133,9 @@ def test_upsert_updates_draft_and_records_manual_verification(db) -> None:
     assert product.data_origin == "merchant_draft"
     assert product.source_name == "内部商品主表"
     assert product.source_metadata["verification_status"] == "manual_verified"
+    assert product.verification_status == "verified"
+    assert product.availability_status == "in_stock"
+    assert product.record_version == 2
 
 
 def test_upsert_refuses_to_overwrite_public_reference(db) -> None:

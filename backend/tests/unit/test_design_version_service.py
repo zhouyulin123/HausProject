@@ -9,6 +9,7 @@ from app.services.design_version_service import (
     get_revision,
     list_user_designs,
     persist_generation,
+    recalculate_quote_snapshot,
 )
 
 
@@ -31,6 +32,22 @@ def _plans(total: int) -> list[dict]:
                 "furnitureTotal": total - 5000,
                 "customTotal": 5000,
                 "total": total,
+                "catalogVersion": "catalog-v8",
+                "priceVersion": "prices-v12",
+                "ruleVersion": "rules-v3",
+                "lineItems": [
+                    {
+                        "sku": "SOFA-001",
+                        "quantity": 1,
+                        "unitPrice": total - 5000,
+                        "subtotal": total - 5000,
+                        "dataVersion": "catalog-v8",
+                        "recordVersion": 12,
+                    }
+                ],
+                "customLineItems": [
+                    {"ruleId": 1, "quantity": 1, "unitPrice": 5000, "subtotal": 5000}
+                ],
             },
         },
         {
@@ -89,6 +106,18 @@ def test_persist_generation_creates_immutable_plan_and_quote_snapshots(db):
     assert restored.requirement_snapshot["rooms"] == ["客厅"]
     assert restored.workflow_trace_snapshot[0]["node"] == "calculate_quote"
     assert restored.plans[0].quote_snapshot.grand_total == 36000
+    assert restored.plans[0].quote_snapshot.catalog_version == "catalog-v8"
+    assert restored.plans[0].quote_snapshot.price_version == "prices-v12"
+    assert restored.plans[0].quote_snapshot.rule_version == "rules-v3"
+    assert restored.plans[0].quote_snapshot.sku_versions_json == [
+        {"sku": "SOFA-001", "dataVersion": "catalog-v8", "recordVersion": 12}
+    ]
+    assert recalculate_quote_snapshot(restored.plans[0].quote_snapshot) == {
+        "furniture_total": 31000,
+        "custom_total": 5000,
+        "grand_total": 36000,
+        "consistent": True,
+    }
     assert restored.plans[0].plan_json["name"] == "暖居方案"
 
 

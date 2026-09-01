@@ -112,3 +112,50 @@ def test_upload_product_model_rejects_fake_glb(product_api):
 
     assert response.status_code == 422
     assert not (upload_dir / "models").exists()
+
+
+@pytest.mark.integration
+def test_product_lifecycle_fields_round_trip_and_verifier_is_server_owned(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products",
+        json={
+            "sku": "TABLE-001",
+            "name": "可编辑餐桌草稿",
+            "category": "餐桌",
+            "room": "餐厅",
+            "style": "现代简约",
+            "price": 3200,
+            "availability_status": "in_stock",
+            "stock_quantity": 8,
+            "region_codes": ["CN-SH"],
+            "lead_time_days_min": 2,
+            "lead_time_days_max": 5,
+            "price_valid_from": "2026-09-01T00:00:00Z",
+            "price_valid_to": "2026-12-31T23:59:59Z",
+            "data_version": "catalog-q3",
+            "alternative_skus": ["TABLE-002"],
+            "model_width_mm": 1600,
+            "model_depth_mm": 850,
+            "model_height_mm": 750,
+        },
+    )
+
+    assert created.status_code == 200
+    body = created.json()
+    assert body["verification_status"] == "draft"
+    assert body["availability_status"] == "in_stock"
+    assert body["region_codes"] == ["CN-SH"]
+    assert body["alternative_skus"] == ["TABLE-002"]
+    assert body["record_version"] == 1
+
+    verified = client.patch(
+        f"/api/products/{body['id']}",
+        json={"verification_status": "verified", "verified_by": "spoofed-user"},
+    )
+
+    assert verified.status_code == 200
+    assert verified.json()["verification_status"] == "verified"
+    assert verified.json()["verified_by"] == "user:999"
+    assert verified.json()["verified_at"] is not None
+    assert verified.json()["record_version"] == 2
