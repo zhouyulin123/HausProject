@@ -129,6 +129,16 @@ def test_table_without_exact_rule_is_marked_for_human_quote(db):
             ),
             "width_mm",
         ),
+        (
+            _cabinet_payload(
+                dimensions={
+                    "width_mm": "1200",
+                    "height_mm": 2400,
+                    "depth_mm": 600,
+                }
+            ),
+            "width_mm",
+        ),
         (_cabinet_payload(material="未知板材"), "material"),
         (
             _cabinet_payload(
@@ -193,3 +203,36 @@ def test_round_table_requires_equal_width_and_depth():
 
     with pytest.raises(ValidationError, match="圆桌的宽度和深度必须一致"):
         CustomFurniturePreviewRequest.model_validate({"spec": payload})
+
+
+def test_duplicate_active_quote_rules_require_human_review(db):
+    db.add_all(
+        [
+            CustomQuoteRule(
+                project_name="定制衣柜",
+                category="柜类定制",
+                pricing_unit="㎡",
+                material_grade="E0 颗粒板",
+                unit_price=680,
+                is_active=True,
+            ),
+            CustomQuoteRule(
+                project_name="定制衣柜",
+                category="柜类定制",
+                pricing_unit="㎡",
+                material_grade="E0 颗粒板",
+                unit_price=720,
+                is_active=True,
+            ),
+        ]
+    )
+    db.commit()
+    request = CustomFurniturePreviewRequest.model_validate(
+        {"spec": _cabinet_payload()}
+    )
+
+    preview = build_preview(db, request.spec)
+
+    assert preview.status == "needs_human"
+    assert preview.quote_preview.reason_code == "quote_rule_ambiguous"
+    assert preview.quote_preview.estimated_amount is None
