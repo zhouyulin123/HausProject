@@ -37,9 +37,36 @@ describe("useDesignProjectStore", () => {
   });
 
   it("更新不存在的项目时保持状态不变", () => {
-    useDesignProjectStore.getState().setMessages("missing", []);
-    useDesignProjectStore.getState().toggleFurniture("missing", "f-1");
+    useDesignProjectStore.getState().setMessages(999, []);
+    useDesignProjectStore.getState().toggleFurniture(999, "f-1");
 
     expect(useDesignProjectStore.getState().projects).toEqual({});
+  });
+
+  it("用服务端 checkpoint 恢复项目状态和待确认问题", () => {
+    useDesignProjectStore.getState().registerProject(42, "room_reconstruction", {
+      requirement: emptyRequirement,
+      roomModel: null,
+    });
+
+    useDesignProjectStore.getState().applyAgentState(42, {
+      stateVersion: 7,
+      status: "waiting_user",
+      pendingQuestions: [
+        { field: "room.width", prompt: "客厅实际宽度是多少？", reason: "空间尺度置信度不足" },
+      ],
+      sceneRef: { scene_id: 12, version: 4 },
+      exitReason: "missing_facts",
+    });
+
+    expect(useDesignProjectStore.getState().projects[42]).toMatchObject({
+      status: "waiting_user",
+      stateVersion: 7,
+      sceneRef: { scene_id: 12, version: 4 },
+      exitReason: "missing_facts",
+    });
+    expect(
+      useDesignProjectStore.getState().projects[42]?.pendingQuestions[0]?.prompt,
+    ).toBe("客厅实际宽度是多少？");
   });
 });
