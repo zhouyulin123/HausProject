@@ -216,6 +216,7 @@ def test_quality_summary_aggregates_anonymous_feedback_with_window_filter(db):
         ("move", None, now - timedelta(days=4)),
         ("final_select", 5, now - timedelta(days=5)),
         ("final_select", 3, now - timedelta(days=6)),
+        ("glb_load_failed", None, now - timedelta(days=7)),
         ("replace", 1, now - timedelta(days=31)),
     ]
     for index, (action_type, satisfaction_score, created_at) in enumerate(events):
@@ -251,7 +252,9 @@ def test_quality_summary_aggregates_anonymous_feedback_with_window_filter(db):
         "final_select_total": 2,
         "satisfaction_count": 2,
         "satisfaction_mean": 4.0,
+        "glb_load_failure_total": 1,
     }
+    assert summary["failure_codes"]["glb_load_failed"] == 1
     serialized = str(summary)
     assert "private-event" not in serialized
     assert "private-room" not in serialized

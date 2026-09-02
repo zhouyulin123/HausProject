@@ -7,7 +7,14 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes import feedback
 from app.db.database import Base, get_db
-from app.db.models import DesignFeedbackEvent, DesignTask, Product
+from app.db.models import (
+    DesignFeedbackEvent,
+    DesignPlanVersion,
+    DesignScene,
+    DesignSceneVersion,
+    DesignTask,
+    Product,
+)
 from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
@@ -59,6 +66,33 @@ def feedback_api_context():
             plans=[{"id": "plan-a", "name": "方案 A", "shopQuote": {}}],
             generator="agent",
         )
+        second_owned_plan = DesignPlanVersion(
+            revision_id=revision.id,
+            plan_key="plan-c",
+            plan_name="方案 C",
+            plan_json={"id": "plan-c", "name": "方案 C"},
+        )
+        db.add(second_owned_plan)
+        db.flush()
+        scene = DesignScene(
+            plan_version_id=revision.plans[0].id,
+            current_version=1,
+        )
+        db.add(scene)
+        db.flush()
+        db.add(
+            DesignSceneVersion(
+                scene_id=scene.id,
+                version=1,
+                scene_json={
+                    "items": [
+                        {"instanceId": "sofa-main", "sku": "SOFA-OLD"},
+                    ],
+                },
+                validation_json={"valid": True, "errors": [], "warnings": []},
+                source="manual",
+            )
+        )
         other_revision = persist_generation(
             db,
             task=other_task,
@@ -71,7 +105,9 @@ def feedback_api_context():
             "stranger_id": stranger.id,
             "task_id": task.id,
             "plan_version_id": revision.plans[0].id,
+            "second_owned_plan_version_id": second_owned_plan.id,
             "foreign_plan_version_id": other_revision.plans[0].id,
+            "scene_id": scene.id,
         }
 
     app = FastAPI()
@@ -196,3 +232,79 @@ def test_feedback_event_validates_action_specific_fields(
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.integration
+def test_glb_load_failure_is_minimal_task_owned_and_idempotent(
+    feedback_api_context,
+):
+    client, factory, context = feedback_api_context
+    url = f"/api/design/tasks/{context['task_id']}/feedback-events"
+    headers = {"X-Session-ID": context["owner_id"]}
+    body = {
+        "client_event_id": "feedback-glb-failed-stable-001",
+        "action_type": "glb_load_failed",
+        "plan_version_id": context["plan_version_id"],
+        "scene_id": context["scene_id"],
+        "scene_version": 1,
+        "instance_id": "sofa-main",
+        "source_sku": "SOFA-OLD",
+    }
+
+    first = client.post(url, headers=headers, json=body)
+    second = client.post(url, headers=headers, json=body)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["action_type"] == "glb_load_failed"
+    assert "model_url" not in first.json()
+    assert "error_message" not in first.json()
+    assert "stack" not in first.json()
+    with factory() as db:
+        events = db.scalars(
+            select(DesignFeedbackEvent).where(
+                DesignFeedbackEvent.action_type == "glb_load_failed"
+            )
+        ).all()
+        assert len(events) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("overrides", "expected_status"),
+    [
+        ({"instance_id": "missing-instance"}, 404),
+        ({"source_sku": "SOFA-NEW"}, 404),
+        ({"scene_version": 2}, 404),
+        ({"plan_version_id": "second_owned_plan_version_id"}, 404),
+        ({"model_url": "https://private.invalid/sofa.glb"}, 422),
+        ({"error_message": "用户浏览器原始错误"}, 422),
+        ({"stack": "private stack trace"}, 422),
+    ],
+)
+def test_glb_load_failure_rejects_foreign_or_private_payload(
+    feedback_api_context,
+    overrides,
+    expected_status,
+):
+    client, _, context = feedback_api_context
+    normalized_overrides = {
+        key: context[value] if key == "plan_version_id" else value
+        for key, value in overrides.items()
+    }
+    response = client.post(
+        f"/api/design/tasks/{context['task_id']}/feedback-events",
+        headers={"X-Session-ID": context["owner_id"]},
+        json={
+            "client_event_id": "feedback-glb-rejected-001",
+            "action_type": "glb_load_failed",
+            "plan_version_id": context["plan_version_id"],
+            "scene_id": context["scene_id"],
+            "scene_version": 1,
+            "instance_id": "sofa-main",
+            "source_sku": "SOFA-OLD",
+            **normalized_overrides,
+        },
+    )
+
+    assert response.status_code == expected_status

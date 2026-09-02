@@ -33,6 +33,22 @@ const summary: QualitySummary = {
     average_score: 84.6,
     issue_codes: { item_collision: 4 },
   },
+  feedback: {
+    total: 24,
+    action_counts: {
+      adopt: 10,
+      remove: 3,
+      replace: 2,
+      move: 4,
+      final_select: 5,
+    },
+    modification_total: 9,
+    modification_rate: 0.375,
+    final_select_total: 5,
+    satisfaction_count: 4,
+    satisfaction_mean: 4.25,
+    glb_load_failure_total: 6,
+  },
   failure_codes: { invalid_quote: 7, tool_failed: 5 },
 };
 
@@ -45,6 +61,8 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("128.46");
     expect(html).toContain("invalid_quote");
     expect(html).toContain(">7<");
+    expect(html).toContain("GLB 加载失败");
+    expect(html).toContain(">6<");
   });
 
   it("失败簇展示严重度、状态和当前阶段的明确动作", () => {

@@ -34,6 +34,22 @@ const emptySummary: QualitySummary = {
     average_score: null,
     issue_codes: {},
   },
+  feedback: {
+    total: 0,
+    action_counts: {
+      adopt: 0,
+      remove: 0,
+      replace: 0,
+      move: 0,
+      final_select: 0,
+    },
+    modification_total: 0,
+    modification_rate: null,
+    final_select_total: 0,
+    satisfaction_count: 0,
+    satisfaction_mean: null,
+    glb_load_failure_total: 0,
+  },
   failure_codes: {},
 };
 
@@ -66,6 +82,18 @@ describe("运营质量看板映射", () => {
       hasQualitySamples({
         ...emptySummary,
         agent: { ...emptySummary.agent, turn_total: 1 },
+      }),
+    ).toBe(true);
+  });
+
+  it("只有 GLB 加载失败样本时也显示质量看板", () => {
+    expect(
+      hasQualitySamples({
+        ...emptySummary,
+        feedback: {
+          ...emptySummary.feedback,
+          glb_load_failure_total: 1,
+        },
       }),
     ).toBe(true);
   });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildGlbLoadFailureFeedbackEvent,
   buildFinalSelectFeedbackEvent,
   buildFurnitureFeedbackEvent,
   buildMoveFeedbackEvent,
@@ -9,6 +10,47 @@ import {
 } from "./workspaceFeedback";
 
 describe("工作台结构化反馈事件", () => {
+  it("用资源事实生成确定性且最小的 GLB 加载失败事件", () => {
+    const input = {
+      taskId: 42,
+      planVersionId: 8,
+      sceneId: 3,
+      sceneVersion: 7,
+      instanceId: "sofa-main",
+      sku: "sofa-old",
+    };
+
+    const first = buildGlbLoadFailureFeedbackEvent(input);
+    const second = buildGlbLoadFailureFeedbackEvent(input);
+
+    expect(first).toEqual(second);
+    expect(first).toEqual({
+      client_event_id: expect.stringMatching(
+        /^feedback-42-glb_load_failed-[a-f0-9]{8}$/,
+      ),
+      action_type: "glb_load_failed",
+      plan_version_id: 8,
+      scene_id: 3,
+      scene_version: 7,
+      instance_id: "sofa-main",
+      source_sku: "SOFA-OLD",
+    });
+    expect(JSON.stringify(first)).not.toMatch(/url|message|stack/i);
+  });
+
+  it("缺少任一持久化资源事实时不构造 GLB 失败事件", () => {
+    expect(
+      buildGlbLoadFailureFeedbackEvent({
+        taskId: 42,
+        planVersionId: 8,
+        sceneId: null,
+        sceneVersion: 7,
+        instanceId: "sofa-main",
+        sku: "SOFA-OLD",
+      }),
+    ).toBeNull();
+  });
+
   it("只有服务端方案版本与 SKU 同时存在时才构建采用或移除事件", () => {
     expect(buildFurnitureFeedbackEvent({
       clientEventId: "feedback-42-adopt-001",
