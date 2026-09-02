@@ -336,6 +336,10 @@ class CaseResult:
         )
         if any(value < 0 for value in counters):
             raise ValueError("评测计数不能为负数")
+        if self.severe_cross_user_access > self.cross_user_access_checks:
+            raise ValueError("跨用户访问问题缺少对应检查证据")
+        if self.unbounded_retry_detected and self.retry_bound_checks == 0:
+            raise ValueError("无限重试问题缺少对应检查证据")
         pairs = (
             (self.requirement_correct, self.requirement_total),
             (self.space_fact_correct, self.space_fact_total),
@@ -346,7 +350,6 @@ class CaseResult:
             (self.budget_within_limit, self.budget_checks),
             (self.layout_hard_passes, self.layout_checks),
             (self.style_consistent, self.style_checks),
-            (self.severe_cross_user_access, self.cross_user_access_checks),
         )
         if any(numerator > denominator for numerator, denominator in pairs):
             raise ValueError("评测命中数不能大于检查总数")
@@ -355,10 +358,6 @@ class CaseResult:
             <= self.human_rating_count * 5
         ):
             raise ValueError("人工满意度总分必须落在 1 到 5 分量表范围内")
-        if self.severe_cross_user_access > self.cross_user_access_checks:
-            raise ValueError("跨用户访问问题缺少对应检查证据")
-        if self.unbounded_retry_detected and self.retry_bound_checks == 0:
-            raise ValueError("无限重试问题缺少对应检查证据")
 
 
 @dataclass(frozen=True)

@@ -560,6 +560,7 @@ def test_collector_and_evaluator_cli_use_the_same_fail_closed_contract(
             str(tmp_path / "manifest.json"),
             "--results",
             str(evidence_path),
+            "--establish-baseline",
             "--output-dir",
             str(report_dir),
         ]

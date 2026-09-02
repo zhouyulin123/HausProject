@@ -204,10 +204,6 @@ def test_quality_gates_fail_closed_when_denominator_is_missing():
             CaseResult(
                 case_id="empty-evidence",
                 generation_succeeded=False,
-                cross_user_access_checks=1,
-                severe_cross_user_access=1,
-                retry_bound_checks=1,
-                unbounded_retry_detected=True,
             )
         ],
         versions=EvaluationVersions(
