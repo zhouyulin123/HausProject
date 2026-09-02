@@ -19,6 +19,39 @@ from app.db.models import (
 ACTIVE_STATUSES = ("queued", "running")
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _owned_active_job(
+    db: Session,
+    *,
+    job_id: int,
+    worker_id: str,
+    worker_attempt: int,
+    now: datetime,
+) -> BlenderRenderJob | None:
+    job = db.scalar(
+        select(BlenderRenderJob)
+        .where(BlenderRenderJob.id == job_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if (
+        job is None
+        or job.status != "running"
+        or job.worker_id != worker_id
+        or job.attempt != worker_attempt
+        or job.lease_expires_at is None
+        or _as_utc(job.lease_expires_at) <= _as_utc(now)
+    ):
+        db.rollback()
+        return None
+    return job
+
+
 def get_existing_job(
     db: Session,
     *,
@@ -177,13 +210,22 @@ def mark_progress(
     *,
     job_id: int,
     worker_id: str,
+    worker_attempt: int,
     progress: int,
-) -> None:
-    job = db.get(BlenderRenderJob, job_id)
-    if job is None or job.status != "running" or job.worker_id != worker_id:
-        return
+    now: datetime | None = None,
+) -> bool:
+    job = _owned_active_job(
+        db,
+        job_id=job_id,
+        worker_id=worker_id,
+        worker_attempt=worker_attempt,
+        now=now or datetime.now(timezone.utc),
+    )
+    if job is None:
+        return False
     job.progress = max(job.progress, min(progress, 95))
     db.commit()
+    return True
 
 
 def mark_completed(
@@ -191,17 +233,26 @@ def mark_completed(
     *,
     job_id: int,
     worker_id: str,
+    worker_attempt: int,
     output_url: str,
-) -> None:
-    job = db.get(BlenderRenderJob, job_id)
-    if job is None or job.status != "running" or job.worker_id != worker_id:
-        return
+    now: datetime | None = None,
+) -> bool:
+    current = now or datetime.now(timezone.utc)
+    job = _owned_active_job(
+        db,
+        job_id=job_id,
+        worker_id=worker_id,
+        worker_attempt=worker_attempt,
+        now=current,
+    )
+    if job is None:
+        return False
     job.status = "completed"
     job.progress = 100
     job.output_url = output_url
     job.error_message = None
     job.lease_expires_at = None
-    job.completed_at = datetime.now(timezone.utc)
+    job.completed_at = current
 
     scene = db.get(DesignScene, job.scene_id)
     plan_version = (
@@ -216,6 +267,7 @@ def mark_completed(
         db.add(
             RenderedImage(
                 task_id=revision.task_id,
+                plan_version_id=plan_version.id,
                 plan_id=plan_version.plan_key,
                 prompt=(
                     f"SceneDocument scene={job.scene_id} "
@@ -228,6 +280,7 @@ def mark_completed(
             )
         )
     db.commit()
+    return True
 
 
 def mark_failed(
@@ -235,14 +288,24 @@ def mark_failed(
     *,
     job_id: int,
     worker_id: str,
+    worker_attempt: int,
     error_message: str,
-) -> None:
-    job = db.get(BlenderRenderJob, job_id)
-    if job is None or job.status != "running" or job.worker_id != worker_id:
-        return
+    now: datetime | None = None,
+) -> bool:
+    current = now or datetime.now(timezone.utc)
+    job = _owned_active_job(
+        db,
+        job_id=job_id,
+        worker_id=worker_id,
+        worker_attempt=worker_attempt,
+        now=current,
+    )
+    if job is None:
+        return False
     job.status = "failed"
     job.progress = 100
     job.error_message = error_message[:500]
     job.lease_expires_at = None
-    job.completed_at = datetime.now(timezone.utc)
+    job.completed_at = current
     db.commit()
+    return True

@@ -149,6 +149,7 @@ def process_one_job(*, worker_id: str, executable: Path) -> bool:
         if job is None:
             return False
         job_id = job.id
+        worker_attempt = job.attempt
 
     try:
         scene, model_urls, detached_job = _load_job_payload(job_id)
@@ -179,12 +180,19 @@ def process_one_job(*, worker_id: str, executable: Path) -> bool:
                 encoding="utf-8",
             )
             with SessionLocal() as db:
-                blender_job_service.mark_progress(
+                still_owned = blender_job_service.mark_progress(
                     db,
                     job_id=job_id,
                     worker_id=worker_id,
+                    worker_attempt=worker_attempt,
                     progress=30,
                 )
+            if not still_owned:
+                logger.warning(
+                    "Blender 渲染未启动：作业已失去租约 job_id=%s",
+                    job_id,
+                )
+                return True
             execute_blender_process(
                 executable=executable,
                 script_path=script_path,
@@ -195,9 +203,20 @@ def process_one_job(*, worker_id: str, executable: Path) -> bool:
             final_name = (
                 f"scene_{detached_job.scene_id}_"
                 f"v{detached_job.scene_version}_"
-                f"{detached_job.profile}.png"
+                f"{detached_job.profile}_"
+                f"job{job_id}_a{worker_attempt}.png"
             )
             final_path = upload_root / "blender_renders" / final_name
+            with SessionLocal() as db:
+                still_owned = blender_job_service.mark_progress(
+                    db,
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    worker_attempt=worker_attempt,
+                    progress=90,
+                )
+            if not still_owned:
+                raise BlenderProcessError("Blender 渲染作业已失去有效租约")
             publish_render_output(
                 temporary_output,
                 final_path,
@@ -206,13 +225,17 @@ def process_one_job(*, worker_id: str, executable: Path) -> bool:
 
         output_url = f"/uploads/blender_renders/{final_name}"
         with SessionLocal() as db:
-            blender_job_service.mark_completed(
+            completed = blender_job_service.mark_completed(
                 db,
                 job_id=job_id,
                 worker_id=worker_id,
+                worker_attempt=worker_attempt,
                 output_url=output_url,
             )
-        logger.info("Blender 渲染完成: job_id=%s", job_id)
+        if completed:
+            logger.info("Blender 渲染完成: job_id=%s", job_id)
+        else:
+            logger.warning("Blender 渲染结果未发布：作业已失去租约 job_id=%s", job_id)
     except subprocess.TimeoutExpired:
         logger.exception("Blender 渲染超时: job_id=%s", job_id)
         with SessionLocal() as db:
@@ -220,6 +243,7 @@ def process_one_job(*, worker_id: str, executable: Path) -> bool:
                 db,
                 job_id=job_id,
                 worker_id=worker_id,
+                worker_attempt=worker_attempt,
                 error_message="Blender 渲染超时",
             )
     except (BlenderProcessError, BlenderOutputError, OSError, ValueError):
@@ -229,6 +253,7 @@ def process_one_job(*, worker_id: str, executable: Path) -> bool:
                 db,
                 job_id=job_id,
                 worker_id=worker_id,
+                worker_attempt=worker_attempt,
                 error_message="Blender 渲染失败，请稍后重试",
             )
     return True
