@@ -19,6 +19,10 @@ class DatasetValidationError(ValueError):
     """案例清单不满足来源、权限或结构约束。"""
 
 
+class EvaluationInputError(ValueError):
+    """评测证据不可信或与已冻结案例集不一致。"""
+
+
 @dataclass(frozen=True)
 class EvaluationVersions:
     model: str
@@ -342,6 +346,7 @@ class CaseResult:
             (self.budget_within_limit, self.budget_checks),
             (self.layout_hard_passes, self.layout_checks),
             (self.style_consistent, self.style_checks),
+            (self.severe_cross_user_access, self.cross_user_access_checks),
         )
         if any(numerator > denominator for numerator, denominator in pairs):
             raise ValueError("评测命中数不能大于检查总数")

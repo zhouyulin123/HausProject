@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "bindings": [
+    {
+      "case_id": "填写已准入案例 ID",
+      "task_id": 1,
+      "system_run_id": 1
+    }
+  ]
+}

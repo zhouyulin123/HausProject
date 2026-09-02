@@ -1,37 +1,34 @@
 """阶段 4 真实案例离线回归与质量门禁入口。
 
-本模块不调用在线模型。上游执行器须先生成逐例、版本化的结果 JSON，
-这里负责校验案例覆盖、聚合确定性指标并以退出码执行质量门禁。
+本模块不调用在线模型。受控收集器从已完成的系统运行签发证据包，
+这里负责验签、校验案例覆盖、聚合确定性指标并以退出码执行质量门禁。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
+import os
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from evals.real_world import (
-    CaseResult,
-    EvaluationVersions,
+    EvaluationInputError,
     QualityThresholds,
     RealWorldDataset,
     aggregate_quality_metrics,
     evaluate_quality_gates,
     load_case_manifest,
 )
+from evals.trusted_evidence import (
+    VerifiedEvaluationEvidence,
+    verify_trusted_evidence,
+)
 
 
-class EvaluationInputError(ValueError):
-    """逐例结果与已冻结案例集不一致。"""
-
-
-@dataclass(frozen=True)
-class EvaluationEvidence:
-    versions: EvaluationVersions
-    results: tuple[CaseResult, ...]
+EvaluationEvidence = VerifiedEvaluationEvidence
 
 
 _HIGHER_IS_BETTER = (
@@ -63,71 +60,18 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _build_versions(raw: Any) -> EvaluationVersions:
-    if not isinstance(raw, dict):
-        raise EvaluationInputError("versions 必须是对象")
-    try:
-        return EvaluationVersions(
-            model=str(raw.get("model") or ""),
-            prompt=str(raw.get("prompt") or ""),
-            rules=str(raw.get("rules") or ""),
-            data=str(raw.get("data") or ""),
-        )
-    except (TypeError, ValueError) as exc:
-        raise EvaluationInputError(str(exc)) from exc
-
-
-def _build_case_result(raw: Any, index: int) -> CaseResult:
-    if not isinstance(raw, dict):
-        raise EvaluationInputError(f"第 {index + 1} 条结果必须是对象")
-    allowed = set(CaseResult.__dataclass_fields__)
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        raise EvaluationInputError(
-            f"案例 {raw.get('case_id', index)} 含未知字段：{', '.join(unknown)}"
-        )
-    try:
-        return CaseResult(**raw)
-    except (TypeError, ValueError) as exc:
-        raise EvaluationInputError(f"第 {index + 1} 条结果不合法：{exc}") from exc
-
-
 def load_case_results(
     result_path: Path | str,
     *,
     dataset: RealWorldDataset,
+    verification_keys: Mapping[str, str] | None = None,
 ) -> EvaluationEvidence:
     payload = _read_json(Path(result_path).resolve())
-    if payload.get("schema_version") != "1.0":
-        raise EvaluationInputError(
-            f"不支持的结果 schema_version：{payload.get('schema_version')}"
-        )
-    versions = _build_versions(payload.get("versions"))
-    if versions.data != dataset.dataset_version:
-        raise EvaluationInputError(
-            f"数据版本不一致：结果={versions.data}，清单={dataset.dataset_version}"
-        )
-    raw_results = payload.get("results")
-    if not isinstance(raw_results, list):
-        raise EvaluationInputError("results 必须是数组")
-    results = tuple(
-        _build_case_result(raw, index) for index, raw in enumerate(raw_results)
+    return verify_trusted_evidence(
+        payload,
+        dataset=dataset,
+        verification_keys=verification_keys or {},
     )
-    result_ids = [result.case_id for result in results]
-    if len(set(result_ids)) != len(result_ids):
-        raise EvaluationInputError("结果包含重复 case_id")
-    eligible_ids = {case.id for case in dataset.eligible_cases()}
-    result_id_set = set(result_ids)
-    problems: list[str] = []
-    missing = sorted(eligible_ids - result_id_set)
-    unknown = sorted(result_id_set - eligible_ids)
-    if missing:
-        problems.append(f"缺少案例结果：{', '.join(missing)}")
-    if unknown:
-        problems.append(f"未知案例结果：{', '.join(unknown)}")
-    if problems:
-        raise EvaluationInputError("；".join(problems))
-    return EvaluationEvidence(versions=versions, results=results)
 
 
 def build_evaluation_report(
@@ -149,22 +93,37 @@ def build_evaluation_report(
     for case in dataset.eligible_cases():
         split_counts[case.split] = split_counts.get(case.split, 0) + 1
         origin_counts[case.origin] = origin_counts.get(case.origin, 0) + 1
+    ineligible_reason_counts: dict[str, int] = {}
+    for reasons in dataset.ineligible_reasons.values():
+        for reason in reasons:
+            ineligible_reason_counts[reason] = (
+                ineligible_reason_counts.get(reason, 0) + 1
+            )
     return {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "versions": asdict(evidence.versions),
+        "evidence": {
+            "schema_version": evidence.schema_version,
+            "trust_level": "system_execution",
+            "signature_verified": evidence.signature_verified,
+            "key_id": evidence.key_id,
+            "dataset_fingerprint": evidence.dataset_fingerprint,
+            "execution_count": len(evidence.executions),
+            "case_fingerprints": sorted(
+                item.case_fingerprint for item in evidence.executions
+            ),
+        },
         "dataset": {
             "schema_version": dataset.schema_version,
             "dataset_version": dataset.dataset_version,
             "fingerprint": dataset.fingerprint,
             "case_count": len(dataset.cases),
             "eligible_case_count": len(dataset.eligible_cases()),
-            "eligible_case_ids": sorted(
-                case.id for case in dataset.eligible_cases()
-            ),
             "split_counts": split_counts,
             "origin_counts": origin_counts,
-            "ineligible_cases": dataset.ineligible_reasons,
+            "ineligible_case_count": len(dataset.ineligible_reasons),
+            "ineligible_reason_counts": ineligible_reason_counts,
         },
         "metrics": quality_report.metrics,
         "gates": [asdict(item) for item in gate_result.items],
@@ -177,23 +136,29 @@ def _report_comparison_identity(
     *,
     label: str,
 ) -> tuple[str, str, tuple[str, ...]]:
-    if report.get("schema_version") != "1.0":
+    if report.get("schema_version") != "2.0":
         raise EvaluationInputError(f"{label}报告 schema_version 不受支持")
     versions = report.get("versions")
     dataset = report.get("dataset")
-    if not isinstance(versions, dict) or not isinstance(dataset, dict):
-        raise EvaluationInputError(f"{label}报告缺少 versions 或 dataset")
+    evidence = report.get("evidence")
+    if (
+        not isinstance(versions, dict)
+        or not isinstance(dataset, dict)
+        or not isinstance(evidence, dict)
+    ):
+        raise EvaluationInputError(f"{label}报告缺少 versions、dataset 或 evidence")
+    if (
+        evidence.get("trust_level") != "system_execution"
+        or evidence.get("signature_verified") is not True
+    ):
+        raise EvaluationInputError(f"{label}报告没有通过系统执行证据验证")
     data_version = versions.get("data")
-    fingerprint = dataset.get("fingerprint")
-    case_ids = dataset.get("eligible_case_ids")
+    dataset_digest = evidence.get("dataset_fingerprint")
+    case_ids = evidence.get("case_fingerprints")
     if not isinstance(data_version, str) or not data_version.strip():
         raise EvaluationInputError(f"{label}报告缺少数据版本")
-    if (
-        not isinstance(fingerprint, str)
-        or not fingerprint.startswith("sha256:")
-        or len(fingerprint) != len("sha256:") + 64
-    ):
-        raise EvaluationInputError(f"{label}报告缺少合法数据集指纹")
+    if not isinstance(dataset_digest, str) or not dataset_digest.startswith("sha256:"):
+        raise EvaluationInputError(f"{label}报告缺少数据集指纹")
     if not isinstance(case_ids, list) or any(
         not isinstance(case_id, str) or not case_id.strip()
         for case_id in case_ids
@@ -202,7 +167,7 @@ def _report_comparison_identity(
     normalized_ids = tuple(sorted(case_id.strip() for case_id in case_ids))
     if len(set(normalized_ids)) != len(normalized_ids):
         raise EvaluationInputError(f"{label}报告的案例集合包含重复 ID")
-    return data_version.strip(), fingerprint, normalized_ids
+    return data_version.strip(), dataset_digest, normalized_ids
 
 
 def _metric_value(
@@ -224,11 +189,11 @@ def compare_evaluation_reports(
     baseline: dict[str, Any],
 ) -> dict[str, Any]:
     """只在相同数据版本和案例集合上比较候选与基线。"""
-    candidate_data, candidate_fingerprint, candidate_cases = _report_comparison_identity(
+    candidate_data, candidate_dataset, candidate_cases = _report_comparison_identity(
         candidate,
         label="候选",
     )
-    baseline_data, baseline_fingerprint, baseline_cases = _report_comparison_identity(
+    baseline_data, baseline_dataset, baseline_cases = _report_comparison_identity(
         baseline,
         label="基线",
     )
@@ -236,7 +201,7 @@ def compare_evaluation_reports(
         raise EvaluationInputError(
             f"基线与候选数据版本不一致：{baseline_data} != {candidate_data}"
         )
-    if candidate_fingerprint != baseline_fingerprint:
+    if candidate_dataset != baseline_dataset:
         raise EvaluationInputError("基线与候选数据集指纹不一致")
     if candidate_cases != baseline_cases:
         raise EvaluationInputError("基线与候选案例集合不一致")
@@ -288,7 +253,8 @@ def compare_evaluation_reports(
         "baseline_versions": baseline["versions"],
         "candidate_versions": candidate["versions"],
         "data_version": candidate_data,
-        "eligible_case_ids": list(candidate_cases),
+        "dataset_fingerprint": candidate_dataset,
+        "case_fingerprints": list(candidate_cases),
         "items": items,
     }
 
@@ -315,6 +281,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"| Prompt 版本 | {versions['prompt']} |",
         f"| 规则版本 | {versions['rules']} |",
         f"| 数据版本 | {versions['data']} |",
+        f"| 证据验证 | {'PASS' if report['evidence']['signature_verified'] else 'FAIL'} |",
+        f"| 证据格式 | {report['evidence']['schema_version']} |",
         f"| 可评测案例 | {dataset['eligible_case_count']} / {dataset['case_count']} |",
         "",
         "## 指标门禁",
@@ -348,10 +316,11 @@ def render_markdown(report: dict[str, Any]) -> str:
                 f"{_format_metric(item['delta'])} | "
                 f"{'FAIL' if item['regressed'] else 'PASS'} |"
             )
-    if dataset["ineligible_cases"]:
+    if dataset["ineligible_case_count"]:
         lines.extend(["", "## 未进入评测的案例", ""])
-        for case_id, reasons in dataset["ineligible_cases"].items():
-            lines.append(f"- `{case_id}`: {', '.join(reasons)}")
+        lines.append(f"- 未准入案例数：{dataset['ineligible_case_count']}")
+        for reason, count in sorted(dataset["ineligible_reason_counts"].items()):
+            lines.append(f"- `{reason}`: {count}")
     return "\n".join(lines) + "\n"
 
 
@@ -360,29 +329,51 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
     baseline_group = parser.add_mutually_exclusive_group()
-    baseline_group.add_argument("--baseline-report", type=Path)
+    baseline_group.add_argument(
+        "--baseline-results",
+        type=Path,
+        help="同一数据集的已签名基线证据包",
+    )
     baseline_group.add_argument(
         "--establish-baseline",
         action="store_true",
-        help="显式建立首个基线；后续候选必须使用 --baseline-report 比较",
+        help="显式建立首个可信基线；后续候选必须提供签名基线证据",
     )
     parser.add_argument("--asset-root", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        signing_key = os.getenv("EVAL_EVIDENCE_HMAC_KEY", "")
+        key_id = os.getenv("EVAL_EVIDENCE_KEY_ID", "")
+        if not signing_key or not key_id:
+            raise EvaluationInputError(
+                "缺少验签密钥：必须配置 EVAL_EVIDENCE_HMAC_KEY 和 EVAL_EVIDENCE_KEY_ID"
+            )
         dataset = load_case_manifest(args.manifest, asset_root=args.asset_root)
-        evidence = load_case_results(args.results, dataset=dataset)
+        evidence = load_case_results(
+            args.results,
+            dataset=dataset,
+            verification_keys={key_id: signing_key},
+        )
         report = build_evaluation_report(dataset=dataset, evidence=evidence)
         if dataset.eligible_cases() and (
-            args.baseline_report is None and not args.establish_baseline
+            args.baseline_results is None and not args.establish_baseline
         ):
             raise EvaluationInputError(
-                "存在准入案例时必须提供 --baseline-report，"
+                "存在准入案例时必须提供 --baseline-results，"
                 "首次建基线需显式使用 --establish-baseline"
             )
         comparison = None
-        if args.baseline_report is not None:
-            baseline_report = _read_json(args.baseline_report.resolve())
+        if args.baseline_results is not None:
+            baseline_evidence = load_case_results(
+                args.baseline_results,
+                dataset=dataset,
+                verification_keys={key_id: signing_key},
+            )
+            baseline_report = build_evaluation_report(
+                dataset=dataset,
+                evidence=baseline_evidence,
+            )
             comparison = compare_evaluation_reports(report, baseline_report)
         report["baseline_mode"] = (
             "compared"

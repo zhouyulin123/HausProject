@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import Base
 from app.db.models import DesignTask, GenerationRun, GenerationRunEvent
+from evals import collect_real_world_evidence
 from evals.real_world import EvaluationVersions, load_case_manifest
 from evals.run_real_world_eval import (
     EvaluationInputError,
@@ -114,7 +115,15 @@ def _completed_system_run(db: Session, *, generator: str = "llm") -> GenerationR
         model="model-prod-7",
         prompt_snapshot="private prompt content",
         input_snapshot={"private_requirement": "do not serialize"},
-        output_snapshot={"plans": [{"private_output": "do not serialize"}]},
+        output_snapshot={
+            "plan_count": 1,
+            "plans": [
+                {
+                    "private_output": "do not serialize",
+                    "furniture_count": 2,
+                }
+            ],
+        },
         worker_id=None,
         attempt_count=1,
         max_attempts=3,
@@ -133,7 +142,11 @@ def _completed_system_run(db: Session, *, generator: str = "llm") -> GenerationR
                 node=node,
                 status="completed",
                 progress=index * 20,
-                source="worker",
+                source={
+                    "generate_plans": "llm",
+                    "calculate_quote": "deterministic",
+                    "validate_quality": "deterministic",
+                }.get(node),
             )
         )
     db.commit()
@@ -224,6 +237,7 @@ def test_collector_rejects_non_system_execution_sources(db, tmp_path, generator)
 def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_path):
     dataset = _two_case_dataset(tmp_path)
     run = _completed_system_run(db)
+    second_run = _completed_system_run(db)
     versions = EvaluationVersions(
         model="model-prod-7",
         prompt="prompt-12",
@@ -235,7 +249,10 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
         collect_trusted_evidence(
             db,
             dataset=dataset,
-            bindings=(RunBinding("private-a", run.task_id + 1, run.id),),
+            bindings=(
+                RunBinding("private-a", run.task_id + 1, run.id),
+                RunBinding("private-b", second_run.task_id, second_run.id),
+            ),
             versions=versions,
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
@@ -247,7 +264,10 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
         collect_trusted_evidence(
             db,
             dataset=dataset,
-            bindings=(RunBinding("private-a", run.task_id, run.id),),
+            bindings=(
+                RunBinding("private-a", run.task_id, run.id),
+                RunBinding("private-b", second_run.task_id, second_run.id),
+            ),
             versions=versions,
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
@@ -391,7 +411,74 @@ def test_verified_report_contains_only_anonymous_execution_provenance(db, tmp_pa
     assert report["evidence"]["trust_level"] == "system_execution"
     assert report["evidence"]["execution_count"] == 1
     assert report["evidence"]["dataset_fingerprint"] == dataset_fingerprint(dataset)
+    assert report["metrics"]["severe_cross_user_access"] is None
+    assert report["metrics"]["unbounded_retry_cases"] is None
+    assert report["gate_passed"] is False
     assert "private-case-alias" not in serialized
     assert "不应进入报告的客户别名" not in serialized
     assert "private prompt content" not in serialized
     assert "private_output" not in serialized
+
+
+def test_collector_and_evaluator_cli_use_the_same_fail_closed_contract(
+    db,
+    tmp_path,
+    monkeypatch,
+):
+    _dataset(tmp_path)
+    run = _completed_system_run(db)
+    bindings_path = tmp_path / "run-bindings.json"
+    bindings_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "bindings": [
+                    {
+                        "case_id": "private-case-alias",
+                        "task_id": run.task_id,
+                        "system_run_id": run.id,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    evidence_path = tmp_path / "trusted-evidence.json"
+    monkeypatch.setenv("EVAL_EVIDENCE_HMAC_KEY", SIGNING_KEY)
+    monkeypatch.setenv("EVAL_EVIDENCE_KEY_ID", "quality-ci-1")
+    monkeypatch.setattr(collect_real_world_evidence, "SessionLocal", lambda: db)
+
+    collect_exit = collect_real_world_evidence.main(
+        [
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--run-bindings",
+            str(bindings_path),
+            "--prompt-version",
+            "prompt-12",
+            "--rules-version",
+            "rules-8",
+            "--output",
+            str(evidence_path),
+        ]
+    )
+    report_dir = tmp_path / "cli-report"
+    eval_exit = run_eval_main(
+        [
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--results",
+            str(evidence_path),
+            "--output-dir",
+            str(report_dir),
+        ]
+    )
+
+    assert collect_exit == 0
+    assert eval_exit == 1
+    report = json.loads(
+        (report_dir / "real_world_eval.json").read_text(encoding="utf-8")
+    )
+    assert report["evidence"]["signature_verified"] is True
+    assert report["evidence"]["execution_count"] == 1
+    assert report["gate_passed"] is False

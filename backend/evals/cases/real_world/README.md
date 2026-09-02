@@ -26,9 +26,20 @@
 
 加载清单时会流式计算资产 SHA-256。同一内容即使复制成不同文件名、改用不同 `case_id`，也会被识别为重复物理案例并拒绝整个清单，防止开发集或回归集样例泄漏到盲测集。
 
-## 结果格式
+## 可信证据格式
 
-执行器以 `results.template.json` 为起点，为每个已准入案例写入一条结果。计数字段必须来自确定性检查或人工标签，LLM Judge 结果不能替代 SKU、报价、权限、低置信确认和空间硬约束证据。
+不能手写逐例 `CaseResult`。先让正式 Generation Worker 实际执行每个已准入案例，
+再以 `run-bindings.template.json` 记录内部案例 ID、任务 ID 和运行 ID。收集器只接受：
+
+- 状态为 `completed` 且 task/run 归属一致的运行；
+- `generator=llm`，不接受 template 降级、demo、mock、manual、test 或 synthetic；
+- 存在完整的模型、Prompt、输入、输出快照和四个 Worker 节点；
+- `generate_plans` 来自 LLM，报价与质量校验来自确定性节点；
+- 同一证据包内每个已准入案例恰好一个运行，同一 run 不得跨案例复用。
+
+收集器不会接收 CaseResult。当前可从运行事实确定性推导生成成功、有效 SKU 和报价一致性；需求、空间、布局和人工满意度在接入可追溯标注执行器前保持无证据，因此质量门禁会失败，不会用模拟值或手工值补齐。
+
+证据包 2.0 使用独立 HMAC 密钥签名，绑定数据集内容指纹、匿名案例指纹、task/run ID、模型/Prompt/规则/数据版本，以及输入、输出和结果摘要。文件不包含案例 ID、资产路径、Prompt、输入或模型输出原文。签名密钥必须只配置在受控 Worker/CI，不应写入仓库、命令行或开发者共享环境。
 
 跨用户访问和重试边界不能依靠默认零值证明安全。每个逐例结果必须分别填写实际执行的 `cross_user_access_checks` 和 `retry_bound_checks`；检查次数为 0 时，对应安全门禁输出 `NO EVIDENCE` 并失败。若记录了严重跨用户问题或无限重试，却没有对应检查证据，输入会被直接拒绝。
 
@@ -36,10 +47,20 @@
 
 ```powershell
 $env:PYTHONPATH = "backend"
+$env:EVAL_EVIDENCE_KEY_ID = "quality-ci-2026-09"
+$env:EVAL_EVIDENCE_HMAC_KEY = "从密钥管理服务注入的至少32字节随机密钥"
+python -m evals.collect_real_world_evidence `
+  --manifest backend/evals/cases/real_world/manifest.json `
+  --asset-root . `
+  --run-bindings backend/evals/cases/real_world/run-bindings.json `
+  --prompt-version prompt-2026-09-02 `
+  --rules-version rules-2026-09-02 `
+  --output backend/evals/reports/evidence/real_world_eval.evidence.json
+
 python -m evals.run_real_world_eval `
   --manifest backend/evals/cases/real_world/manifest.json `
   --asset-root . `
-  --results backend/evals/cases/real_world/results.template.json `
+  --results backend/evals/reports/evidence/real_world_eval.evidence.json `
   --establish-baseline `
   --output-dir backend/evals/reports/real_world
 ```
@@ -52,16 +73,16 @@ python -m evals.run_real_world_eval `
 python -m evals.run_real_world_eval `
   --manifest backend/evals/cases/real_world/manifest.json `
   --asset-root . `
-  --results backend/evals/cases/real_world/results.template.json `
-  --baseline-report backend/evals/reports/baseline/real_world_eval.json `
+  --results backend/evals/reports/evidence/real_world_eval.evidence.json `
+  --baseline-results backend/evals/reports/evidence/baseline.evidence.json `
   --output-dir backend/evals/reports/candidate
 ```
 
 基线和候选的数据版本或准入案例 ID 不一致时拒绝比较。即使候选仍达到绝对门禁，只要比例指标下降、跨用户访问或无限重试计数增加，版本回归也会失败。
 
-报告还会根据准入案例的资产 SHA-256、标签版本、来源和分组生成 `dataset.fingerprint`。基线与候选即使沿用相同数据版本和案例 ID，只要实际资产、标签或分组发生变化，也会拒绝伪装成同一案例集比较。
+报告和签名证据会绑定准入案例的资产 SHA-256、标签版本、来源和分组。基线与候选即使沿用相同数据版本，只要实际资产、标签或分组发生变化，也会拒绝伪装成同一案例集比较。
 
-退出码：`0` 表示全部门禁通过，`1` 表示证据完整但质量未达标，`2` 表示清单或结果输入不合法。当前模板没有准入案例，因此预期退出码为 `1`，不能在 CI 中当作成功。
+评测退出码：`0` 表示全部门禁通过，`1` 表示可信证据完整但质量未达标，`2` 表示清单、证据、签名或密钥不合法。证据收集器成功返回 `0`，任何运行来源、覆盖或签名配置问题返回 `2`。当前清单没有准入案例，因此尚不能签发真实验收证据，也不能在 CI 中当作成功。
 
 ## 人工标注最小内容
 
