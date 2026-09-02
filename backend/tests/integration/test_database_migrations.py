@@ -223,7 +223,12 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             column["name"]
             for column in inspect(inspection_engine).get_columns("uploaded_images")
         }
-        assert "content_digest" in uploaded_image_columns
+        assert {
+            "content_digest",
+            "original_prediction_json",
+            "original_prediction_source",
+            "original_prediction_digest",
+        } <= uploaded_image_columns
         evaluation_binding_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns(
@@ -243,6 +248,8 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "data_digest",
             "input_digest",
             "provenance_schema_version",
+            "prediction_snapshot_json",
+            "prediction_digest",
             "created_at",
         } <= evaluation_binding_columns
         rendered_image_columns = {
