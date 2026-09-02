@@ -17,6 +17,7 @@ import QuickActions from "./QuickActions";
 import LoadingAI from "./LoadingAI";
 import Button from "@/components/common/Button";
 import type { AgentPendingQuestion } from "@/types/agent";
+import { agentTurnSceneContext } from "@/lib/sceneEditingPolicy";
 
 interface ChatPanelProps {
   projectId?: number;
@@ -103,8 +104,7 @@ export default function ChatPanel({
           message: trimmed,
           active_mode: activeMode,
           active_room_id: activeRoomId,
-          scene_id: sceneId,
-          base_scene_version: baseSceneVersion,
+          ...agentTurnSceneContext(sceneId, baseSceneVersion),
         });
         reply = response.reply;
         onAgentResponse?.(response);

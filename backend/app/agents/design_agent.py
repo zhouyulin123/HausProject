@@ -166,6 +166,10 @@ _QUESTION_BEFORE_ACTION = re.compile(
 _SAFE_MOVABLE_OBJECT = re.compile(
     r"沙发|家具|桌(?:子)?|椅(?:子)?|床(?:铺)?|柜(?:子|体)?|灯(?:具)?|窗帘|地毯|家电"
 )
+_SCENE_EDIT_ACTION = re.compile(
+    r"移动|挪动|平移|旋转|转向|删除|移除|拿掉|添加|新增|增加|摆放|放到|放在|替换|换成|"
+    r"调整(?=[^，。；！？,;!?]{0,10}(?:位置|摆放|方向|角度|布局))"
+)
 _LOCATION_THEN_SAFE_OBJECT = re.compile(
     rf"(?:旁边|旁|边上|附近|前面|后面|一侧|侧面|边)"
     rf"[^，。；！？,;!?]{{0,4}}(?:{_SAFE_MOVABLE_OBJECT.pattern})"
@@ -223,6 +227,25 @@ _CONSTRUCTION_RISK_RULES: tuple[
         _GENERAL_MODIFICATION_ACTION,
     ),
 )
+
+
+def classify_scene_edit_intent(message: str) -> bool:
+    """仅以明确的家具动作与可移动对象组合识别场景编辑。"""
+    for raw_clause in _CONSTRUCTION_CLAUSE_SPLIT.split(message):
+        clause = raw_clause.strip()
+        if not clause or not _SAFE_MOVABLE_OBJECT.search(clause):
+            continue
+        actions = list(_SCENE_EDIT_ACTION.finditer(clause))
+        for action in actions:
+            prefix = clause[: action.start()]
+            if _NEGATION_AT_CLAUSE_START.search(clause):
+                continue
+            if _NEGATION_BEFORE_ACTION.search(prefix):
+                continue
+            return True
+    return False
+
+
 _ALL_CONSTRUCTION_ACTIONS = re.compile(
     "|".join(
         f"(?:{action.pattern})"

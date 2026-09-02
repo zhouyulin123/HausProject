@@ -205,6 +205,44 @@ describe("3D 场景 API", () => {
     );
   });
 
+  it("首次场景恢复失败后允许重新发起恢复请求", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const unavailable = new Response(JSON.stringify({ detail: "暂时不可用" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    });
+    const restored = {
+      id: 9,
+      plan_version_id: 7,
+      current_version: 1,
+      scene,
+      validation: { valid: true, errors: [], warnings: [] },
+      source: "auto_layout" as const,
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(unavailable)
+      .mockResolvedValueOnce(jsonResponse(restored));
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { loadOrCreateDesignScene } = await import("./designApi");
+
+    await expect(loadOrCreateDesignScene(7, scene)).rejects.toMatchObject({
+      status: 503,
+    });
+    await expect(loadOrCreateDesignScene(7, scene)).resolves.toEqual(restored);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/design/plan-versions/7/scene",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+  });
+
   it("提交自然语言场景命令并返回新的场景版本", async () => {
     const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
     const storage = createLocalStorage({

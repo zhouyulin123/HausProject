@@ -36,6 +36,10 @@ interface DesignProjectState {
     targetFurnitureId: string,
   ) => boolean;
   setRoomModel: (projectId: number, roomModel: RoomModel | null) => void;
+  setSceneReference: (
+    projectId: number,
+    sceneRef: AgentSceneReference | null,
+  ) => void;
   attachPlan: (
     projectId: number,
     plan?: { id: string; planVersionId?: number },
@@ -142,6 +146,27 @@ export const useDesignProjectStore = create<DesignProjectState>()(
             roomModel: roomModel ? structuredClone(roomModel) : null,
           })),
         ),
+      setSceneReference: (projectId, sceneRef) =>
+        set((state) =>
+          updateProject(state, projectId, (project) => {
+            const current = project.sceneRef;
+            if (
+              current
+              && sceneRef
+              && current.scene_id === sceneRef.scene_id
+              && current.version > sceneRef.version
+            ) {
+              return project;
+            }
+            if (
+              current?.scene_id === sceneRef?.scene_id
+              && current?.version === sceneRef?.version
+            ) {
+              return project;
+            }
+            return { ...project, sceneRef };
+          }),
+        ),
       attachPlan: (projectId, plan) =>
         set((state) =>
           updateProject(state, projectId, (project) => ({
@@ -160,7 +185,13 @@ export const useDesignProjectStore = create<DesignProjectState>()(
             mode: checkpoint.activeMode,
             stateVersion: checkpoint.stateVersion,
             pendingQuestions: checkpoint.pendingQuestions,
-            sceneRef: checkpoint.sceneRef,
+            sceneRef:
+              project.sceneRef
+              && checkpoint.sceneRef
+              && project.sceneRef.scene_id === checkpoint.sceneRef.scene_id
+              && project.sceneRef.version > checkpoint.sceneRef.version
+                ? project.sceneRef
+                : checkpoint.sceneRef ?? project.sceneRef,
             exitReason: checkpoint.exitReason,
             activeRoomId:
               checkpoint.activeRoomId === undefined

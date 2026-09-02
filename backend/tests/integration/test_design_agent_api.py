@@ -588,9 +588,18 @@ def test_agent_scene_edit_rejects_stale_base_version(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    ("active_mode", "client_turn_id"),
+    [
+        ("catalog_design", "missing-scene-context-catalog-001"),
+        ("room_reconstruction", "missing-scene-context-room-001"),
+    ],
+)
 def test_explicit_scene_edit_without_scene_reference_never_runs_design(
     agent_api_context,
     monkeypatch,
+    active_mode,
+    client_turn_id,
 ):
     client, _, owner_id, _, task_id = agent_api_context
     design_calls: list[str] = []
@@ -604,9 +613,9 @@ def test_explicit_scene_edit_without_scene_reference_never_runs_design(
         f"/api/design/tasks/{task_id}/agent-turns",
         headers={"X-Session-ID": owner_id},
         json={
-            "client_turn_id": "missing-scene-context-001",
+            "client_turn_id": client_turn_id,
             "message": "把当前场景里的沙发向左移动 30 厘米",
-            "active_mode": "catalog_design",
+            "active_mode": active_mode,
         },
     )
 

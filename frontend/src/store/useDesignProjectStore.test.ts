@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { emptyRequirement } from "@/types/requirement";
 import { useDesignProjectStore } from "./useDesignProjectStore";
+import { agentTurnSceneContext } from "@/lib/sceneEditingPolicy";
 
 describe("useDesignProjectStore", () => {
   beforeEach(() => {
@@ -124,10 +125,15 @@ describe("useDesignProjectStore", () => {
       exitReason: "goal_completed",
     });
 
-    expect(useDesignProjectStore.getState().projects[42]?.sceneRef).toEqual({
+    const latestReference = useDesignProjectStore.getState().projects[42]?.sceneRef;
+    expect(latestReference).toEqual({
       scene_id: 9,
       version: 2,
     });
+    expect(agentTurnSceneContext(
+      latestReference?.scene_id,
+      latestReference?.version,
+    )).toEqual({ scene_id: 9, base_scene_version: 2 });
   });
 
   it("从 checkpoint 恢复自定义家具规格、预览与审批状态", () => {

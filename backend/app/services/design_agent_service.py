@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.design_agent import (
     AgentToolRejected,
+    classify_scene_edit_intent,
     DesignAgentToolRegistry,
     DesignAgentWorkflow,
 )
@@ -70,6 +71,11 @@ def _utc_now() -> datetime:
 
 def _intent_for(payload: AgentTurnRequest) -> str:
     if payload.scene_id is not None:
+        return "scene_edit"
+    if (
+        payload.active_mode in {"catalog_design", "room_reconstruction"}
+        and classify_scene_edit_intent(payload.message)
+    ):
         return "scene_edit"
     if payload.active_mode != "catalog_design":
         return payload.active_mode

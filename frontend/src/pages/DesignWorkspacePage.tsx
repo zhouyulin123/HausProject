@@ -54,6 +54,7 @@ export default function DesignWorkspacePage() {
   const setMessages = useDesignProjectStore((state) => state.setMessages);
   const applyAgentState = useDesignProjectStore((state) => state.applyAgentState);
   const attachPlan = useDesignProjectStore((state) => state.attachPlan);
+  const setSceneReference = useDesignProjectStore((state) => state.setSceneReference);
   const generatedPlans = useDesignStore((state) => state.generatedPlans);
   const setGeneratedPlans = useDesignStore((state) => state.setGeneratedPlans);
   const [catalog, setCatalog] = useState<FurnitureItem[]>([]);
@@ -252,6 +253,19 @@ export default function DesignWorkspacePage() {
     if (event) feedback.submit(event, "GLB 加载失败");
   }, [feedback.submit, projectId]);
 
+  const handleSceneReferenceChange = useCallback((reference: {
+    id: number;
+    version: number;
+  } | null) => {
+    if (!projectId) return;
+    setSceneReference(
+      projectId,
+      reference
+        ? { scene_id: reference.id, version: reference.version }
+        : null,
+    );
+  }, [projectId, setSceneReference]);
+
   if (!project || !plan || !entry) {
     return (
       <div className="flex min-h-[70vh] items-center justify-center bg-[#111713] px-5 text-center text-[#e5e8e1]">
@@ -269,7 +283,7 @@ export default function DesignWorkspacePage() {
 
   const roomType = project.requirement.rooms[0] ?? project.roomModel?.spaceType ?? "客厅";
   const activeRoomId = project.activeRoomId ?? project.roomModel?.rooms[0]?.id ?? null;
-  const sceneKey = `${plan.planVersionId ?? plan.id}-${project.selectedFurnitureIds.join("-")}-${activeRoomId ?? "no-room"}-${project.sceneRef?.version ?? 0}`;
+  const sceneKey = `${plan.planVersionId ?? plan.id}-${project.selectedFurnitureIds.join("-")}-${activeRoomId ?? "no-room"}`;
   const connectionLabel = {
     checking: "正在连接智能体",
     connected: "智能体已连接",
@@ -399,6 +413,7 @@ export default function DesignWorkspacePage() {
                 roomModel={project.roomModel}
                 onMovePersisted={reportPersistedMove}
                 onGlbLoadFailed={reportGlbLoadFailure}
+                onSceneReferenceChange={handleSceneReferenceChange}
               />
             )}
           </main>

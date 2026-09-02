@@ -23,6 +23,11 @@ import {
   type SceneHistory,
 } from "@/lib/sceneHistory";
 import type { DesignPlan } from "@/types/design";
+import {
+  isSceneEditingBlocked,
+  type SceneReference,
+  type SceneSyncState,
+} from "@/lib/sceneEditingPolicy";
 import type { RoomModel } from "@/types/roomModel";
 import type {
   BlenderRenderJob,
@@ -36,14 +41,6 @@ const KEYBOARD_NUDGE_METERS = 0.1;
 const ROTATION_STEP_RADIANS = Math.PI / 12;
 
 export type TransformMode = "translate" | "rotate";
-export type SceneSyncState =
-  | "loading"
-  | "demo"
-  | "saved"
-  | "dirty"
-  | "saving"
-  | "conflict"
-  | "offline";
 export type SceneAgentState = "idle" | "thinking" | "done" | "blocked" | "error";
 
 interface UseSceneEditorResult {
@@ -57,7 +54,8 @@ interface UseSceneEditorResult {
   blenderRenderJob: BlenderRenderJob | null;
   blenderRenderMessage: string;
   blenderRenderPending: boolean;
-  sceneReference: { id: number; version: number } | null;
+  sceneReference: SceneReference | null;
+  editingBlocked: boolean;
   selectItem: (instanceId: string | null) => void;
   setTransformMode: (mode: TransformMode) => void;
   commitTransform: (
@@ -83,6 +81,7 @@ export function useSceneEditor(
     sceneVersion: number;
     instanceId: string;
   }) => void,
+  onSceneReferenceChange?: (reference: SceneReference | null) => void,
 ): UseSceneEditorResult {
   const initialScene = useMemo(
     () => buildSceneDocument(plan, roomType, roomModel),
@@ -106,6 +105,7 @@ export function useSceneEditor(
     useState<BlenderRenderJob | null>(null);
   const [blenderRenderMessage, setBlenderRenderMessage] = useState("");
   const [blenderRenderPending, setBlenderRenderPending] = useState(false);
+  const [sceneReference, setSceneReference] = useState<SceneReference | null>(null);
 
   const sceneIdRef = useRef<number | null>(null);
   const serverVersionRef = useRef<number | null>(null);
@@ -118,10 +118,22 @@ export function useSceneEditor(
   const savePromiseRef = useRef<Promise<void> | null>(null);
   const pendingMoveChangeIdsRef = useRef(new Map<string, number>());
   const onMovePersistedRef = useRef(onMovePersisted);
+  const onSceneReferenceChangeRef = useRef(onSceneReferenceChange);
 
   useEffect(() => {
     onMovePersistedRef.current = onMovePersisted;
   }, [onMovePersisted]);
+
+  useEffect(() => {
+    onSceneReferenceChangeRef.current = onSceneReferenceChange;
+  }, [onSceneReferenceChange]);
+
+  const publishSceneReference = useCallback((reference: SceneReference | null) => {
+    sceneIdRef.current = reference?.id ?? null;
+    serverVersionRef.current = reference?.version ?? null;
+    setSceneReference(reference);
+    onSceneReferenceChangeRef.current?.(reference);
+  }, []);
 
   useEffect(() => {
     historyRef.current = history;
@@ -134,8 +146,7 @@ export function useSceneEditor(
   useEffect(() => {
     let cancelled = false;
     setSelectedItemId(null);
-    sceneIdRef.current = null;
-    serverVersionRef.current = null;
+    publishSceneReference(null);
     lastSavedChangeIdRef.current = 0;
     pendingMoveChangeIdsRef.current.clear();
     setValidation(null);
@@ -157,8 +168,7 @@ export function useSceneEditor(
     void loadOrCreateDesignScene(plan.planVersionId, initialScene)
       .then((loaded) => {
         if (cancelled) return;
-        sceneIdRef.current = loaded.id;
-        serverVersionRef.current = loaded.current_version;
+        publishSceneReference({ id: loaded.id, version: loaded.current_version });
         lastSavedChangeIdRef.current = 0;
         setValidation(loaded.validation);
         setHistory((current) => replaceScene(current, loaded.scene));
@@ -167,13 +177,14 @@ export function useSceneEditor(
       .catch((error) => {
         if (cancelled) return;
         console.warn("[SceneEditor] 场景恢复失败，进入本地预览", error);
+        syncStateRef.current = "offline";
         setSyncState("offline");
       });
 
     return () => {
       cancelled = true;
     };
-  }, [initialScene, plan.planVersionId]);
+  }, [initialScene, plan.planVersionId, publishSceneReference]);
 
   const flushSave = useCallback(async (): Promise<void> => {
     if (savePromiseRef.current) {
@@ -205,7 +216,7 @@ export function useSceneEditor(
           baseVersion,
           currentHistory.present,
         );
-        serverVersionRef.current = saved.current_version;
+        publishSceneReference({ id: saved.id, version: saved.current_version });
         lastSavedChangeIdRef.current = savingChangeId;
         for (const instanceId of persistedMoveCandidates) {
           const latestChangeId = pendingMoveChangeIdsRef.current.get(instanceId);
@@ -243,7 +254,7 @@ export function useSceneEditor(
     if (shouldFlushAgain) {
       await flushSave();
     }
-  }, []);
+  }, [publishSceneReference]);
 
   useEffect(() => {
     if (
@@ -264,7 +275,8 @@ export function useSceneEditor(
     (instanceId: string, transform: SceneTransform, trackMove = false) => {
       if (
         sceneAgentStateRef.current === "thinking" ||
-        blenderRenderInFlightRef.current
+        blenderRenderInFlightRef.current ||
+        (Boolean(plan.planVersionId) && !sceneIdRef.current)
       ) {
         return;
       }
@@ -292,7 +304,7 @@ export function useSceneEditor(
         return next;
       });
     },
-    [],
+    [plan.planVersionId],
   );
 
   const nudgeSelected = useCallback(
@@ -354,20 +366,24 @@ export function useSceneEditor(
 
   const reload = useCallback(async () => {
     const sceneId = sceneIdRef.current;
-    if (!sceneId) return;
+    if (!sceneId && !plan.planVersionId) return;
+    syncStateRef.current = "loading";
     setSyncState("loading");
     try {
-      const loaded = await fetchDesignScene(sceneId);
-      serverVersionRef.current = loaded.current_version;
+      const loaded = sceneId
+        ? await fetchDesignScene(sceneId)
+        : await loadOrCreateDesignScene(plan.planVersionId!, initialScene);
+      publishSceneReference({ id: loaded.id, version: loaded.current_version });
       lastSavedChangeIdRef.current = 0;
       setValidation(loaded.validation);
       setHistory((current) => replaceScene(current, loaded.scene));
       setSyncState("saved");
     } catch (error) {
       console.warn("[SceneEditor] 场景重新载入失败", error);
+      syncStateRef.current = "offline";
       setSyncState("offline");
     }
-  }, []);
+  }, [initialScene, plan.planVersionId, publishSceneReference]);
 
   const runSceneAgent = useCallback(
     async (instruction: string) => {
@@ -407,7 +423,10 @@ export function useSceneEditor(
           setSceneAgentMessage("AI 执行期间场景发生了本地修改，请恢复最新版本后重试");
           return;
         }
-        serverVersionRef.current = result.scene.current_version;
+        publishSceneReference({
+          id: result.scene.id,
+          version: result.scene.current_version,
+        });
         lastSavedChangeIdRef.current = 0;
         setValidation(result.scene.validation);
         setSelectedItemId(null);
@@ -436,7 +455,7 @@ export function useSceneEditor(
         sceneAgentStateRef.current = "idle";
       }
     },
-    [flushSave],
+    [flushSave, publishSceneReference],
   );
 
   useEffect(() => {
@@ -551,10 +570,8 @@ export function useSceneEditor(
     blenderRenderJob,
     blenderRenderMessage,
     blenderRenderPending,
-    sceneReference:
-      sceneIdRef.current && serverVersionRef.current
-        ? { id: sceneIdRef.current, version: serverVersionRef.current }
-        : null,
+    sceneReference,
+    editingBlocked: isSceneEditingBlocked({ syncState, sceneReference }),
     selectItem: setSelectedItemId,
     setTransformMode,
     commitTransform,

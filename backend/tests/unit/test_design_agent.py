@@ -67,6 +67,25 @@ def test_high_risk_construction_classifier_respects_negation_scope(message):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("把当前场景里的沙发向左移动 30 厘米", True),
+        ("删除茶几，增加一把椅子", True),
+        ("调整餐桌的摆放位置", True),
+        ("不要移动沙发，只换整体设计风格", False),
+        ("帮我选一套适合客厅的沙发", False),
+        ("调整家具配色", False),
+    ],
+)
+def test_scene_edit_classifier_requires_positive_action_and_movable_object(
+    message,
+    expected,
+):
+    assert design_agent_module.classify_scene_edit_intent(message) is expected
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("conjunction", ["但是", "但"])
 def test_high_risk_construction_classifier_only_negates_its_own_clause(conjunction):
     assert design_agent_module.classify_high_risk_construction_intent(

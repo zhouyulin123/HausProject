@@ -48,6 +48,10 @@ import type { TransformMode } from "@/hooks/useSceneEditor";
 import type { DesignPlan } from "@/types/design";
 import type { RoomModel } from "@/types/roomModel";
 import type { SceneItem, SceneTransform } from "@/types/scene";
+import {
+  sceneSyncPresentation,
+  type SceneReference,
+} from "@/lib/sceneEditingPolicy";
 import { RoomCameraControls, RoomShell3D } from "./RoomShell3D";
 
 interface FurnitureBoxProps {
@@ -59,6 +63,7 @@ interface FurnitureBoxProps {
   onCommit: (transform: SceneTransform) => void;
   asset: ProductAssetState;
   onModelLoadFailure: () => void;
+  editable: boolean;
 }
 
 function FurnitureBox({
@@ -70,6 +75,7 @@ function FurnitureBox({
   onCommit,
   asset,
   onModelLoadFailure,
+  editable,
 }: FurnitureBoxProps) {
   const groupRef = useRef<Group>(null);
   const [hovered, setHovered] = useState(false);
@@ -168,7 +174,7 @@ function FurnitureBox({
     </group>
   );
 
-  if (!selected) return furniture;
+  if (!selected || !editable) return furniture;
 
   return (
     <TransformControls
@@ -223,10 +229,12 @@ function SyncBadge({
   state,
   warningCount,
   onReload,
+  sceneReference,
 }: {
   state: ReturnType<typeof useSceneEditor>["syncState"];
   warningCount: number;
   onReload: () => void;
+  sceneReference: SceneReference | null;
 }) {
   const content = {
     loading: {
@@ -266,12 +274,15 @@ function SyncBadge({
     },
   }[state];
   const Icon = content.icon;
-  const actionable = state === "conflict";
+  const presentation = sceneSyncPresentation({
+    syncState: state,
+    sceneReference,
+  });
 
   return (
     <button
       type="button"
-      disabled={!actionable}
+      disabled={!presentation.retryable}
       onClick={onReload}
       className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium shadow-sm backdrop-blur ${content.classes} disabled:cursor-default`}
     >
@@ -280,7 +291,7 @@ function SyncBadge({
           state === "loading" || state === "saving" ? "animate-spin" : ""
         }`}
       />
-      {content.label}
+      {presentation.label}
       {warningCount > 0 && (
         <span className="rounded-full bg-amber-200/70 px-1.5 text-[10px]">
           {warningCount} 条提醒
@@ -296,6 +307,7 @@ export default function RoomView3D({
   roomModel,
   onMovePersisted,
   onGlbLoadFailed,
+  onSceneReferenceChange,
 }: {
   plan: DesignPlan;
   roomType: string;
@@ -312,8 +324,15 @@ export default function RoomView3D({
     instanceId: string;
     sku: string;
   }) => void;
+  onSceneReferenceChange?: (reference: SceneReference | null) => void;
 }) {
-  const editor = useSceneEditor(plan, roomType, roomModel, onMovePersisted);
+  const editor = useSceneEditor(
+    plan,
+    roomType,
+    roomModel,
+    onMovePersisted,
+    onSceneReferenceChange,
+  );
   const [agentInstruction, setAgentInstruction] = useState("");
   const [runtimeAssetOverrides, setRuntimeAssetOverrides] = useState<
     Record<string, ProductAssetPresentation>
@@ -604,6 +623,7 @@ export default function RoomView3D({
             }
             asset={itemAssets[item.instanceId]}
             onModelLoadFailure={() => handleModelLoadFailure(item.instanceId)}
+            editable={!editor.editingBlocked}
           />
         ))}
         <RoomCameraControls scene={scene} preset={cameraPreset} />
@@ -614,6 +634,7 @@ export default function RoomView3D({
           state={editor.syncState}
           warningCount={editor.validation?.warnings.length ?? 0}
           onReload={() => void editor.reload()}
+          sceneReference={editor.sceneReference}
         />
       </div>
 
@@ -621,6 +642,7 @@ export default function RoomView3D({
         <ToolButton
           label="移动家具"
           active={editor.transformMode === "translate"}
+          disabled={editor.editingBlocked}
           onClick={() => editor.setTransformMode("translate")}
         >
           <Move3D className="h-4 w-4" />
@@ -629,6 +651,7 @@ export default function RoomView3D({
         <ToolButton
           label="旋转家具"
           active={editor.transformMode === "rotate"}
+          disabled={editor.editingBlocked}
           onClick={() => editor.setTransformMode("rotate")}
         >
           <Rotate3D className="h-4 w-4" />
@@ -637,14 +660,14 @@ export default function RoomView3D({
         <span className="mx-0.5 h-5 w-px bg-stone-200" />
         <ToolButton
           label="撤销（Ctrl+Z）"
-          disabled={!editor.history.canUndo}
+          disabled={editor.editingBlocked || !editor.history.canUndo}
           onClick={editor.undo}
         >
           <Undo2 className="h-4 w-4" />
         </ToolButton>
         <ToolButton
           label="重做（Ctrl+Y）"
-          disabled={!editor.history.canRedo}
+          disabled={editor.editingBlocked || !editor.history.canRedo}
           onClick={editor.redo}
         >
           <Redo2 className="h-4 w-4" />
@@ -730,6 +753,7 @@ export default function RoomView3D({
             <span />
             <ToolButton
               label="向后移动 10 厘米"
+              disabled={editor.editingBlocked}
               onClick={() => editor.nudgeSelected(0, -1)}
             >
               <ArrowUp className="h-4 w-4" />
@@ -737,18 +761,21 @@ export default function RoomView3D({
             <span />
             <ToolButton
               label="向左移动 10 厘米"
+              disabled={editor.editingBlocked}
               onClick={() => editor.nudgeSelected(-1, 0)}
             >
               <ArrowLeft className="h-4 w-4" />
             </ToolButton>
             <ToolButton
               label="顺时针旋转 15 度"
+              disabled={editor.editingBlocked}
               onClick={() => editor.rotateSelected()}
             >
               <Rotate3D className="h-4 w-4" />
             </ToolButton>
             <ToolButton
               label="向右移动 10 厘米"
+              disabled={editor.editingBlocked}
               onClick={() => editor.nudgeSelected(1, 0)}
             >
               <ArrowRight className="h-4 w-4" />
@@ -756,6 +783,7 @@ export default function RoomView3D({
             <span />
             <ToolButton
               label="向前移动 10 厘米"
+              disabled={editor.editingBlocked}
               onClick={() => editor.nudgeSelected(0, 1)}
             >
               <ArrowDown className="h-4 w-4" />
