@@ -8,6 +8,7 @@ from app.db.database import Base
 from app.db.models import (
     DesignAgentEvent,
     DesignAgentTurn,
+    DesignFeedbackEvent,
     DesignPlanVersion,
     DesignRevision,
     DesignTask,
@@ -186,3 +187,72 @@ def test_quality_summary_returns_none_rates_without_evidence(db):
     assert summary["generation"]["fallback_rate"] is None
     assert summary["agent"]["handoff_rate"] is None
     assert summary["layout"]["hard_pass_rate"] is None
+    assert summary["feedback"] == {
+        "total": 0,
+        "action_counts": {
+            "adopt": 0,
+            "remove": 0,
+            "replace": 0,
+            "move": 0,
+            "final_select": 0,
+        },
+        "modification_total": 0,
+        "modification_rate": None,
+        "final_select_total": 0,
+        "satisfaction_count": 0,
+        "satisfaction_mean": None,
+    }
+
+
+def test_quality_summary_aggregates_anonymous_feedback_with_window_filter(db):
+    now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    task = DesignTask(status="completed", progress=100)
+    db.add(task)
+    db.flush()
+    events = [
+        ("adopt", None, now - timedelta(days=1)),
+        ("remove", None, now - timedelta(days=2)),
+        ("replace", None, now - timedelta(days=3)),
+        ("move", None, now - timedelta(days=4)),
+        ("final_select", 5, now - timedelta(days=5)),
+        ("final_select", 3, now - timedelta(days=6)),
+        ("replace", 1, now - timedelta(days=31)),
+    ]
+    for index, (action_type, satisfaction_score, created_at) in enumerate(events):
+        db.add(
+            DesignFeedbackEvent(
+                task_id=task.id,
+                client_event_id=f"private-event-{index}",
+                action_type=action_type,
+                payload_hash=f"private-hash-{index}",
+                room_id="private-room-id",
+                instance_id="private-instance-id",
+                source_sku="PRIVATE-SOURCE-SKU",
+                target_sku="PRIVATE-TARGET-SKU",
+                satisfaction_score=satisfaction_score,
+                created_at=created_at,
+            )
+        )
+    db.commit()
+
+    summary = build_quality_summary(db, now=now, window_days=30)
+
+    assert summary["feedback"] == {
+        "total": 6,
+        "action_counts": {
+            "adopt": 1,
+            "remove": 1,
+            "replace": 1,
+            "move": 1,
+            "final_select": 2,
+        },
+        "modification_total": 3,
+        "modification_rate": 0.5,
+        "final_select_total": 2,
+        "satisfaction_count": 2,
+        "satisfaction_mean": 4.0,
+    }
+    serialized = str(summary)
+    assert "private-event" not in serialized
+    assert "private-room" not in serialized
+    assert "PRIVATE-SOURCE-SKU" not in serialized

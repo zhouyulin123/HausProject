@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -5,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
 from app.db.database import Base, get_db
-from app.db.models import User
+from app.db.models import DesignFeedbackEvent, DesignTask, User
 from app.main import app
 from app.services import auth_service
 
@@ -32,6 +34,22 @@ def test_quality_summary_requires_admin_and_validates_window():
         customer = _build_user(user_id=1001, role=auth_service.ROLE_CUSTOMER)
         admin = _build_user(user_id=1002, role=auth_service.ROLE_ADMIN)
         db.add_all([customer, admin])
+        task = DesignTask(status="completed", progress=100)
+        db.add(task)
+        db.flush()
+        db.add(
+            DesignFeedbackEvent(
+                task_id=task.id,
+                client_event_id="private-feedback-api-001",
+                action_type="replace",
+                payload_hash="private-payload-hash",
+                room_id="private-room-api",
+                instance_id="private-instance-api",
+                source_sku="PRIVATE-OLD-SKU",
+                target_sku="PRIVATE-NEW-SKU",
+                created_at=datetime.now(timezone.utc),
+            )
+        )
         db.commit()
         customer_token = auth_service.issue_token(customer)
         admin_token = auth_service.issue_token(admin)
@@ -59,8 +77,26 @@ def test_quality_summary_requires_admin_and_validates_window():
             assert body["generation"]["total"] == 0
             assert body["agent"]["turn_total"] == 0
             assert body["layout"]["total"] == 0
+            assert body["feedback"] == {
+                "total": 1,
+                "action_counts": {
+                    "adopt": 0,
+                    "remove": 0,
+                    "replace": 1,
+                    "move": 0,
+                    "final_select": 0,
+                },
+                "modification_total": 1,
+                "modification_rate": 1.0,
+                "final_select_total": 0,
+                "satisfaction_count": 0,
+                "satisfaction_mean": None,
+            }
             assert "message" not in str(body).lower()
             assert "phone" not in str(body).lower()
+            assert "private-feedback" not in str(body)
+            assert "private-room" not in str(body)
+            assert "PRIVATE-OLD-SKU" not in str(body)
 
             assert client.get(
                 "/api/admin/quality/summary",
