@@ -8,13 +8,33 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
 from app.api.routes import tasks as task_routes
-from app.db.models import DesignResult, DesignRevision, DesignTask
+from app.db.models import (
+    DesignResult,
+    DesignRevision,
+    DesignScene,
+    DesignTask,
+    GenerationRunSceneEvidence,
+    Product,
+)
 from app.core.request_context import current_request_id
 from app.services import design_version_service, generation_run_service, llm_service
 from app.workers import generation_worker
 
 
 def _persist_worker_output(db, task, *, generator: str):
+    if db.scalar(select(Product).where(Product.sku == "SOFA-001")) is None:
+        db.add(
+            Product(
+                sku="SOFA-001",
+                name="测试沙发",
+                category="沙发",
+                room="客厅",
+                style="现代",
+                price=1000,
+                is_active=True,
+            )
+        )
+        db.flush()
     return design_version_service.persist_generation(
         db,
         task=task,
@@ -84,6 +104,8 @@ def test_worker_claims_and_completes_one_generation(monkeypatch):
         assert completed.status == "completed"
         assert completed.result_revision_id is not None
         assert completed.output_digest.startswith("sha256:")
+        assert db.scalar(select(DesignScene.id)) is not None
+        assert db.scalar(select(GenerationRunSceneEvidence.id)) is not None
         assert completed.attempt_count == 1
         assert completed.execution_deadline_at is not None
         assert (

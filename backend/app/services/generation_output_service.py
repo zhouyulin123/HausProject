@@ -12,10 +12,18 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.models import DesignPlanVersion, DesignRevision, GenerationRun
+from app.db.models import (
+    DesignPlanVersion,
+    DesignRevision,
+    DesignScene,
+    DesignSceneVersion,
+    GenerationRun,
+    GenerationRunSceneEvidence,
+)
+from app.schemas.scenes import SceneDocument
 
 
-OUTPUT_SCHEMA_VERSION = 1
+OUTPUT_SCHEMA_VERSION = 2
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UNORDERED_LIST_FIELDS = {
     "customLineItems",
@@ -77,9 +85,13 @@ def _load_revision(db: Session, revision_id: int) -> DesignRevision:
         .options(
             selectinload(DesignRevision.plans).selectinload(
                 DesignPlanVersion.quote_snapshot
-            )
+            ),
+            selectinload(DesignRevision.plans)
+            .selectinload(DesignPlanVersion.scene)
+            .selectinload(DesignScene.versions),
         )
         .where(DesignRevision.id == revision_id)
+        .execution_options(populate_existing=True)
     ).one_or_none()
     if revision is None:
         raise GenerationOutputValidationError("生成输出 revision 不存在")
@@ -88,21 +100,127 @@ def _load_revision(db: Session, revision_id: int) -> DesignRevision:
     return revision
 
 
-def revision_output_payload(
+def _canonical_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return f"sha256:{sha256(encoded).hexdigest()}"
+
+
+def _normalized_scene(
+    scene_version: DesignSceneVersion,
+    *,
+    plan_key: str,
+) -> tuple[dict[str, Any], str]:
+    try:
+        document = SceneDocument.model_validate(scene_version.scene_json)
+    except ValueError as exc:
+        raise GenerationOutputValidationError(
+            f"方案 {plan_key} 的冻结场景不符合 SceneDocument 契约"
+        ) from exc
+    normalized = _normalized_json(
+        document.model_dump(by_alias=True, mode="json"),
+        path=f"plans.{plan_key}.scene",
+    )
+    return normalized, _canonical_digest(normalized)
+
+
+def _current_scene_records(
+    revision: DesignRevision,
+) -> dict[int, tuple[DesignScene, DesignSceneVersion, dict[str, Any], str]]:
+    records: dict[
+        int,
+        tuple[DesignScene, DesignSceneVersion, dict[str, Any], str],
+    ] = {}
+    for plan in revision.plans:
+        scene = plan.scene
+        if scene is None:
+            raise GenerationOutputValidationError(
+                f"方案 {plan.plan_key} 缺少冻结场景"
+            )
+        matches = [
+            version
+            for version in scene.versions
+            if version.version == scene.current_version
+        ]
+        if len(matches) != 1:
+            raise GenerationOutputValidationError(
+                f"方案 {plan.plan_key} 的场景当前版本引用不一致"
+            )
+        version = matches[0]
+        document, digest = _normalized_scene(version, plan_key=plan.plan_key)
+        records[plan.id] = (scene, version, document, digest)
+    return records
+
+
+def _bound_scene_records(
     db: Session,
     *,
-    revision_id: int,
+    run: GenerationRun,
+    revision: DesignRevision,
+) -> dict[int, tuple[DesignScene, DesignSceneVersion, dict[str, Any], str]]:
+    evidence_rows = db.scalars(
+        select(GenerationRunSceneEvidence)
+        .where(GenerationRunSceneEvidence.generation_run_id == run.id)
+        .order_by(GenerationRunSceneEvidence.plan_version_id)
+    ).all()
+    plans = {plan.id: plan for plan in revision.plans}
+    if len(evidence_rows) != len(plans):
+        raise GenerationOutputValidationError("生成运行的逐方案场景证据不完整")
+    records: dict[
+        int,
+        tuple[DesignScene, DesignSceneVersion, dict[str, Any], str],
+    ] = {}
+    for evidence in evidence_rows:
+        plan = plans.get(evidence.plan_version_id)
+        if plan is None or evidence.plan_version_id in records:
+            raise GenerationOutputValidationError("生成运行的场景证据方案引用不一致")
+        scene = db.get(DesignScene, evidence.scene_id)
+        version = db.get(DesignSceneVersion, evidence.scene_version_id)
+        if (
+            scene is None
+            or version is None
+            or scene.plan_version_id != plan.id
+            or version.scene_id != scene.id
+            or version.version != evidence.scene_version
+        ):
+            raise GenerationOutputValidationError(
+                f"方案 {plan.plan_key} 的冻结场景版本引用不一致"
+            )
+        document, digest = _normalized_scene(version, plan_key=plan.plan_key)
+        if not hmac.compare_digest(evidence.scene_digest, digest):
+            raise GenerationOutputValidationError(
+                f"方案 {plan.plan_key} 的冻结场景摘要不一致"
+            )
+        records[plan.id] = (scene, version, document, digest)
+    return records
+
+
+def _revision_output_payload(
+    revision: DesignRevision,
+    *,
+    scene_records: dict[
+        int,
+        tuple[DesignScene, DesignSceneVersion, dict[str, Any], str],
+    ],
 ) -> dict[str, Any]:
-    """读取仅由不可变版本表组成的规范化业务输出。"""
-    revision = _load_revision(db, revision_id)
     plans: list[dict[str, Any]] = []
-    # 关系按持久化 ID 排序；该顺序就是用户看到的推荐顺序，属于输出语义。
     for plan in revision.plans:
         quote = plan.quote_snapshot
         if quote is None:
             raise GenerationOutputValidationError(
                 f"方案 {plan.plan_key} 缺少不可变报价快照"
             )
+        scene_record = scene_records.get(plan.id)
+        if scene_record is None:
+            raise GenerationOutputValidationError(
+                f"方案 {plan.plan_key} 缺少冻结场景证据"
+            )
+        _, scene_version, scene_document, scene_digest = scene_record
         plans.append(
             {
                 "plan_key": plan.plan_key,
@@ -130,6 +248,11 @@ def revision_output_payload(
                         sort_list=True,
                     ),
                 },
+                "scene": {
+                    "version": scene_version.version,
+                    "content_digest": scene_digest,
+                    "document": scene_document,
+                },
             }
         )
     return {
@@ -154,16 +277,22 @@ def revision_output_payload(
     }
 
 
+def revision_output_payload(
+    db: Session,
+    *,
+    revision_id: int,
+) -> dict[str, Any]:
+    """读取仅由不可变版本表组成的规范化业务输出。"""
+    revision = _load_revision(db, revision_id)
+    return _revision_output_payload(
+        revision,
+        scene_records=_current_scene_records(revision),
+    )
+
+
 def revision_output_digest(db: Session, *, revision_id: int) -> str:
     payload = revision_output_payload(db, revision_id=revision_id)
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return f"sha256:{sha256(encoded).hexdigest()}"
+    return _canonical_digest(payload)
 
 
 def bind_run_output(
@@ -186,7 +315,29 @@ def bind_run_output(
     )
     if other_run_id is not None:
         raise GenerationOutputValidationError("生成输出 revision 已绑定其他运行")
-    digest = revision_output_digest(db, revision_id=revision_id)
+    existing_evidence = db.scalar(
+        select(GenerationRunSceneEvidence.id).where(
+            GenerationRunSceneEvidence.generation_run_id == run.id
+        )
+    )
+    if existing_evidence is not None:
+        raise GenerationOutputValidationError("生成运行已经绑定场景证据")
+    scene_records = _current_scene_records(revision)
+    payload = _revision_output_payload(revision, scene_records=scene_records)
+    digest = _canonical_digest(payload)
+    for plan in revision.plans:
+        scene, version, _, scene_digest = scene_records[plan.id]
+        db.add(
+            GenerationRunSceneEvidence(
+                generation_run_id=run.id,
+                plan_version_id=plan.id,
+                scene_id=scene.id,
+                scene_version_id=version.id,
+                scene_version=version.version,
+                scene_digest=scene_digest,
+            )
+        )
+    db.flush()
     run.result_revision_id = revision_id
     run.output_digest = digest
     return digest
@@ -206,8 +357,11 @@ def validated_run_output(
         raise GenerationOutputValidationError("生成输出 revision 不属于运行任务")
     if revision.generator != run.generator:
         raise GenerationOutputValidationError("生成输出来源与运行来源不一致")
-    payload = revision_output_payload(db, revision_id=revision.id)
-    actual_digest = revision_output_digest(db, revision_id=revision.id)
+    payload = _revision_output_payload(
+        revision,
+        scene_records=_bound_scene_records(db, run=run, revision=revision),
+    )
+    actual_digest = _canonical_digest(payload)
     if not hmac.compare_digest(run.output_digest, actual_digest):
         raise GenerationOutputValidationError("生成运行的输出摘要不一致")
     return payload

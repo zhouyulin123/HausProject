@@ -338,6 +338,7 @@ def _clear_output(run: GenerationRun) -> None:
     run.result_revision_id = None
     run.output_digest = None
     run.output_snapshot = None
+    run.scene_evidence.clear()
 
 
 def _as_utc(value: datetime) -> datetime:

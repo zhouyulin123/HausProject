@@ -232,6 +232,23 @@ def test_output_digest_ignores_unordered_items_but_binds_plan_order_and_content(
     assert changed_digest != first_digest
 
 
+def test_output_digest_binds_normalized_scene_document(db):
+    first_task = _task(db)
+    second_task = _task(db)
+    first = _revision(db, first_task, plans=[_plans()[0]])
+    second = _revision(db, second_task, plans=[_plans()[0]])
+    _add_scenes(db, first, x=0)
+    _add_scenes(db, second, x=1)
+
+    assert generation_output_service.revision_output_digest(
+        db,
+        revision_id=first.id,
+    ) != generation_output_service.revision_output_digest(
+        db,
+        revision_id=second.id,
+    )
+
+
 def test_completed_run_requires_revision_owned_by_the_same_task(db):
     task = _task(db)
     other_task = _task(db)
@@ -414,6 +431,43 @@ def test_bound_output_rejects_tampered_frozen_scene_content(db):
     with pytest.raises(
         generation_output_service.GenerationOutputValidationError,
         match="场景摘要不一致",
+    ):
+        generation_output_service.validated_run_output(db, run=run)
+
+
+def test_bound_output_rejects_scene_reference_from_another_task(db):
+    task = _task(db)
+    run = generation_run_service.create_run(db, task=task)
+    generation_run_service.claim_next_run(
+        db,
+        worker_id="worker-output-foreign-scene",
+        lease_seconds=60,
+    )
+    revision = _revision(db, task, plans=[_plans()[0]])
+    _add_scenes(db, revision)
+    assert generation_run_service.mark_completed(
+        db,
+        run_id=run.id,
+        worker_id="worker-output-foreign-scene",
+        worker_attempt=1,
+        generator="llm",
+        result_revision_id=revision.id,
+    )
+
+    other_task = _task(db)
+    other_revision = _revision(db, other_task, plans=[_plans()[0]])
+    other_scene, other_version = _add_scenes(db, other_revision)["plan-a"]
+    evidence = db.query(GenerationRunSceneEvidence).filter_by(
+        generation_run_id=run.id
+    ).one()
+    evidence.scene_id = other_scene.id
+    evidence.scene_version_id = other_version.id
+    evidence.scene_version = other_version.version
+    db.commit()
+
+    with pytest.raises(
+        generation_output_service.GenerationOutputValidationError,
+        match="场景版本引用不一致",
     ):
         generation_output_service.validated_run_output(db, run=run)
 

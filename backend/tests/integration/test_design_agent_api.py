@@ -29,6 +29,7 @@ from app.services.anonymous_session_service import (
     create_anonymous_session,
 )
 from app.services import design_version_service, generation_run_service
+from tests.scene_fixtures import attach_scene_versions
 
 
 @pytest.fixture
@@ -553,6 +554,7 @@ def test_agent_state_refresh_reconciles_bound_worker_completion(agent_api_contex
                 }
             ],
         )
+        attach_scene_versions(db, revision)
         assert generation_run_service.mark_completed(
             db,
             run=run,

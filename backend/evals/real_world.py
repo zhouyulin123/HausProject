@@ -387,6 +387,7 @@ class CaseResult:
     budget_within_limit: int = 0
     layout_checks: int = 0
     layout_hard_passes: int = 0
+    layout_no_evidence: int = 0
     style_checks: int = 0
     style_consistent: int = 0
     human_rating_count: int = 0
@@ -421,6 +422,7 @@ class CaseResult:
             self.budget_within_limit,
             self.layout_checks,
             self.layout_hard_passes,
+            self.layout_no_evidence,
             self.style_checks,
             self.style_consistent,
             self.human_rating_count,
@@ -512,6 +514,7 @@ def aggregate_quality_metrics(
         "budget_checks": sum(r.budget_checks for r in results),
         "layout_hard_passes": sum(r.layout_hard_passes for r in results),
         "layout_checks": sum(r.layout_checks for r in results),
+        "layout_no_evidence": sum(r.layout_no_evidence for r in results),
         "style_consistent": sum(r.style_consistent for r in results),
         "style_checks": sum(r.style_checks for r in results),
         "human_rating_sum": sum(r.human_rating_sum for r in results),
@@ -550,6 +553,7 @@ def aggregate_quality_metrics(
         "layout_hard_constraint_pass_rate": _rate(
             totals["layout_hard_passes"], totals["layout_checks"]
         ),
+        "layout_no_evidence_count": totals["layout_no_evidence"],
         "style_consistency_rate": _rate(
             totals["style_consistent"], totals["style_checks"]
         ),

@@ -20,6 +20,7 @@ from evals.trusted_evidence import (
     verify_trusted_evidence,
 )
 from tests.real_world_fixtures import write_v2_manifest
+from tests.scene_fixtures import attach_scene_versions
 
 
 SIGNING_KEY = "split-test-signing-key-that-is-longer-than-32-bytes"
@@ -126,6 +127,7 @@ def _finish_success(db: Session, run, task: DesignTask) -> None:
             }
         ],
     )
+    attach_scene_versions(db, revision)
     for node, source in (
         ("prepare_context", None),
         ("generate_plans", "llm"),

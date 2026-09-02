@@ -879,6 +879,64 @@ class GenerationRun(Base):
         order_by="GenerationRunEvent.id",
     )
     result_revision = relationship("DesignRevision")
+    scene_evidence = relationship(
+        "GenerationRunSceneEvidence",
+        back_populates="generation_run",
+        cascade="all, delete-orphan",
+        order_by="GenerationRunSceneEvidence.plan_version_id",
+    )
+
+
+class GenerationRunSceneEvidence(Base):
+    """生成运行逐方案冻结的 3D 场景版本引用与内容摘要。"""
+
+    __tablename__ = "generation_run_scene_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "generation_run_id",
+            "plan_version_id",
+            name="uq_generation_run_scene_plan",
+        ),
+        UniqueConstraint(
+            "generation_run_id",
+            "scene_id",
+            name="uq_generation_run_scene",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    generation_run_id = Column(
+        Integer,
+        ForeignKey("generation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    plan_version_id = Column(
+        Integer,
+        ForeignKey("design_plan_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    scene_id = Column(
+        Integer,
+        ForeignKey("design_scenes.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    scene_version_id = Column(
+        Integer,
+        ForeignKey("design_scene_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    scene_version = Column(Integer, nullable=False)
+    scene_digest = Column(String(71), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    generation_run = relationship(
+        "GenerationRun",
+        back_populates="scene_evidence",
+    )
 
 
 class EvaluationRunBinding(Base):

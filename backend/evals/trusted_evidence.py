@@ -38,6 +38,8 @@ from evals.annotations import (
     ExecutionReview,
     load_execution_review,
 )
+from evals.layout_constraints import evaluate_layout_constraint
+from app.schemas.scenes import SceneDocument
 from evals.real_world import (
     CaseResult,
     EvaluationInputError,
@@ -566,10 +568,8 @@ def _runtime_result(
     layout_passes = 0
     style_consistent = 0
     allowed_skus = set(case.annotation.allowed_skus)
-    expected_constraints = {
-        constraint.constraint_id
-        for constraint in case.annotation.layout_hard_constraints
-    }
+    expected_constraints = case.annotation.layout_hard_constraints
+    layout_no_evidence = 0
     for record in plans:
         if not isinstance(record, dict) or not isinstance(record.get("plan"), dict):
             raise EvaluationInputError(f"系统运行 {run.id} 包含不合法的方案版本")
@@ -597,8 +597,28 @@ def _runtime_result(
                 <= case.annotation.budget.maximum
             ):
                 budget_within_limit += 1
-        # 当前不可变方案没有可复算的空间几何；忽略模型自报的通过标记。
-        # 约束仍进入分母，直到确定性布局产物纳入同一输出摘要。
+        scene_record = record.get("scene")
+        document = (
+            scene_record.get("document")
+            if isinstance(scene_record, dict)
+            else None
+        )
+        if not isinstance(document, dict):
+            raise EvaluationInputError(
+                f"系统运行 {run.id} 的方案缺少冻结 SceneDocument"
+            )
+        try:
+            scene = SceneDocument.model_validate(document)
+        except ValueError as exc:
+            raise EvaluationInputError(
+                f"系统运行 {run.id} 的冻结 SceneDocument 不合法"
+            ) from exc
+        for constraint in expected_constraints:
+            evidence = evaluate_layout_constraint(scene, constraint)
+            if evidence.status == "passed":
+                layout_passes += 1
+            if evidence.status == "no_evidence":
+                layout_no_evidence += 1
         if record.get("style") in set(case.annotation.style_tags):
             style_consistent += 1
 
@@ -621,8 +641,11 @@ def _runtime_result(
         quote_consistent=quote_consistent,
         budget_checks=len(plans),
         budget_within_limit=budget_within_limit,
-        layout_checks=len(expected_constraints) * len(plans),
+        layout_checks=(
+            len(expected_constraints) * len(plans) - layout_no_evidence
+        ),
         layout_hard_passes=layout_passes,
+        layout_no_evidence=layout_no_evidence,
         style_checks=len(plans),
         style_consistent=style_consistent,
         human_rating_count=1 if review else 0,

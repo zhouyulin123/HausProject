@@ -155,6 +155,12 @@ def process_one_run(
 
             def persist_success(generator: str, result_revision_id: int):
                 nonlocal finalized
+                from app.services import generation_scene_service
+
+                generation_scene_service.prepare_revision_scenes(
+                    db,
+                    revision_id=result_revision_id,
+                )
                 finalized = generation_run_service.mark_completed(
                     db,
                     run_id=claimed_run_id,
@@ -280,17 +286,29 @@ def process_one_run(
                     response = selected_executor(db, **executor_kwargs)
             if finalized:
                 db.commit()
-            elif not generation_run_service.mark_completed(
-                db,
-                run_id=claimed_run_id,
-                worker_id=worker_id,
-                worker_attempt=worker_attempt,
-                generator=response.generator,
-                result_revision_id=getattr(response, "result_revision_id", None),
-            ):
-                raise generation_run_service.GenerationRunOwnershipError(
-                    "方案生成结果提交前已失去租约"
+            else:
+                result_revision_id = getattr(response, "result_revision_id", None)
+                if result_revision_id is None:
+                    raise generation_output_service.GenerationOutputValidationError(
+                        "方案生成成功响应缺少 revision"
+                    )
+                from app.services import generation_scene_service
+
+                generation_scene_service.prepare_revision_scenes(
+                    db,
+                    revision_id=result_revision_id,
                 )
+                if not generation_run_service.mark_completed(
+                    db,
+                    run_id=claimed_run_id,
+                    worker_id=worker_id,
+                    worker_attempt=worker_attempt,
+                    generator=response.generator,
+                    result_revision_id=result_revision_id,
+                ):
+                    raise generation_run_service.GenerationRunOwnershipError(
+                        "方案生成结果提交前已失去租约"
+                    )
         logger.info("方案生成完成: run_id=%s", claimed_run_id)
     except generation_output_service.GenerationOutputValidationError as exc:
         logger.error(

@@ -35,6 +35,7 @@ from evals.trusted_evidence import (
     verify_trusted_evidence,
 )
 from tests.real_world_fixtures import write_v2_manifest
+from tests.scene_fixtures import attach_scene_versions
 
 
 SIGNING_KEY = "eval-test-signing-key-that-is-at-least-32-bytes"
@@ -196,6 +197,7 @@ def _completed_system_run(
             }
         ],
     )
+    attach_scene_versions(db, revision)
     now = datetime.now(timezone.utc)
     run.output_snapshot = {
         "plan_count": 1,

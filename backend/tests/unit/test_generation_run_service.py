@@ -14,10 +14,11 @@ from app.db.models import (
     LayoutRun,
 )
 from app.services import design_version_service, generation_run_service
+from tests.scene_fixtures import attach_scene_versions
 
 
 def _persist_run_output(db, task, *, generator: str = "llm"):
-    return design_version_service.persist_generation(
+    revision = design_version_service.persist_generation(
         db,
         task=task,
         generator=generator,
@@ -38,6 +39,8 @@ def _persist_run_output(db, task, *, generator: str = "llm"):
             }
         ],
     )
+    attach_scene_versions(db, revision)
+    return revision
 
 
 @pytest.fixture
