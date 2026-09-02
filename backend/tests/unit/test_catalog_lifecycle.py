@@ -182,6 +182,25 @@ def test_alternative_does_not_claim_dimensions_fit_without_size_constraint(db):
     assert "dimensions_known" in alternative["reason_codes"]
 
 
+def test_alternatives_require_enough_stock_for_requested_quantity(db):
+    source = _product("SOFA-OLD", stock_quantity=1)
+    insufficient = _product("SOFA-LOW", stock_quantity=2)
+    sufficient = _product("SOFA-ENOUGH", stock_quantity=3)
+    db.add_all([source, insufficient, sufficient])
+    db.commit()
+
+    alternatives = find_product_alternatives(
+        db,
+        source,
+        at=NOW,
+        region="CN-SH",
+        required_quantity=3,
+    )
+
+    assert [item["sku"] for item in alternatives] == ["SOFA-ENOUGH"]
+    assert "stock_sufficient" in alternatives[0]["reason_codes"]
+
+
 def test_enrichment_replaces_unavailable_sku_and_records_versioned_quote(db):
     unavailable = _product(
         "SOFA-OLD",
@@ -212,6 +231,79 @@ def test_enrichment_replaces_unavailable_sku_and_records_versioned_quote(db):
     assert quote["lineItems"][0]["unitPrice"] == 4800
     assert quote["catalogVersion"]
     assert quote["priceVersion"]
+
+
+def test_enrichment_replaces_product_with_insufficient_requested_stock(db):
+    source = _product(
+        "SOFA-LOW",
+        stock_quantity=1,
+        alternative_skus=["SOFA-ENOUGH"],
+    )
+    replacement = _product("SOFA-ENOUGH", stock_quantity=3, price=4800)
+    db.add_all([source, replacement])
+    db.commit()
+    plans = [{
+        "id": "plan-a",
+        "furnitureSuggestions": [{"sku": "SOFA-LOW", "quantity": 3}],
+        "customItems": [],
+    }]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
+
+    item = plans[0]["furnitureSuggestions"][0]
+    assert item["sku"] == "SOFA-ENOUGH"
+    assert item["replacedSku"] == "SOFA-LOW"
+    assert "stock_sufficient" in item["replacementReasonCodes"]
+    assert plans[0]["catalogValidation"]["hardErrors"] == []
+    assert plans[0]["shopQuote"]["furnitureTotal"] == 14400
+
+
+def test_enrichment_blocks_when_source_and_alternatives_have_insufficient_stock(db):
+    source = _product(
+        "SOFA-LOW",
+        stock_quantity=1,
+        alternative_skus=["SOFA-STILL-LOW"],
+    )
+    insufficient = _product("SOFA-STILL-LOW", stock_quantity=2)
+    db.add_all([source, insufficient])
+    db.commit()
+    plans = [{
+        "id": "plan-a",
+        "furnitureSuggestions": [{"sku": "SOFA-LOW", "quantity": 3}],
+        "customItems": [],
+    }]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
+
+    validation = plans[0]["catalogValidation"]
+    assert validation["quoteStatus"] == "blocked"
+    assert "insufficient_stock" in validation["hardErrors"]
+    assert validation["rejected"][0]["sku"] == "SOFA-LOW"
+    assert "insufficient_stock" in validation["rejected"][0]["reason_codes"]
+    assert "shopQuote" not in plans[0]
+
+
+@pytest.mark.parametrize("invalid_quantity", [None, 0, -2, "not-a-number"])
+def test_enrichment_normalizes_invalid_quantity_before_stock_gate(
+    db,
+    invalid_quantity,
+):
+    db.add(_product("SOFA-ONE", stock_quantity=1))
+    db.commit()
+    plans = [{
+        "id": "plan-a",
+        "furnitureSuggestions": [{
+            "sku": "SOFA-ONE",
+            "quantity": invalid_quantity,
+        }],
+        "customItems": [],
+    }]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
+
+    assert plans[0]["catalogValidation"]["hardErrors"] == []
+    assert plans[0]["furnitureSuggestions"][0]["quantity"] == 1
+    assert plans[0]["shopQuote"]["lineItems"][0]["quantity"] == 1
 
 
 def test_enrichment_replaces_item_to_fit_remaining_total_budget(db):
