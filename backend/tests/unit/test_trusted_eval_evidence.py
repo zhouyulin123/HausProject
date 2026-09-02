@@ -7,8 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.database import Base
-from app.db.models import DesignTask, GenerationRun, GenerationRunEvent
-from app.services import generation_run_service
+from app.db.models import DesignTask, GenerationRun, GenerationRunEvent, UploadedImage
 from app.services.generation_provenance import canonical_digest
 from evals import collect_real_world_evidence
 from evals.real_world import load_case_manifest
@@ -20,6 +19,7 @@ from evals.run_real_world_eval import (
 )
 from evals.trusted_evidence import (
     RunBinding,
+    bind_evaluation_run,
     collect_trusted_evidence,
     dataset_fingerprint,
     evaluation_run_idempotency_key,
@@ -27,6 +27,17 @@ from evals.trusted_evidence import (
 
 
 SIGNING_KEY = "eval-test-signing-key-that-is-at-least-32-bytes"
+
+
+def _task_input() -> dict:
+    return {
+        "raw_user_input": "需要现代客厅",
+        "confirmed_requirement": {"style": "现代"},
+        "space_type": "客厅",
+        "style": "现代",
+        "budget_min": 10000,
+        "budget_max": 20000,
+    }
 
 
 @pytest.fixture
@@ -59,6 +70,7 @@ def _dataset(tmp_path: Path):
                         "label_version": "labels-3",
                         "allowed_purposes": ["offline_evaluation"],
                         "failure_tags": [],
+                        "task_input": _task_input(),
                     }
                 ],
             },
@@ -87,6 +99,7 @@ def _two_case_dataset(tmp_path: Path):
                 "label_version": "labels-3",
                 "allowed_purposes": ["offline_evaluation"],
                 "failure_tags": [],
+                "task_input": _task_input(),
             }
         )
     manifest.write_text(
@@ -106,44 +119,71 @@ def _two_case_dataset(tmp_path: Path):
 def _completed_system_run(
     db: Session,
     *,
+    dataset,
+    case_id: str,
     generator: str = "llm",
-    idempotency_key: str | None = None,
 ) -> GenerationRun:
-    task = DesignTask(status="completed", progress=100)
+    case = next(item for item in dataset.cases if item.id == case_id)
+    task = DesignTask(
+        status="confirmed",
+        progress=50,
+        raw_user_input="需要现代客厅",
+        confirmed_requirement_json={"style": "现代"},
+        space_type="客厅",
+        style="现代",
+        budget_min=10000,
+        budget_max=20000,
+    )
     db.add(task)
     db.flush()
-    now = datetime.now(timezone.utc)
-    run = GenerationRun(
-        task_id=task.id,
-        attempt=1,
-        status="completed",
-        progress=100,
-        current_node="completed",
-        generator=generator,
-        model="model-prod-7",
-        prompt_snapshot="private prompt content",
-        prompt_digest=canonical_digest("private prompt content"),
-        rules_digest="sha256:" + "2" * 64,
-        data_digest="sha256:" + "3" * 64,
-        input_snapshot={"private_requirement": "do not serialize"},
-        output_snapshot={
-            "plan_count": 1,
-            "plans": [
-                {
-                    "private_output": "do not serialize",
-                    "furniture_count": 2,
-                }
-            ],
-        },
-        worker_id=None,
-        attempt_count=1,
-        max_attempts=3,
-        idempotency_key=idempotency_key,
-        started_at=now,
-        completed_at=now,
+    db.add(
+        UploadedImage(
+            task_id=task.id,
+            file_url="/uploads/eval-room.png",
+            content_digest=f"sha256:{case.asset_sha256}",
+        )
     )
-    db.add(run)
-    db.flush()
+    db.commit()
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        case_id=case_id,
+        task=task,
+    )
+    now = datetime.now(timezone.utc)
+    prompt_snapshot = "private static prompt contract"
+    input_snapshot = {
+        "schema_version": 2,
+        "private_requirement": "do not serialize",
+        "case_execution": case_id,
+    }
+    run.status = "completed"
+    run.progress = 100
+    run.current_node = "completed"
+    run.generator = generator
+    run.model = "model-prod-7"
+    run.prompt_snapshot = prompt_snapshot
+    run.prompt_digest = canonical_digest(prompt_snapshot)
+    run.rules_digest = "sha256:" + "2" * 64
+    run.data_digest = "sha256:" + "3" * 64
+    run.input_snapshot = input_snapshot
+    run.input_digest = canonical_digest(input_snapshot)
+    run.provenance_schema_version = 2
+    run.output_snapshot = {
+        "plan_count": 1,
+        "plans": [
+            {
+                "private_output": "do not serialize",
+                "furniture_count": 2,
+            }
+        ],
+    }
+    run.worker_id = None
+    run.attempt_count = 1
+    run.started_at = now
+    run.completed_at = now
+    task.status = "completed"
+    task.progress = 100
     for index, node in enumerate(
         ("prepare_context", "generate_plans", "calculate_quote", "validate_quality"),
         start=1,
@@ -187,9 +227,8 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
     dataset = _dataset(tmp_path)
     run = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(
-            dataset, "private-case-alias"
-        ),
+        dataset=dataset,
+        case_id="private-case-alias",
     )
 
     bundle = collect_trusted_evidence(
@@ -235,10 +274,9 @@ def test_collector_rejects_non_system_execution_sources(db, tmp_path, generator)
     dataset = _dataset(tmp_path)
     run = _completed_system_run(
         db,
+        dataset=dataset,
+        case_id="private-case-alias",
         generator=generator,
-        idempotency_key=evaluation_run_idempotency_key(
-            dataset, "private-case-alias"
-        ),
     )
 
     with pytest.raises(EvaluationInputError, match="不可信的执行来源"):
@@ -255,11 +293,13 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
     dataset = _two_case_dataset(tmp_path)
     run = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(dataset, "private-a"),
+        dataset=dataset,
+        case_id="private-a",
     )
     second_run = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(dataset, "private-b"),
+        dataset=dataset,
+        case_id="private-b",
     )
     with pytest.raises(EvaluationInputError, match="不属于任务"):
         collect_trusted_evidence(
@@ -309,11 +349,13 @@ def test_run_is_bound_to_dataset_case_before_execution_and_cannot_be_swapped(
     dataset = _two_case_dataset(tmp_path)
     run_a = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(dataset, "private-a"),
+        dataset=dataset,
+        case_id="private-a",
     )
     run_b = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(dataset, "private-b"),
+        dataset=dataset,
+        case_id="private-b",
     )
 
     with pytest.raises(EvaluationInputError, match="执行前绑定"):
@@ -332,11 +374,11 @@ def test_run_is_bound_to_dataset_case_before_execution_and_cannot_be_swapped(
 def test_eval_idempotency_key_is_persisted_and_does_not_expose_case_id(db, tmp_path):
     dataset = _dataset(tmp_path)
     key = evaluation_run_idempotency_key(dataset, "private-case-alias")
-    task = DesignTask(status="confirmed", progress=50)
-    db.add(task)
-    db.commit()
-
-    run = generation_run_service.create_run(db, task=task, idempotency_key=key)
+    run = _completed_system_run(
+        db,
+        dataset=dataset,
+        case_id="private-case-alias",
+    )
 
     assert run.idempotency_key == key
     assert key.startswith("eval-v1:")
@@ -347,11 +389,13 @@ def test_collector_rejects_historical_missing_or_mixed_runtime_versions(db, tmp_
     dataset = _two_case_dataset(tmp_path)
     run_a = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(dataset, "private-a"),
+        dataset=dataset,
+        case_id="private-a",
     )
     run_b = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(dataset, "private-b"),
+        dataset=dataset,
+        case_id="private-b",
     )
     bindings = (
         RunBinding("private-a", run_a.task_id, run_a.id),
@@ -413,9 +457,8 @@ def test_loader_rejects_tampered_signed_result(db, tmp_path):
     dataset = _dataset(tmp_path)
     run = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(
-            dataset, "private-case-alias"
-        ),
+        dataset=dataset,
+        case_id="private-case-alias",
     )
     bundle = collect_trusted_evidence(
         db,
@@ -443,9 +486,8 @@ def test_loader_and_cli_fail_closed_without_verification_key(
     dataset = _dataset(tmp_path)
     run = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(
-            dataset, "private-case-alias"
-        ),
+        dataset=dataset,
+        case_id="private-case-alias",
     )
     bundle = collect_trusted_evidence(
         db,
@@ -479,9 +521,8 @@ def test_verified_report_contains_only_anonymous_execution_provenance(db, tmp_pa
     dataset = _dataset(tmp_path)
     run = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(
-            dataset, "private-case-alias"
-        ),
+        dataset=dataset,
+        case_id="private-case-alias",
     )
     bundle = collect_trusted_evidence(
         db,
@@ -518,9 +559,8 @@ def test_collector_and_evaluator_cli_use_the_same_fail_closed_contract(
     dataset = _dataset(tmp_path)
     run = _completed_system_run(
         db,
-        idempotency_key=evaluation_run_idempotency_key(
-            dataset, "private-case-alias"
-        ),
+        dataset=dataset,
+        case_id="private-case-alias",
     )
     bindings_path = tmp_path / "run-bindings.json"
     bindings_path.write_text(

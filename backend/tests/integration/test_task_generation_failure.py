@@ -184,6 +184,7 @@ def test_generation_emits_provenance_from_actual_prompt_rules_and_catalog(monkey
 
         expected = build_generation_provenance(
             prompt_snapshot=prompt_snapshot,
+            input_snapshot={"requirement": {"rooms": ["客厅"]}},
             catalog_context=catalog_context,
             plans=plans,
         )

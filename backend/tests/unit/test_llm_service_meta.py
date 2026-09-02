@@ -1,5 +1,7 @@
-import pytest
+import json
+
 import httpx
+import pytest
 from openai import APIStatusError, APITimeoutError
 
 from app.core.request_context import bind_request_id
@@ -197,7 +199,8 @@ def test_generation_meta_separates_static_prompt_version_from_full_dynamic_input
         "budget": 10000,
         "furnitureSuggestions": [{"sku": "SKU-1"}],
         "customItems": [],
-        "colorPalette": [],
+        "colorPalette": ["白色"],
+        "budgetBreakdown": [{"name": "家具", "percent": 100, "amount": 10000}],
     }
     captured: dict[str, str] = {}
 
@@ -217,5 +220,14 @@ def test_generation_meta_separates_static_prompt_version_from_full_dynamic_input
     assert tail_marker not in meta["prompt_snapshot"]
     assert tail_marker in meta["input_snapshot"]["user"]
     assert meta["input_snapshot"]["user"] == captured["user"]
-    assert meta["prompt_snapshot"] != captured["system"] + "\n\n" + captured["user"]
+    assert meta["prompt_snapshot"] != (
+        captured["system"] + "\n\n" + captured["user"]
+    )
     assert meta["provenance_schema_version"] == 2
+    prompt_contract = json.loads(meta["prompt_snapshot"])
+    assert prompt_contract["request_contract"]["tools"] == []
+    assert prompt_contract["output_contract"]["minimum_valid_plans"] == 2
+    assert (
+        "budgetBreakdown"
+        in prompt_contract["output_contract"]["required_plan_keys"]
+    )

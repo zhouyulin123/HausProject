@@ -12,6 +12,7 @@ from evals.real_world import EvaluationInputError, load_case_manifest
 from evals.trusted_evidence import (
     bind_evaluation_run,
     collect_trusted_evidence,
+    evaluation_run_idempotency_key,
     RunBinding,
 )
 
@@ -109,6 +110,36 @@ def test_binding_rejects_wrong_requirement_and_wrong_uploaded_asset(db, tmp_path
             dataset=dataset,
             case_id=case.id,
             task=wrong_asset,
+        )
+
+    mixed_assets = _task(db, asset_digest=correct_asset)
+    db.add(
+        UploadedImage(
+            task_id=mixed_assets.id,
+            file_url="/uploads/unexpected-room.png",
+            content_digest="sha256:" + "1" * 64,
+        )
+    )
+    db.commit()
+    with pytest.raises(EvaluationInputError, match="案例资产"):
+        bind_evaluation_run(
+            db,
+            dataset=dataset,
+            case_id=case.id,
+            task=mixed_assets,
+        )
+
+
+def test_eval_idempotency_key_alone_cannot_create_a_run(db, tmp_path):
+    dataset = _dataset(tmp_path)
+    case = dataset.eligible_cases()[0]
+    task = _task(db, asset_digest=f"sha256:{case.asset_sha256}")
+
+    with pytest.raises(ValueError, match="持久化案例绑定"):
+        generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key=evaluation_run_idempotency_key(dataset, case.id),
         )
 
 

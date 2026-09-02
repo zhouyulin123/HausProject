@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -57,6 +58,7 @@ async def upload_image(
         image_type="floor_plan" if "户型" in (file.filename or "") else "room_photo",
         file_name=file.filename,
         file_size=len(content),
+        content_digest=f"sha256:{hashlib.sha256(content).hexdigest()}",
     )
     db.add(image)
     db.commit()

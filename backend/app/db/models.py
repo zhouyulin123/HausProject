@@ -102,6 +102,7 @@ class UploadedImage(Base):
     file_url = Column(String(255))
     file_name = Column(String(255), nullable=True)
     file_size = Column(Integer, nullable=True)
+    content_digest = Column(String(71), nullable=True)
     analysis_json = Column(JSON, nullable=True)  # AI 空间识别结果
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -792,11 +793,13 @@ class GenerationRun(Base):
     error_message = Column(Text, nullable=True)
     # ---- 生成元数据（M3：换模型/改 Prompt 后量化质量与成本） ----
     model = Column(String(100), nullable=True)
-    prompt_snapshot = Column(Text, nullable=True)  # 截断后的完整 Prompt
+    prompt_snapshot = Column(Text, nullable=True)  # 静态 Prompt/Schema/工具契约
     prompt_digest = Column(String(71), nullable=True)
     rules_digest = Column(String(71), nullable=True)
     data_digest = Column(String(71), nullable=True)
-    input_snapshot = Column(JSON, nullable=True)  # 需求 + 图片上下文摘要
+    input_snapshot = Column(JSON, nullable=True)  # 本次模型调用的完整动态输入
+    input_digest = Column(String(71), nullable=True)
+    provenance_schema_version = Column(Integer, nullable=True)
     output_snapshot = Column(JSON, nullable=True)  # 方案摘要（名称/风格/预算/评分/家具数）
     usage_json = Column(JSON, nullable=True)  # token 用量（prompt/completion/total）
     cost_cny = Column(Float, nullable=True)  # 估算成本（配置单价后才有值）
@@ -828,6 +831,31 @@ class GenerationRun(Base):
         cascade="all, delete-orphan",
         order_by="GenerationRunEvent.id",
     )
+
+
+class EvaluationRunBinding(Base):
+    """评测案例与正式生成运行的不可变输入绑定。"""
+
+    __tablename__ = "evaluation_run_bindings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    generation_run_id = Column(
+        Integer,
+        ForeignKey("generation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    case_fingerprint = Column(String(71), nullable=False, index=True)
+    asset_digest = Column(String(71), nullable=False)
+    task_input_digest = Column(String(71), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class GenerationRunEvent(Base):

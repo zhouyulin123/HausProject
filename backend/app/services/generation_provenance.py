@@ -12,6 +12,7 @@ _RULE_ARTIFACTS = (
     Path(__file__).resolve().parents[1] / "agents" / "design_workflow.py",
     Path(__file__).resolve().parent / "catalog_service.py",
 )
+GENERATION_PROVENANCE_SCHEMA_VERSION = 2
 
 
 def canonical_digest(value: Any) -> str:
@@ -54,18 +55,22 @@ def _quote_versions(plans: list[dict[str, Any]], field_name: str) -> list[str]:
 def build_generation_provenance(
     *,
     prompt_snapshot: str,
+    input_snapshot: dict[str, Any],
     catalog_context: str,
     plans: list[dict[str, Any]],
 ) -> dict[str, str]:
     """从本次实际执行输入和确定性报价产物构造不可变版本摘要。"""
     if not isinstance(prompt_snapshot, str) or not prompt_snapshot:
         raise ValueError("Prompt 快照不能为空")
+    if not isinstance(input_snapshot, dict) or not input_snapshot:
+        raise ValueError("模型动态输入快照不能为空")
     if not isinstance(catalog_context, str):
         raise ValueError("商品目录上下文不合法")
     rule_versions = _quote_versions(plans, "ruleVersion")
     catalog_versions = _quote_versions(plans, "catalogVersion")
     return {
         "prompt_digest": canonical_digest(prompt_snapshot),
+        "input_digest": canonical_digest(input_snapshot),
         "rules_digest": canonical_digest(
             {
                 "source_artifacts": _source_artifact_digests(),

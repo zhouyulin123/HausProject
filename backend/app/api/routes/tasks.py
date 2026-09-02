@@ -307,6 +307,7 @@ def _execute_generation(
             if meta:
                 provenance = generation_provenance.build_generation_provenance(
                     prompt_snapshot=str(meta.get("prompt_snapshot") or ""),
+                    input_snapshot=meta.get("input_snapshot") or {},
                     catalog_context=catalog_context,
                     plans=plans,
                 )

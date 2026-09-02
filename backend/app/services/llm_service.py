@@ -24,6 +24,7 @@ from openai import (
 
 from app.core.config import settings
 from app.core.request_context import current_request_id
+from app.services.generation_provenance import GENERATION_PROVENANCE_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,6 @@ _provider_call_hooks: ContextVar[ProviderCallHooks | None] = ContextVar(
     "provider_call_hooks",
     default=None,
 )
-
 
 def last_generation_meta() -> Optional[Dict[str, Any]]:
     """返回最近一次方案生成的元数据；无则为 None。"""
@@ -375,6 +375,9 @@ _PLAN_REQUIRED_KEYS = (
     "colorPalette",
     "budgetBreakdown",
 )
+_PLAN_MIN_VALID_COUNT = 2
+_PLAN_MAX_TOKENS = 8192
+_PLAN_TEMPERATURE = 0.7
 
 
 def _normalize_plans(plans: List[Any]) -> List[Dict[str, Any]]:
@@ -420,22 +423,48 @@ def generate_plans(
     if catalog_context:
         user += "\n\n" + catalog_context
     usage: Dict[str, Any] = {}
-    data = _chat_json(_PLAN_SYSTEM, user, max_tokens=8192, usage_out=usage)
+    data = _chat_json(
+        _PLAN_SYSTEM,
+        user,
+        max_tokens=_PLAN_MAX_TOKENS,
+        temperature=_PLAN_TEMPERATURE,
+        usage_out=usage,
+    )
     raw_plans = data.get("plans")
     if not isinstance(raw_plans, list):
         raise LLMUnavailable("LLM 返回的方案结构不完整")
     plans = _normalize_plans(raw_plans)
     # 至少要有 2 套结构完整的方案才算成功，否则降级模板
-    if len(plans) < 2:
+    if len(plans) < _PLAN_MIN_VALID_COUNT:
         raise LLMUnavailable(f"LLM 有效方案不足（{len(plans)} 套）")
 
+    prompt_contract = json.dumps(
+        {
+            "schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
+            "system_prompt": _PLAN_SYSTEM,
+            "request_contract": {
+                "response_format": {"type": "json_object"},
+                "max_tokens": _PLAN_MAX_TOKENS,
+                "temperature": _PLAN_TEMPERATURE,
+                "tools": [],
+            },
+            "output_contract": {
+                "required_plan_keys": list(_PLAN_REQUIRED_KEYS),
+                "minimum_valid_plans": _PLAN_MIN_VALID_COUNT,
+            },
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     _last_generation_meta = {
         "model": settings.llm_model,
-        "prompt_snapshot": (_PLAN_SYSTEM + "\n\n" + user)[:8000],
+        "prompt_snapshot": prompt_contract,
         "input_snapshot": {
-            "requirement": requirement,
-            "has_catalog_context": bool(catalog_context),
+            "schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
+            "user": user,
         },
+        "provenance_schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
         "usage": usage or None,
         "cost_cny": estimate_cost_cny(
             usage or None,

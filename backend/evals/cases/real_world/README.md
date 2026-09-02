@@ -11,6 +11,7 @@
 - `allowed_purposes` 包含 `offline_evaluation`；
 - `split` 已分配为 `development`、`regression` 或 `blind`；
 - 资产存在且没有越过指定的资产根目录；
+- 填写严格结构化的 `task_input`，且正式任务的需求字段与该输入完全一致；
 - `blind` 不允许使用 `synthetic` 案例。
 
 仓库现有四张户型图目前全部处于 `pending`。在确认来源、用途授权和人工标注前，它们不会被评测程序使用，也不能作为“真实案例质量达标”的证据。
@@ -33,16 +34,16 @@
 
 - 状态为 `completed` 且 task/run 归属一致的运行；
 - `generator=llm`，不接受 template 降级、demo、mock、manual、test 或 synthetic；
-- 存在完整的模型、Prompt、输入、输出快照和四个 Worker 节点；
+- 存在完整的静态 Prompt 契约、动态输入、输出快照和四个 Worker 节点；
 - `generate_plans` 来自 LLM，报价与质量校验来自确定性节点；
 - 同一证据包内每个已准入案例恰好一个运行，同一 run 不得跨案例复用。
 
 创建 GenerationRun 时，评测队列器必须调用
-`evals.trusted_evidence.evaluation_run_idempotency_key(dataset, case_id)`，并把返回值作为现有 `generate-async` 接口的 `Idempotency-Key`。该键在执行前绑定数据集与匿名案例；收集器拒绝没有绑定或事后换绑的 run。
+`evals.trusted_evidence.bind_evaluation_run(db, dataset=..., case_id=..., task=...)`，在同一事务中写入运行及持久化案例绑定。只把 `evaluation_run_idempotency_key(...)` 返回值传给现有 `generate-async` 不构成可信绑定，服务会失败关闭。Worker 领取与证据收集都会复核任务需求和任务所绑定图片的实际字节摘要；错误图片、混合图片、需求变化、缺少 `task_input` 或历史图片没有摘要时均拒绝执行或签发。
 
 收集器不会接收 CaseResult。当前可从运行事实确定性推导生成成功、有效 SKU 和报价一致性；需求、空间、布局和人工满意度在接入可追溯标注执行器前保持无证据，因此质量门禁会失败，不会用模拟值或手工值补齐。
 
-证据包 2.0 使用独立 HMAC 密钥签名，绑定数据集内容指纹、匿名案例指纹、task/run ID、模型及三个运行时制品摘要，以及输入、输出和结果摘要。Prompt 摘要从实际落库的 Prompt 快照复算；规则摘要绑定生成/报价源码与服务端报价规则版本；数据摘要绑定实际商品上下文与目录版本。签发 CLI 不接受调用方自报版本。文件不包含案例 ID、资产路径、Prompt、输入或模型输出原文。签名密钥必须只配置在受控 Worker/CI，不应写入仓库、命令行或开发者共享环境。
+证据包 2.0 使用独立 HMAC 密钥签名，绑定数据集内容指纹、匿名案例指纹、task/run ID、模型及三个运行时制品摘要，以及输入、输出和结果摘要。Prompt 摘要从静态系统 Prompt、输出 Schema 和工具/调用参数契约复算；完整动态模型请求另行计算 `input_digest`，不得截断；规则摘要绑定生成/报价源码与服务端报价规则版本；数据摘要绑定实际商品上下文与目录版本。签发 CLI 不接受调用方自报版本。文件不包含案例 ID、资产路径、Prompt、输入或模型输出原文。签名密钥必须只配置在受控 Worker/CI，不应写入仓库、命令行或开发者共享环境。
 
 跨用户访问和重试边界不能依靠默认零值证明安全。每个逐例结果必须分别填写实际执行的 `cross_user_access_checks` 和 `retry_bound_checks`；检查次数为 0 时，对应安全门禁输出 `NO EVIDENCE` 并失败。若记录了严重跨用户问题或无限重试，却没有对应检查证据，输入会被直接拒绝。
 

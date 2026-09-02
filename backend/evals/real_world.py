@@ -8,6 +8,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from app.services.evaluation_binding_service import (
+    EvaluationBindingError,
+    normalize_task_input,
+)
+
 
 CaseSplit = Literal["development", "regression", "blind", "unassigned"]
 CaseOrigin = Literal["private_real", "public_reference", "synthetic"]
@@ -58,6 +63,7 @@ class RealWorldCase:
     allowed_purposes: tuple[str, ...]
     failure_tags: tuple[str, ...]
     asset_sha256: str = ""
+    task_input: dict[str, Any] | None = None
 
     def ineligible_reasons(self) -> list[str]:
         reasons: list[str] = []
@@ -105,6 +111,7 @@ class RealWorldDataset:
                 "asset_sha256": case.asset_sha256,
                 "label_version": case.label_version,
                 "allowed_purposes": sorted(case.allowed_purposes),
+                "task_input": case.task_input,
             }
             for case in sorted(self.eligible_cases(), key=lambda item: item.id)
         ]
@@ -251,6 +258,19 @@ def load_case_manifest(
                 raise DatasetValidationError(
                     f"案例 {case_id} 的 label_version 不合法"
                 )
+            raw_task_input = raw.get("task_input")
+            task_input = None
+            if raw_task_input is not None:
+                if not isinstance(raw_task_input, dict):
+                    raise DatasetValidationError(
+                        f"案例 {case_id} 的 task_input 必须是对象"
+                    )
+                try:
+                    task_input = normalize_task_input(raw_task_input)
+                except EvaluationBindingError as exc:
+                    raise DatasetValidationError(
+                        f"案例 {case_id} 的 task_input 不合法：{exc}"
+                    ) from exc
             cases.append(
                 RealWorldCase(
                     id=_required_text(raw, "id", case_id),
@@ -266,6 +286,7 @@ def load_case_manifest(
                         raw, "allowed_purposes", case_id
                     ),
                     failure_tags=_string_list(raw, "failure_tags", case_id),
+                    task_input=task_input,
                 )
             )
         except DatasetValidationError as exc:

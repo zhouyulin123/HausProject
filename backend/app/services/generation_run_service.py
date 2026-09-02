@@ -16,8 +16,11 @@ from app.db.models import (
     DesignTask,
     GenerationRun,
     GenerationRunEvent,
+    EvaluationRunBinding,
     LayoutRun,
 )
+from app.services import evaluation_binding_service
+from app.services.evaluation_binding_service import EvaluationBindingSpec
 
 ACTIVE_STATUSES = ("queued", "running")
 NODE_PROGRESS = {
@@ -143,9 +146,31 @@ def create_run(
     max_attempts: int = 3,
     request_id: str | None = None,
     request_digest: str | None = None,
+    evaluation_binding: EvaluationBindingSpec | None = None,
 ) -> GenerationRun:
     """创建持久化运行；同一幂等键在终态后也返回原记录。"""
     normalized_key = (idempotency_key or "").strip() or None
+    is_evaluation = evaluation_binding_service.is_evaluation_idempotency_key(
+        normalized_key
+    )
+    if is_evaluation != (evaluation_binding is not None):
+        raise evaluation_binding_service.EvaluationBindingError(
+            "评测运行必须在创建事务内提供持久化案例绑定"
+        )
+    if evaluation_binding is not None:
+        expected_key = (
+            evaluation_binding_service.EVALUATION_IDEMPOTENCY_PREFIX
+            + evaluation_binding.case_fingerprint.removeprefix("sha256:")
+        )
+        if normalized_key != expected_key:
+            raise evaluation_binding_service.EvaluationBindingError(
+                "评测案例绑定与幂等键不一致"
+            )
+        evaluation_binding_service.validate_spec_for_task(
+            db,
+            task=task,
+            spec=evaluation_binding,
+        )
     if normalized_key:
         existing = db.scalar(
             select(GenerationRun).where(
@@ -158,6 +183,11 @@ def create_run(
                 raise GenerationIdempotencyConflict(
                     "Idempotency-Key 已用于不同的任务输入或版本"
                 )
+            if evaluation_binding is not None:
+                evaluation_binding_service.validate_persisted_binding(
+                    db,
+                    run=existing,
+                )
             return existing
 
     active = db.scalars(
@@ -169,6 +199,10 @@ def create_run(
         .order_by(GenerationRun.attempt.desc())
     ).first()
     if active is not None:
+        if evaluation_binding is not None:
+            raise evaluation_binding_service.EvaluationBindingError(
+                "任务已有其他活动运行，不能创建评测绑定"
+            )
         return active
 
     latest_attempt = db.scalar(
@@ -189,6 +223,17 @@ def create_run(
     )
     db.add(run)
     try:
+        db.flush()
+        if evaluation_binding is not None:
+            db.add(
+                EvaluationRunBinding(
+                    generation_run_id=run.id,
+                    task_id=task.id,
+                    case_fingerprint=evaluation_binding.case_fingerprint,
+                    asset_digest=evaluation_binding.asset_digest,
+                    task_input_digest=evaluation_binding.task_input_digest,
+                )
+            )
         db.commit()
         db.refresh(run)
         return run
@@ -206,6 +251,11 @@ def create_run(
                     raise GenerationIdempotencyConflict(
                         "Idempotency-Key 已用于不同的任务输入或版本"
                     )
+                if evaluation_binding is not None:
+                    evaluation_binding_service.validate_persisted_binding(
+                        db,
+                        run=existing,
+                    )
                 return existing
         active = db.scalars(
             select(GenerationRun)
@@ -216,6 +266,10 @@ def create_run(
             .order_by(GenerationRun.attempt.desc())
         ).first()
         if active is not None:
+            if evaluation_binding is not None:
+                raise evaluation_binding_service.EvaluationBindingError(
+                    "任务已有其他活动运行，不能返回未绑定的评测运行"
+                )
             return active
         raise
 
@@ -410,6 +464,29 @@ def claim_next_run(
     if run is None:
         db.commit()
         return None
+    if evaluation_binding_service.is_evaluation_idempotency_key(
+        run.idempotency_key
+    ):
+        try:
+            evaluation_binding_service.validate_persisted_binding(db, run=run)
+        except evaluation_binding_service.EvaluationBindingError as exc:
+            _clear_worker(run)
+            run.status = "dead_letter"
+            run.progress = 100
+            run.current_node = "evaluation_binding_invalid"
+            run.next_retry_at = None
+            run.completed_at = current
+            run.dead_lettered_at = current
+            run.error_message = str(exc)[:2000]
+            _set_task_state(
+                db,
+                run=run,
+                status="failed",
+                progress=0,
+                error_message="评测执行绑定校验失败",
+            )
+            db.commit()
+            return None
     run.status = "running"
     run.progress = 10
     run.current_node = "prepare_context"
@@ -723,6 +800,8 @@ def record_generation_meta(
     run.rules_digest = meta.get("rules_digest")
     run.data_digest = meta.get("data_digest")
     run.input_snapshot = meta.get("input_snapshot")
+    run.input_digest = meta.get("input_digest")
+    run.provenance_schema_version = meta.get("provenance_schema_version")
     run.output_snapshot = output_snapshot
     run.usage_json = meta.get("usage")
     run.cost_cny = meta.get("cost_cny")

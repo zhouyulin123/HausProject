@@ -17,7 +17,12 @@ from typing import Any, Mapping
 from sqlalchemy.orm import Session
 
 from app.db.models import DesignTask, GenerationRun
-from app.services.generation_provenance import canonical_digest
+from app.services import evaluation_binding_service, generation_run_service
+from app.services.evaluation_binding_service import EvaluationBindingSpec
+from app.services.generation_provenance import (
+    GENERATION_PROVENANCE_SCHEMA_VERSION,
+    canonical_digest,
+)
 from evals.real_world import (
     CaseResult,
     EvaluationInputError,
@@ -118,6 +123,13 @@ def dataset_fingerprint(dataset: RealWorldDataset) -> str:
             "allowed_purposes": sorted(case.allowed_purposes),
             "failure_tags": sorted(case.failure_tags),
             "asset_digest": _file_digest(case),
+            "task_input_digest": (
+                evaluation_binding_service.expected_task_input_digest(
+                    case.task_input
+                )
+                if case.task_input is not None
+                else None
+            ),
         }
         for case in sorted(dataset.cases, key=lambda item: item.id)
     ]
@@ -144,6 +156,46 @@ def evaluation_run_idempotency_key(
         raise EvaluationInputError("只能为已准入案例生成评测运行绑定键")
     case_digest = _case_fingerprint(dataset_fingerprint(dataset), case_id)
     return f"eval-v1:{case_digest.removeprefix('sha256:')}"
+
+
+def bind_evaluation_run(
+    db: Session,
+    *,
+    dataset: RealWorldDataset,
+    case_id: str,
+    task: DesignTask,
+    max_attempts: int = 3,
+    request_id: str | None = None,
+) -> GenerationRun:
+    """在正式 Worker 可领取前，原子创建运行和冻结案例输入绑定。"""
+    eligible = {case.id: case for case in dataset.eligible_cases()}
+    case = eligible.get(case_id)
+    if case is None:
+        raise EvaluationInputError("只能绑定已准入的真实评测案例")
+    if case.task_input is None:
+        raise EvaluationInputError("评测案例缺少规范化 task_input")
+    dataset_digest = dataset_fingerprint(dataset)
+    case_digest = _case_fingerprint(dataset_digest, case.id)
+    spec = EvaluationBindingSpec(
+        case_fingerprint=case_digest,
+        asset_digest=_file_digest(case),
+        task_input_digest=(
+            evaluation_binding_service.expected_task_input_digest(case.task_input)
+        ),
+    )
+    try:
+        return generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key=(
+                f"eval-v1:{case_digest.removeprefix('sha256:')}"
+            ),
+            max_attempts=max_attempts,
+            request_id=request_id,
+            evaluation_binding=spec,
+        )
+    except evaluation_binding_service.EvaluationBindingError as exc:
+        raise EvaluationInputError(str(exc)) from exc
 
 
 def _normalized_key(signing_key: str) -> bytes:
@@ -210,6 +262,18 @@ def _validate_system_run(
         raise EvaluationInputError(
             f"系统运行 {run.id} 没有在执行前绑定当前数据集案例"
         )
+    try:
+        persisted_binding = evaluation_binding_service.validate_persisted_binding(
+            db,
+            run=run,
+        )
+    except evaluation_binding_service.EvaluationBindingError as exc:
+        raise EvaluationInputError(str(exc)) from exc
+    expected_case = expected_case_fingerprint
+    if persisted_binding.case_fingerprint != expected_case:
+        raise EvaluationInputError(
+            f"系统运行 {run.id} 的持久化评测绑定不属于当前案例"
+        )
     task = db.get(DesignTask, binding.task_id)
     if task is None:
         raise EvaluationInputError(f"设计任务不存在：{binding.task_id}")
@@ -225,6 +289,8 @@ def _validate_system_run(
         or run.completed_at is None
         or not run.prompt_snapshot
         or run.input_snapshot is None
+        or run.input_digest is None
+        or run.provenance_schema_version != GENERATION_PROVENANCE_SCHEMA_VERSION
         or run.output_snapshot is None
     ):
         raise EvaluationInputError(f"系统运行 {run.id} 缺少完整执行快照")
@@ -236,11 +302,18 @@ def _validate_system_run(
     )
     if any(not isinstance(value, str) or not value.strip() for value in version_values):
         raise EvaluationInputError(f"系统运行 {run.id} 缺少可信版本摘要")
-    for digest_name in ("prompt_digest", "rules_digest", "data_digest"):
+    for digest_name in (
+        "prompt_digest",
+        "rules_digest",
+        "data_digest",
+        "input_digest",
+    ):
         if not _SHA256_PATTERN.fullmatch(getattr(run, digest_name)):
             raise EvaluationInputError(f"系统运行 {run.id} 的 {digest_name} 不合法")
     if run.prompt_digest != canonical_digest(run.prompt_snapshot):
         raise EvaluationInputError(f"系统运行 {run.id} 的 Prompt 摘要与快照不一致")
+    if run.input_digest != canonical_digest(run.input_snapshot):
+        raise EvaluationInputError(f"系统运行 {run.id} 的输入摘要与快照不一致")
     completed_nodes = {
         event.node for event in run.events if event.status == "completed"
     }
@@ -341,7 +414,7 @@ def collect_trusted_evidence(
                 "prompt_digest": run.prompt_digest,
                 "rules_digest": run.rules_digest,
                 "data_digest": run.data_digest,
-                "input_digest": _digest(run.input_snapshot),
+                "input_digest": run.input_digest,
                 "output_digest": _digest(run.output_snapshot),
                 "result": result_payload,
                 "result_digest": _digest(result_payload),
