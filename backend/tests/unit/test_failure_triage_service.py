@@ -58,6 +58,10 @@ def test_report_sync_is_idempotent_and_verified_recurrence_reopens(db):
     assert cluster.occurrence_count == 3
     assert cluster.affected_count == 2
     assert len(cluster.fingerprint) == 64
+    changed_payload = _report("report-001")
+    changed_payload.failures[0].occurrence_count = 4
+    with pytest.raises(FailureTriageConflict, match="report_id"):
+        sync_verified_report(db, changed_payload)
 
     update_failure_cluster(
         db,
@@ -103,6 +107,12 @@ def test_status_machine_rejects_skips_and_requires_versions(db):
             cluster,
             FailureClusterUpdate(status="in_progress"),
         )
+    with pytest.raises(FailureTriageConflict, match="修复版本"):
+        update_failure_cluster(
+            db,
+            cluster,
+            FailureClusterUpdate(fixed_version="rules-too-early"),
+        )
 
     update_failure_cluster(
         db,
@@ -138,4 +148,3 @@ def test_report_schema_rejects_case_ids_and_unverified_inputs():
     payload["verification_status"] = "draft"
     with pytest.raises(ValueError):
         FailureTriageReportRequest.model_validate(payload)
-

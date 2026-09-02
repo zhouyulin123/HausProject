@@ -249,6 +249,46 @@ class DesignFeedbackEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class FailureCluster(Base):
+    """不含案例或用户内容的匿名失败聚类及修复生命周期。"""
+
+    __tablename__ = "failure_clusters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    fingerprint = Column(String(64), nullable=False, unique=True, index=True)
+    taxonomy_version = Column(String(100), nullable=False)
+    data_version = Column(String(100), nullable=False)
+    failure_type = Column(String(50), nullable=False, index=True)
+    code = Column(String(100), nullable=False, index=True)
+    severity = Column(String(20), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="open", index=True)
+    owner = Column(String(100), nullable=True, index=True)
+    occurrence_count = Column(Integer, nullable=False, default=0)
+    affected_count = Column(Integer, nullable=False, default=0)
+    first_seen_at = Column(DateTime(timezone=True), nullable=False)
+    last_seen_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    detected_version = Column(String(100), nullable=False)
+    fixed_version = Column(String(100), nullable=True)
+    verified_version = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class FailureTriageImport(Base):
+    """已同步报告的幂等凭据；仅保存报告标识与内容哈希。"""
+
+    __tablename__ = "failure_triage_imports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_id = Column(String(100), nullable=False, unique=True, index=True)
+    payload_hash = Column(String(64), nullable=False)
+    imported_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class ShopSetting(Base):
     """店铺信息（单行，id=1）：用于提案 PDF 页头/页脚与前端展示。"""
 

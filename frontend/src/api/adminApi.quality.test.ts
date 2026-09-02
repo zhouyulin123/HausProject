@@ -52,10 +52,11 @@ describe("运营质量汇总 API", () => {
   });
 
   it("使用管理员失败簇资源完成列表、同步和状态更新", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
-      items: [],
-      summary: { total: 0, by_status: {}, by_severity: {} },
-    }));
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () =>
+      jsonResponse({
+        items: [],
+        summary: { total: 0, by_status: {}, by_severity: {} },
+      }));
     vi.stubGlobal("fetch", fetchMock);
     const {
       fetchFailureClusters,

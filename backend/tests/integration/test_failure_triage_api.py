@@ -76,6 +76,28 @@ def test_failure_triage_api_is_admin_only_strict_and_private():
             assert body["summary"]["by_severity"] == {"critical": 1}
             assert body["summary"]["by_status"] == {"open": 1}
             assert body["items"][0]["code"] == "quote_mismatch"
+            cluster_id = body["items"][0]["id"]
+            cluster_url = f"/api/admin/quality/failure-clusters/{cluster_id}"
+            assert client.patch(
+                cluster_url,
+                json={"status": "resolved", "fixed_version": "rules-2"},
+            ).status_code == 409
+            assert client.patch(
+                cluster_url,
+                json={"status": "in_progress", "owner": "quality-admin"},
+            ).status_code == 200
+            assert client.patch(
+                cluster_url,
+                json={"status": "resolved", "fixed_version": "rules-2"},
+            ).status_code == 200
+            verified = client.patch(
+                cluster_url,
+                json={"status": "verified", "verified_version": "eval-2"},
+            )
+            assert verified.status_code == 200
+            assert verified.json()["status"] == "verified"
+            assert verified.json()["fixed_version"] == "rules-2"
+            assert verified.json()["verified_version"] == "eval-2"
             serialized = str(body).lower()
             assert "case_id" not in serialized
             assert "private-case" not in serialized
@@ -83,4 +105,3 @@ def test_failure_triage_api_is_admin_only_strict_and_private():
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(engine)
         engine.dispose()
-

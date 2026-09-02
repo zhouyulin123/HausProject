@@ -5,7 +5,15 @@
 import { readToken } from "./authApi";
 import type { AuthUser, UserRole } from "./authApi";
 import { useAuthStore } from "@/store/useAuthStore";
-import type { QualitySummary, QualityWindowDays } from "@/types/quality";
+import type {
+  FailureCluster,
+  FailureClusterListResponse,
+  FailureClusterUpdate,
+  FailureTriageReport,
+  FailureTriageSyncResponse,
+  QualitySummary,
+  QualityWindowDays,
+} from "@/types/quality";
 
 export interface AdminUser extends AuthUser {
   created_at: string | null;
@@ -58,5 +66,30 @@ export async function fetchQualitySummary(
 ): Promise<QualitySummary> {
   return adminRequest<QualitySummary>(
     `/api/admin/quality/summary?window_days=${windowDays}`,
+  );
+}
+
+export async function fetchFailureClusters(): Promise<FailureClusterListResponse> {
+  return adminRequest<FailureClusterListResponse>(
+    "/api/admin/quality/failure-clusters",
+  );
+}
+
+export async function syncFailureTriageReport(
+  report: FailureTriageReport,
+): Promise<FailureTriageSyncResponse> {
+  return adminRequest<FailureTriageSyncResponse>(
+    "/api/admin/quality/failure-clusters/sync",
+    { method: "POST", body: JSON.stringify(report) },
+  );
+}
+
+export async function updateFailureCluster(
+  clusterId: number,
+  update: FailureClusterUpdate,
+): Promise<FailureCluster> {
+  return adminRequest<FailureCluster>(
+    `/api/admin/quality/failure-clusters/${clusterId}`,
+    { method: "PATCH", body: JSON.stringify(update) },
   );
 }
