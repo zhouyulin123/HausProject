@@ -472,7 +472,7 @@ def test_case_annotation_rejects_run_dependent_human_evaluation(tmp_path):
 
 def test_execution_review_is_bound_to_exact_output_digest(tmp_path):
     dataset = _dataset(tmp_path)
-    output_digest = "a" * 64
+    output_digest = "sha256:" + "a" * 64
     path = _write_annotation(tmp_path, _review_payload(dataset, output_digest=output_digest))
 
     review = load_execution_review(
@@ -493,7 +493,7 @@ def test_execution_review_is_bound_to_exact_output_digest(tmp_path):
             path,
             dataset=dataset,
             dataset_root=tmp_path,
-            expected_output_digest="b" * 64,
+            expected_output_digest="sha256:" + "b" * 64,
         )
 
 
@@ -514,7 +514,7 @@ def test_execution_review_rejects_incomplete_or_unknown_edit_facts(
     value,
 ):
     dataset = _dataset(tmp_path)
-    output_digest = "a" * 64
+    output_digest = "sha256:" + "a" * 64
     payload = _review_payload(dataset, output_digest=output_digest)
     edit = payload["edit_facts"][0]
     edit["action"] = action

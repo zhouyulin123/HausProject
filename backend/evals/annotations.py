@@ -26,26 +26,14 @@ from pydantic import (
 
 ANNOTATION_SCHEMA_VERSION = "1.0"
 ANNOTATION_TYPE = "real_world_case_annotation"
+EXECUTION_REVIEW_TYPE = "real_world_execution_review"
 MAX_ANNOTATION_BYTES = 2 * 1024 * 1024
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_CANONICAL_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$")
 _FACT_PATH_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_-]*)+$"
 )
-_DOCUMENT_FIELDS = {
-    "schema_version",
-    "annotation_type",
-    "case_id",
-    "label_version",
-    "source_asset_sha256",
-    "requirements",
-    "space_facts",
-    "allowed_skus",
-    "budget",
-    "layout_hard_constraints",
-    "style_tags",
-    "human_evaluation",
-}
 _PII_OR_FREE_TEXT_FIELDS = {
     "address",
     "annotator",
@@ -243,7 +231,7 @@ class HumanEditFact(_StrictModel):
     def validate_identifier(cls, value: str, info) -> str:
         return _label(
             value,
-            f"human_evaluation.edit_facts.{info.field_name}",
+            f"execution_review.edit_facts.{info.field_name}",
             identifier=True,
         )
 
@@ -254,13 +242,13 @@ class HumanEditFact(_StrictModel):
             return None
         return _label(
             value,
-            "human_evaluation.edit_facts.replacement_sku",
+            "execution_review.edit_facts.replacement_sku",
             identifier=True,
         )
 
     @model_validator(mode="after")
     def validate_action_payload(self) -> "HumanEditFact":
-        error = "human_evaluation.edit_facts 与 action 不匹配"
+        error = "execution_review.edit_facts 与 action 不匹配"
         if self.action in {"move", "resize"}:
             if (
                 self.axis is None
@@ -321,24 +309,6 @@ class HumanEditFact(_StrictModel):
         return self
 
 
-class HumanEvaluation(_StrictModel):
-    overall_rating: StrictInt | None = Field(ge=1, le=5)
-    dimension_scores: tuple[HumanDimensionScore, ...]
-    edit_facts: tuple[HumanEditFact, ...]
-
-    @model_validator(mode="after")
-    def reject_duplicates(self) -> "HumanEvaluation":
-        _reject_duplicate_values(
-            [score.metric for score in self.dimension_scores],
-            "human_evaluation.dimension_scores metric",
-        )
-        _reject_duplicate_values(
-            [edit.edit_id for edit in self.edit_facts],
-            "human_evaluation.edit_facts edit_id",
-        )
-        return self
-
-
 class CaseAnnotation(_StrictModel):
     schema_version: Literal[ANNOTATION_SCHEMA_VERSION]
     annotation_type: Literal[ANNOTATION_TYPE]
@@ -353,8 +323,14 @@ class CaseAnnotation(_StrictModel):
         min_length=1
     )
     style_tags: tuple[StrictStr, ...] = Field(min_length=1)
-    human_evaluation: HumanEvaluation
     file_sha256: str = Field(default="", exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_derived_fields(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "file_sha256" in value:
+            raise ValueError("未知字段：file_sha256")
+        return value
 
     @field_validator("case_id", "label_version")
     @classmethod
@@ -406,6 +382,64 @@ class CaseAnnotation(_StrictModel):
             self.model_dump(
                 mode="json",
                 by_alias=True,
+                exclude={"file_sha256"},
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return f"sha256:{sha256(canonical).hexdigest()}"
+
+
+class ExecutionReview(_StrictModel):
+    schema_version: Literal[ANNOTATION_SCHEMA_VERSION]
+    review_type: Literal[EXECUTION_REVIEW_TYPE]
+    case_id: StrictStr
+    label_version: StrictStr
+    output_digest: StrictStr
+    reviewer_role: Literal["customer", "designer"]
+    overall_rating: StrictInt = Field(ge=1, le=5)
+    dimension_scores: tuple[HumanDimensionScore, ...]
+    edit_facts: tuple[HumanEditFact, ...]
+    file_sha256: str = Field(default="", exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_derived_fields(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "file_sha256" in value:
+            raise ValueError("未知字段：file_sha256")
+        return value
+
+    @field_validator("case_id", "label_version")
+    @classmethod
+    def validate_top_identifier(cls, value: str, info) -> str:
+        return _label(value, info.field_name, identifier=True)
+
+    @field_validator("output_digest")
+    @classmethod
+    def validate_output_digest(cls, value: str) -> str:
+        if not _CANONICAL_DIGEST_PATTERN.fullmatch(value):
+            raise ValueError("output_digest 必须是 sha256: 前缀的小写 SHA-256")
+        return value
+
+    @model_validator(mode="after")
+    def reject_duplicates(self) -> "ExecutionReview":
+        _reject_duplicate_values(
+            [score.metric for score in self.dimension_scores],
+            "execution_review.dimension_scores metric",
+        )
+        _reject_duplicate_values(
+            [edit.edit_id for edit in self.edit_facts],
+            "execution_review.edit_facts edit_id",
+        )
+        return self
+
+    @property
+    def content_fingerprint(self) -> str:
+        canonical = json.dumps(
+            self.model_dump(
+                mode="json",
                 exclude={"file_sha256"},
             ),
             ensure_ascii=False,
@@ -505,11 +539,6 @@ def _read_annotation(path: Path) -> tuple[dict[str, Any], str]:
         raise AnnotationValidationError(f"标注文件不是合法 JSON：{exc}") from exc
     if not isinstance(payload, dict):
         raise AnnotationValidationError("标注文件根节点必须是对象")
-    unknown_fields = sorted(set(payload) - _DOCUMENT_FIELDS)
-    if unknown_fields:
-        raise AnnotationValidationError(
-            f"标注包含未知字段：{', '.join(unknown_fields)}"
-        )
     _validate_finite_numbers(payload)
     _reject_pii_fields(payload)
     return payload, digest
@@ -522,6 +551,24 @@ def _manifest_case(dataset: Any, case_id: str) -> Any:
     return matches[0]
 
 
+def _validate_manifest_identity(dataset: Any, *, case_id: str, label_version: str) -> Any:
+    case = _manifest_case(dataset, case_id)
+    if getattr(case, "annotation_status", None) != "ready":
+        raise AnnotationValidationError(f"案例 {case_id} 的清单标注状态尚未 ready")
+    if label_version != getattr(case, "label_version", None):
+        raise AnnotationValidationError(f"案例 {case_id} 的 label_version 与清单不一致")
+    return case
+
+
+def _validate_expected_file_digest(file_digest: str, expected_sha256: str | None) -> None:
+    if expected_sha256 is None:
+        return
+    if not _SHA256_PATTERN.fullmatch(expected_sha256):
+        raise AnnotationValidationError("expected_sha256 必须是小写 SHA-256")
+    if not hmac.compare_digest(file_digest, expected_sha256):
+        raise AnnotationValidationError("标注文件 SHA-256 与冻结值不一致")
+
+
 def load_case_annotation(
     annotation_path: Path | str,
     *,
@@ -532,25 +579,17 @@ def load_case_annotation(
     """加载一个已准入案例的结构化标注，并冻结文件与来源资产摘要。"""
     path = _resolve_annotation_path(annotation_path, dataset_root)
     payload, file_digest = _read_annotation(path)
-    if expected_sha256 is not None:
-        if not _SHA256_PATTERN.fullmatch(expected_sha256):
-            raise AnnotationValidationError("expected_sha256 必须是小写 SHA-256")
-        if not hmac.compare_digest(file_digest, expected_sha256):
-            raise AnnotationValidationError("标注文件 SHA-256 与冻结值不一致")
+    _validate_expected_file_digest(file_digest, expected_sha256)
     try:
         annotation = CaseAnnotation.model_validate(payload)
     except ValidationError as exc:
         raise AnnotationValidationError(_validation_message(exc)) from exc
 
-    case = _manifest_case(dataset, annotation.case_id)
-    if getattr(case, "annotation_status", None) != "ready":
-        raise AnnotationValidationError(
-            f"案例 {annotation.case_id} 的清单标注状态尚未 ready"
-        )
-    if annotation.label_version != getattr(case, "label_version", None):
-        raise AnnotationValidationError(
-            f"案例 {annotation.case_id} 的 label_version 与清单不一致"
-        )
+    case = _validate_manifest_identity(
+        dataset,
+        case_id=annotation.case_id,
+        label_version=annotation.label_version,
+    )
     manifest_asset_digest = getattr(case, "asset_sha256", None)
     if (
         not isinstance(manifest_asset_digest, str)
@@ -581,21 +620,47 @@ def load_case_annotation(
             ),
             "allowed_skus": tuple(sorted(annotation.allowed_skus)),
             "style_tags": tuple(sorted(annotation.style_tags)),
-            "human_evaluation": annotation.human_evaluation.model_copy(
-                update={
-                    "dimension_scores": tuple(
-                        sorted(
-                            annotation.human_evaluation.dimension_scores,
-                            key=lambda item: item.metric,
-                        )
-                    ),
-                    "edit_facts": tuple(
-                        sorted(
-                            annotation.human_evaluation.edit_facts,
-                            key=lambda item: item.edit_id,
-                        )
-                    ),
-                }
+        }
+    )
+
+
+def load_execution_review(
+    review_path: Path | str,
+    *,
+    dataset: Any,
+    dataset_root: Path | str,
+    expected_output_digest: str,
+    expected_sha256: str | None = None,
+) -> ExecutionReview:
+    """加载人工评审，并强制绑定一次具体的不可变生成输出。"""
+    if not _CANONICAL_DIGEST_PATTERN.fullmatch(expected_output_digest):
+        raise AnnotationValidationError(
+            "expected_output_digest 必须是 sha256: 前缀的小写 SHA-256"
+        )
+    path = _resolve_annotation_path(review_path, dataset_root)
+    payload, file_digest = _read_annotation(path)
+    _validate_expected_file_digest(file_digest, expected_sha256)
+    try:
+        review = ExecutionReview.model_validate(payload)
+    except ValidationError as exc:
+        raise AnnotationValidationError(_validation_message(exc)) from exc
+
+    _validate_manifest_identity(
+        dataset,
+        case_id=review.case_id,
+        label_version=review.label_version,
+    )
+    if not hmac.compare_digest(review.output_digest, expected_output_digest):
+        raise AnnotationValidationError("人工评审的输出 SHA-256 与本次执行不一致")
+
+    return review.model_copy(
+        update={
+            "file_sha256": file_digest,
+            "dimension_scores": tuple(
+                sorted(review.dimension_scores, key=lambda item: item.metric)
+            ),
+            "edit_facts": tuple(
+                sorted(review.edit_facts, key=lambda item: item.edit_id)
             ),
         }
     )
