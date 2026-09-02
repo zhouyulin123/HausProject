@@ -95,6 +95,80 @@ function Distribution({
   );
 }
 
+export function QualitySummaryContent({ summary }: { summary: QualitySummary }) {
+  const generatedAt = new Date(summary.generated_at).toLocaleString("zh-CN", {
+    hour12: false,
+  });
+
+  return (
+    <>
+      <div className="mt-7 flex flex-wrap items-center justify-between gap-2 text-xs text-stone-400">
+        <span>统计窗口：最近 {summary.window_days} 天</span>
+        <span>更新时间：{generatedAt}</span>
+      </div>
+      <section className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricTile
+          label="生成成功率"
+          value={formatRate(summary.generation.success_rate)}
+          detail={`${summary.generation.completed} 成功 / ${summary.generation.failed} 失败`}
+          icon={Activity}
+        />
+        <MetricTile
+          label="降级率"
+          value={formatRate(summary.generation.fallback_rate)}
+          detail={`已完成生成 ${summary.generation.completed} 次`}
+          icon={RefreshCw}
+        />
+        <MetricTile
+          label="生成耗时 P50"
+          value={formatDuration(summary.generation.duration_p50_ms)}
+          detail={`P95 ${formatDuration(summary.generation.duration_p95_ms)}`}
+          icon={Clock3}
+        />
+        <MetricTile
+          label="Agent 转人工率"
+          value={formatRate(summary.agent.handoff_rate)}
+          detail={`${summary.agent.handoff_total} 次转人工 / ${summary.agent.turn_total} 轮`}
+          icon={Bot}
+        />
+        <MetricTile
+          label="布局硬约束通过率"
+          value={formatRate(summary.layout.hard_pass_rate)}
+          detail={`${summary.layout.hard_pass_total} 通过 / ${summary.layout.total} 次布局`}
+          icon={ShieldCheck}
+        />
+        <MetricTile
+          label="Token 总量"
+          value={integerFormatter.format(summary.generation.total_tokens)}
+          detail={`${summary.generation.total} 次生成任务`}
+          icon={ChartNoAxesColumnIncreasing}
+        />
+        <MetricTile
+          label="推理成本"
+          value={currencyFormatter.format(summary.generation.total_cost_cny)}
+          detail={
+            summary.generation.total_tokens > 0
+              ? `每千 Token ${currencyFormatter.format((summary.generation.total_cost_cny / summary.generation.total_tokens) * 1_000)}`
+              : "暂无 Token 样本"
+          }
+          icon={CircleDollarSign}
+        />
+        <MetricTile
+          label="运行中任务"
+          value={integerFormatter.format(summary.generation.active)}
+          detail={`${summary.generation.cancelled} 已取消 / ${summary.generation.total} 总任务`}
+          icon={Activity}
+        />
+      </section>
+
+      <div className="mt-9 grid gap-8 lg:grid-cols-2">
+        <Distribution title="失败码分布" codes={summary.failure_codes} emptyLabel="当前周期没有验证失败码" />
+        <Distribution title="布局问题分布" codes={summary.layout.issue_codes} emptyLabel="当前周期没有布局问题码" />
+      </div>
+    </>
+  );
+}
+
 export default function AdminQualityPage() {
   const [windowDays, setWindowDays] = useState<QualityWindowDays>(30);
   const [summary, setSummary] = useState<QualitySummary | null>(null);
@@ -122,10 +196,6 @@ export default function AdminQualityPage() {
       cancelled = true;
     };
   }, [reloadKey, windowDays]);
-
-  const generatedAt = summary
-    ? new Date(summary.generated_at).toLocaleString("zh-CN", { hour12: false })
-    : "";
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10">
@@ -177,73 +247,7 @@ export default function AdminQualityPage() {
             description={`最近 ${windowDays} 天尚未产生可聚合的生成、智能体或布局记录。`}
           />
         </div>
-      ) : summary ? (
-        <>
-          <div className="mt-7 flex flex-wrap items-center justify-between gap-2 text-xs text-stone-400">
-            <span>统计窗口：最近 {summary.window_days} 天</span>
-            <span>更新时间：{generatedAt}</span>
-          </div>
-          <section className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <MetricTile
-              label="生成成功率"
-              value={formatRate(summary.generation.success_rate)}
-              detail={`${summary.generation.completed} 成功 / ${summary.generation.failed} 失败`}
-              icon={Activity}
-            />
-            <MetricTile
-              label="降级率"
-              value={formatRate(summary.generation.fallback_rate)}
-              detail={`已完成生成 ${summary.generation.completed} 次`}
-              icon={RefreshCw}
-            />
-            <MetricTile
-              label="生成耗时 P50"
-              value={formatDuration(summary.generation.duration_p50_ms)}
-              detail={`P95 ${formatDuration(summary.generation.duration_p95_ms)}`}
-              icon={Clock3}
-            />
-            <MetricTile
-              label="Agent 转人工率"
-              value={formatRate(summary.agent.handoff_rate)}
-              detail={`${summary.agent.handoff_total} 次转人工 / ${summary.agent.turn_total} 轮`}
-              icon={Bot}
-            />
-            <MetricTile
-              label="布局硬约束通过率"
-              value={formatRate(summary.layout.hard_pass_rate)}
-              detail={`${summary.layout.hard_pass_total} 通过 / ${summary.layout.total} 次布局`}
-              icon={ShieldCheck}
-            />
-            <MetricTile
-              label="Token 总量"
-              value={integerFormatter.format(summary.generation.total_tokens)}
-              detail={`${summary.generation.total} 次生成任务`}
-              icon={ChartNoAxesColumnIncreasing}
-            />
-            <MetricTile
-              label="推理成本"
-              value={currencyFormatter.format(summary.generation.total_cost_cny)}
-              detail={
-                summary.generation.total_tokens > 0
-                  ? `每千 Token ${currencyFormatter.format((summary.generation.total_cost_cny / summary.generation.total_tokens) * 1_000)}`
-                  : "暂无 Token 样本"
-              }
-              icon={CircleDollarSign}
-            />
-            <MetricTile
-              label="运行中任务"
-              value={integerFormatter.format(summary.generation.active)}
-              detail={`${summary.generation.cancelled} 已取消 / ${summary.generation.total} 总任务`}
-              icon={Activity}
-            />
-          </section>
-
-          <div className="mt-9 grid gap-8 lg:grid-cols-2">
-            <Distribution title="失败码分布" codes={summary.failure_codes} emptyLabel="当前周期没有验证失败码" />
-            <Distribution title="布局问题分布" codes={summary.layout.issue_codes} emptyLabel="当前周期没有布局问题码" />
-          </div>
-        </>
-      ) : null}
+      ) : summary ? <QualitySummaryContent summary={summary} /> : null}
     </div>
   );
 }

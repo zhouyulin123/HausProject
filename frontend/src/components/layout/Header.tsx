@@ -6,6 +6,7 @@ import Button from "@/components/common/Button";
 import { useShopStore } from "@/store/useShopStore";
 import { roleLabel, useAuthStore } from "@/store/useAuthStore";
 import { fetchUnreadQuoteCount } from "@/api/orderApi";
+import { ADMIN_QUALITY_PATH, canAccessQualityDashboard } from "@/lib/qualityMetrics";
 
 const commonNavItems = [
   { label: "首页", to: "/" },
@@ -69,7 +70,9 @@ export default function Header() {
         { label: "工作台", to: "/workspace" },
         { label: "客户跟单", to: "/customers" },
         { label: "商品库", to: "/admin" },
-        { label: "运营质量", to: "/admin/quality" },
+        ...(canAccessQualityDashboard(user?.role)
+          ? [{ label: "运营质量", to: ADMIN_QUALITY_PATH }]
+          : []),
         ...(isAdmin() ? [{ label: "用户管理", to: "/admin/users" }] : []),
       ]
     : [

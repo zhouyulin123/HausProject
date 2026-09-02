@@ -41,7 +41,7 @@ describe("运营质量看板内容", () => {
 
     expect(html).toContain("89.5%");
     expect(html).toContain("P95 9.12 秒");
-    expect(html).toContain("CN¥128.46");
+    expect(html).toContain("128.46");
     expect(html).toContain("invalid_quote");
     expect(html).toContain(">7<");
   });

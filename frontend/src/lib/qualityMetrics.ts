@@ -1,7 +1,12 @@
 import type { QualitySummary, QualityWindowDays } from "@/types/quality";
+import type { UserRole } from "@/api/authApi";
 
 export const ADMIN_QUALITY_PATH = "/admin/quality";
 export const QUALITY_WINDOWS: readonly QualityWindowDays[] = [7, 30, 90];
+
+export function canAccessQualityDashboard(role: UserRole | undefined): boolean {
+  return role === "admin";
+}
 
 export function formatRate(value: number | null): string {
   return value === null ? "--" : `${(value * 100).toFixed(1)}%`;

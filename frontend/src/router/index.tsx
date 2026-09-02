@@ -115,9 +115,9 @@ export const router = createBrowserRouter(
         {
           path: "admin/quality",
           element: (
-            <RequireFactory>
+            <RequireAdmin>
               <AdminQualityPage />
-            </RequireFactory>
+            </RequireAdmin>
           ),
         },
         { path: "login", element: <LoginPage /> },
