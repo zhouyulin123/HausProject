@@ -11,6 +11,7 @@ from evals.failure_triage import (
 )
 from evals.real_world import RealWorldCase, RealWorldDataset
 from evals.run_failure_triage import main as run_failure_triage_main
+from app.services.failure_triage_signature import verify_failure_triage_signature
 
 
 def _case(
@@ -353,6 +354,19 @@ def test_failure_triage_cli_exit_codes_and_outputs(tmp_path, monkeypatch):
         ),
     )
     monkeypatch.setenv("EVAL_CASE_ID_SALT", "test-salt-at-least-16-bytes")
+    monkeypatch.setenv(
+        "EVAL_REPORT_SIGNING_KEY",
+        "test-report-signing-key-at-least-32-bytes",
+    )
+
+    common_args = [
+        "--report-id",
+        "weekly-2026-W36",
+        "--candidate-version",
+        "candidate-2026-W36",
+        "--signing-key-id",
+        "eval-key-v1",
+    ]
 
     empty_code = run_failure_triage_main(
         [
@@ -362,6 +376,7 @@ def test_failure_triage_cli_exit_codes_and_outputs(tmp_path, monkeypatch):
             str(empty_input),
             "--output-dir",
             str(tmp_path / "empty-report"),
+            *common_args,
         ]
     )
     failed_code = run_failure_triage_main(
@@ -372,6 +387,7 @@ def test_failure_triage_cli_exit_codes_and_outputs(tmp_path, monkeypatch):
             str(failed_input),
             "--output-dir",
             str(tmp_path / "failed-report"),
+            *common_args,
         ]
     )
 
@@ -384,8 +400,17 @@ def test_failure_triage_cli_exit_codes_and_outputs(tmp_path, monkeypatch):
         encoding="utf-8"
     )
     assert report["summary"]["failure_count"] == 1
+    sync_payload = report["sync_payload"]
+    assert sync_payload["report_id"] == "weekly-2026-W36"
+    assert sync_payload["candidate_version"] == "candidate-2026-W36"
+    assert sync_payload["signature_key_id"] == "eval-key-v1"
+    assert verify_failure_triage_signature(
+        sync_payload,
+        signing_key="test-report-signing-key-at-least-32-bytes",
+    ) is True
     assert "invalid_sku" in markdown
     assert "case-a" not in markdown
+    assert "case-a" not in json.dumps(sync_payload, ensure_ascii=False)
 
     monkeypatch.delenv("EVAL_CASE_ID_SALT")
     invalid_code = run_failure_triage_main(
@@ -396,6 +421,7 @@ def test_failure_triage_cli_exit_codes_and_outputs(tmp_path, monkeypatch):
             str(empty_input),
             "--output-dir",
             str(tmp_path / "invalid-report"),
+            *common_args,
         ]
     )
     assert invalid_code == 2

@@ -12,6 +12,10 @@ from app.services.failure_triage_service import (
     sync_verified_report,
     update_failure_cluster,
 )
+from app.services.failure_triage_signature import sign_failure_triage_payload
+
+
+_SIGNING_KEY = "test-report-signing-key-at-least-32-bytes"
 
 
 @pytest.fixture
@@ -25,31 +29,39 @@ def db():
 
 
 def _report(report_id: str, candidate_version: str = "candidate-1"):
-    return FailureTriageReportRequest.model_validate(
-        {
-            "schema_version": "1.0",
-            "report_id": report_id,
-            "verification_status": "verified",
-            "taxonomy_version": "taxonomy-1",
-            "data_version": "data-1",
-            "candidate_version": candidate_version,
-            "generated_at": "2026-09-02T08:00:00Z",
-            "failures": [
-                {
-                    "failure_type": "layout",
-                    "code": "item_collision",
-                    "severity": "high",
-                    "occurrence_count": 3,
-                    "affected_count": 2,
-                }
-            ],
-        }
+    payload = {
+        "schema_version": "1.0",
+        "report_id": report_id,
+        "taxonomy_version": "taxonomy-1",
+        "data_version": "data-1",
+        "candidate_version": candidate_version,
+        "signature_algorithm": "hmac-sha256",
+        "signature_key_id": "eval-key-v1",
+        "generated_at": "2026-09-02T08:00:00Z",
+        "failures": [
+            {
+                "failure_type": "layout",
+                "code": "item_collision",
+                "severity": "high",
+                "occurrence_count": 3,
+                "affected_count": 2,
+            }
+        ],
+    }
+    payload["signature"] = sign_failure_triage_payload(
+        payload,
+        signing_key=_SIGNING_KEY,
     )
+    return FailureTriageReportRequest.model_validate(payload)
 
 
 def test_report_sync_is_idempotent_and_verified_recurrence_reopens(db):
-    first = sync_verified_report(db, _report("report-001"))
-    duplicate = sync_verified_report(db, _report("report-001"))
+    first = sync_verified_report(db, _report("report-001"), signing_key=_SIGNING_KEY)
+    duplicate = sync_verified_report(
+        db,
+        _report("report-001"),
+        signing_key=_SIGNING_KEY,
+    )
 
     assert first.imported is True
     assert duplicate.imported is False
@@ -58,10 +70,15 @@ def test_report_sync_is_idempotent_and_verified_recurrence_reopens(db):
     assert cluster.occurrence_count == 3
     assert cluster.affected_count == 2
     assert len(cluster.fingerprint) == 64
-    changed_payload = _report("report-001")
-    changed_payload.failures[0].occurrence_count = 4
+    changed_raw = _report("report-001").model_dump(mode="json")
+    changed_raw["failures"][0]["occurrence_count"] = 4
+    changed_raw["signature"] = sign_failure_triage_payload(
+        changed_raw,
+        signing_key=_SIGNING_KEY,
+    )
+    changed_payload = FailureTriageReportRequest.model_validate(changed_raw)
     with pytest.raises(FailureTriageConflict, match="report_id"):
-        sync_verified_report(db, changed_payload)
+        sync_verified_report(db, changed_payload, signing_key=_SIGNING_KEY)
 
     update_failure_cluster(
         db,
@@ -79,7 +96,11 @@ def test_report_sync_is_idempotent_and_verified_recurrence_reopens(db):
         FailureClusterUpdate(status="verified", verified_version="eval-2"),
     )
 
-    sync_verified_report(db, _report("report-002", "candidate-3"))
+    sync_verified_report(
+        db,
+        _report("report-002", "candidate-3"),
+        signing_key=_SIGNING_KEY,
+    )
     db.refresh(cluster)
 
     assert cluster.status == "open"
@@ -91,7 +112,7 @@ def test_report_sync_is_idempotent_and_verified_recurrence_reopens(db):
 
 
 def test_status_machine_rejects_skips_and_requires_versions(db):
-    sync_verified_report(db, _report("report-001"))
+    sync_verified_report(db, _report("report-001"), signing_key=_SIGNING_KEY)
     cluster = db.scalar(select(FailureCluster))
     assert cluster is not None
 
@@ -138,13 +159,29 @@ def test_status_machine_rejects_skips_and_requires_versions(db):
         )
 
 
-def test_report_schema_rejects_case_ids_and_unverified_inputs():
+def test_report_schema_rejects_case_ids_and_invalid_signatures(db):
     payload = _report("report-001").model_dump(mode="json")
     payload["failures"][0]["case_id"] = "private-case-001"
     with pytest.raises(ValueError):
         FailureTriageReportRequest.model_validate(payload)
 
     payload = _report("report-002").model_dump(mode="json")
-    payload["verification_status"] = "draft"
-    with pytest.raises(ValueError):
-        FailureTriageReportRequest.model_validate(payload)
+    payload["signature"] = "0" * 64
+    parsed = FailureTriageReportRequest.model_validate(payload)
+    with pytest.raises(FailureTriageConflict, match="签名"):
+        sync_verified_report(db, parsed, signing_key=_SIGNING_KEY)
+
+
+def test_same_semantic_report_cannot_be_counted_twice_under_another_id(db):
+    first = sync_verified_report(db, _report("report-001"), signing_key=_SIGNING_KEY)
+    duplicate = sync_verified_report(
+        db,
+        _report("report-002"),
+        signing_key=_SIGNING_KEY,
+    )
+
+    assert first.imported is True
+    assert duplicate.imported is False
+    cluster = db.scalar(select(FailureCluster))
+    assert cluster is not None
+    assert cluster.occurrence_count == 3
