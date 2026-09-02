@@ -199,8 +199,12 @@ def test_collector_recomputes_metrics_from_revision_and_annotation(db, tmp_path)
     result = execution["result"]
     assert bundle["schema_version"] == "4.0"
     assert execution["output_digest"] == run.output_digest
-    assert result["requirement_correct"] == 1
-    assert result["requirement_total"] == 1
+    assert result["requirement_correct"] == 0
+    assert result["requirement_total"] == 0
+    assert result["space_fact_correct"] == 0
+    assert result["space_fact_total"] == 0
+    assert result["low_confidence_confirmed"] == 0
+    assert result["low_confidence_facts"] == 0
     assert result["recommended_skus"] == 2
     assert result["valid_skus"] == 1
     assert result["product_match_checks"] == 2

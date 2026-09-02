@@ -37,7 +37,12 @@ def _task(db: Session, *, requirement: dict | None = None) -> DesignTask:
     return task
 
 
-def _plans(*, reverse: bool = False, total: int = 10000) -> list[dict]:
+def _plans(
+    *,
+    reverse_unordered_items: bool = False,
+    reverse_plan_order: bool = False,
+    total: int = 10000,
+) -> list[dict]:
     plans = [
         {
             "id": "plan-a",
@@ -92,11 +97,12 @@ def _plans(*, reverse: bool = False, total: int = 10000) -> list[dict]:
             },
         },
     ]
-    if reverse:
+    if reverse_unordered_items:
         for plan in plans:
             plan["furnitureSuggestions"].reverse()
             plan["layoutConstraintResults"].reverse()
             plan["shopQuote"]["lineItems"].reverse()
+    if reverse_plan_order:
         plans.reverse()
     return plans
 
@@ -112,24 +118,38 @@ def _revision(db: Session, task: DesignTask, *, plans: list[dict]):
     )
 
 
-def test_output_digest_ignores_json_and_plan_reordering_but_binds_content(db):
+def test_output_digest_ignores_unordered_items_but_binds_plan_order_and_content(db):
     first_task = _task(db)
     second_task = _task(
         db,
         requirement={"style": "现代", "space_type": "客厅"},
     )
     third_task = _task(db)
+    fourth_task = _task(db)
     first = _revision(db, first_task, plans=_plans())
-    reordered = _revision(db, second_task, plans=_plans(reverse=True))
-    changed = _revision(db, third_task, plans=_plans(total=10001))
+    unordered_items_reordered = _revision(
+        db,
+        second_task,
+        plans=_plans(reverse_unordered_items=True),
+    )
+    plans_reordered = _revision(
+        db,
+        third_task,
+        plans=_plans(reverse_plan_order=True),
+    )
+    changed = _revision(db, fourth_task, plans=_plans(total=10001))
 
     first_digest = generation_output_service.revision_output_digest(
         db,
         revision_id=first.id,
     )
-    reordered_digest = generation_output_service.revision_output_digest(
+    unordered_items_digest = generation_output_service.revision_output_digest(
         db,
-        revision_id=reordered.id,
+        revision_id=unordered_items_reordered.id,
+    )
+    plans_reordered_digest = generation_output_service.revision_output_digest(
+        db,
+        revision_id=plans_reordered.id,
     )
     changed_digest = generation_output_service.revision_output_digest(
         db,
@@ -137,7 +157,8 @@ def test_output_digest_ignores_json_and_plan_reordering_but_binds_content(db):
     )
 
     assert first_digest.startswith("sha256:")
-    assert reordered_digest == first_digest
+    assert unordered_items_digest == first_digest
+    assert plans_reordered_digest != first_digest
     assert changed_digest != first_digest
 
 
