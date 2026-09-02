@@ -12,6 +12,10 @@ import type {
   AgentSceneReference,
 } from "@/types/agent";
 import type {
+  CustomFurniturePreviewResult,
+  CustomFurnitureSpecPatch,
+} from "@/types/customFurniture";
+import type {
   BlenderRenderJob,
   BlenderRenderProfile,
   DesignScene,
@@ -1005,6 +1009,7 @@ export interface AgentTurnRequest {
     room_depth_m?: number;
     ceiling_height_m?: number;
   };
+  custom_furniture_spec?: CustomFurnitureSpecPatch;
 }
 
 export interface AgentEvent {
@@ -1048,13 +1053,16 @@ export interface AgentTurnResponse {
     max_retries: number;
     pending_questions: AgentPendingQuestion[];
     hard_errors: string[];
+    custom_furniture_spec: CustomFurnitureSpecPatch | null;
+    approval_required: boolean;
     exit_reason: AgentExitReason;
   };
   pending_questions: AgentPendingQuestion[];
   events: AgentEvent[];
+  approval_required: boolean;
   scene_ref: AgentSceneReference | null;
   exit_reason: AgentExitReason;
-  result: Record<string, unknown> | null;
+  result: CustomFurniturePreviewResult | Record<string, unknown> | null;
 }
 
 export interface DesignAgentStateResponse {
@@ -1072,9 +1080,11 @@ export interface DesignAgentStateResponse {
   max_steps: number;
   max_retries: number;
   hard_errors: string[];
+  custom_furniture_spec: CustomFurnitureSpecPatch | null;
+  approval_required: boolean;
   scene_ref: AgentSceneReference | null;
   exit_reason: AgentExitReason;
-  result: Record<string, unknown> | null;
+  result: CustomFurniturePreviewResult | Record<string, unknown> | null;
   /** 服务端持久化历史；刷新时覆盖本地瞬时消息缓存。 */
   messages: { id: number; role: "user" | "ai"; content: string; created_at: string | null }[];
 }

@@ -8,6 +8,10 @@ import type {
   AgentPendingQuestion,
   AgentSceneReference,
 } from "@/types/agent";
+import type {
+  CustomFurniturePreviewResult,
+  CustomFurnitureSpecPatch,
+} from "@/types/customFurniture";
 
 export type DesignProjectMode =
   | "catalog_design"
@@ -42,6 +46,9 @@ export interface DesignProject {
   pendingQuestions: AgentPendingQuestion[];
   sceneRef: AgentSceneReference | null;
   exitReason: AgentExitReason | null;
+  customFurnitureSpec: CustomFurnitureSpecPatch | null;
+  customFurnitureResult: CustomFurniturePreviewResult | null;
+  approvalRequired: boolean;
   activePlanId: string | null;
   activePlanVersionId: number | null;
 }
@@ -126,6 +133,9 @@ export function createDesignProject(
     pendingQuestions: [],
     sceneRef: null,
     exitReason: null,
+    customFurnitureSpec: null,
+    customFurnitureResult: null,
+    approvalRequired: false,
     activePlanId: null,
     activePlanVersionId: null,
   };

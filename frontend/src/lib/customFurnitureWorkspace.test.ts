@@ -57,7 +57,7 @@ describe("自定义家具工作台映射", () => {
         },
       },
       quote_preview: {
-        status: "estimated",
+        status: "estimated" as const,
         reason_code: null,
         rule_id: 3,
         project_name: "定制衣柜",
@@ -66,7 +66,7 @@ describe("自定义家具工作台映射", () => {
         unit_price: 680,
         quantity: "4.320",
         estimated_amount: "2937.60",
-        currency: "CNY",
+        currency: "CNY" as const,
         description: null,
       },
       warnings: ["投产前仍需工程复核。"],

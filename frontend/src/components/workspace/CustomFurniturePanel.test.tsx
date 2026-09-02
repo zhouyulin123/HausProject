@@ -1,6 +1,56 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import CustomFurniturePanel from "./CustomFurniturePanel";
+import type { CustomFurniturePreviewResult } from "@/types/customFurniture";
+
+function previewResult(
+  quote: CustomFurniturePreviewResult["quote_preview"],
+): CustomFurniturePreviewResult {
+  return {
+    status: quote.status === "estimated" ? "preview_ready" : "needs_human",
+    spec: {
+      family: "table",
+      name: "六人位定制餐桌",
+      purpose: "dining_table",
+      material: "实木（橡木）",
+      dimensions: { width_mm: 1600, height_mm: 750, depth_mm: 800 },
+      structure: {
+        top_shape: "rectangle",
+        base_style: "four_leg",
+        support_count: 4,
+        seat_count: 6,
+        top_thickness_mm: 36,
+        edge_radius_mm: 12,
+      },
+    },
+    model_spec: {
+      家具类型: "定制餐桌",
+      确定性建模规则: {
+        规则版本: "1.0.0",
+        规则状态: "ready",
+        模型ID: "CUSTOM-TABLE-001",
+        生成器: "table_v2",
+        包围尺寸_mm: { 宽: 1600, 高: 750, 深: 800 },
+        外观规则: {},
+        材质槽: [],
+        部件: [],
+      },
+    },
+    quote_preview: quote,
+    warnings: ["投产前仍需工程复核。"],
+  };
+}
+
+const quoteBase = {
+  rule_id: 12,
+  project_name: "定制餐桌",
+  material_grade: "实木（橡木）",
+  pricing_unit: "件",
+  unit_price: 6800,
+  quantity: "1",
+  currency: "CNY" as const,
+  description: "按件估算",
+};
 
 describe("自定义家具结构化面板", () => {
   it("显示家具族、毫米尺寸和服务端待确认提示", () => {
@@ -27,5 +77,60 @@ describe("自定义家具结构化面板", () => {
     expect(html).toContain("宽度（mm）");
     expect(html).toContain("请提供宽、高、深三个毫米尺寸。");
     expect(html).toContain("生成参数预览");
+  });
+
+  it("仅在服务端返回确定性报价时显示金额", () => {
+    const preview = previewResult({
+      ...quoteBase,
+      status: "estimated",
+      reason_code: null,
+      estimated_amount: "6800.00",
+    });
+    const html = renderToStaticMarkup(
+      <CustomFurniturePanel
+        taskId={42}
+        initialSpec={preview.spec}
+        preview={preview}
+        approvalRequired={false}
+        pendingQuestions={[]}
+        onAgentResponse={vi.fn()}
+        onConversationTurn={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("参数预览已就绪");
+    expect(html).toContain("确定性估算");
+    expect(html).toContain("6,800.00");
+    expect(html).toContain("待工程复核");
+  });
+
+  it("缺少报价规则时不显示金额并标记人工确认", () => {
+    const preview = previewResult({
+      ...quoteBase,
+      status: "needs_human",
+      reason_code: "quote_rule_missing",
+      rule_id: null,
+      pricing_unit: null,
+      unit_price: null,
+      quantity: null,
+      estimated_amount: null,
+      description: null,
+    });
+    const html = renderToStaticMarkup(
+      <CustomFurniturePanel
+        taskId={42}
+        initialSpec={preview.spec}
+        preview={preview}
+        approvalRequired
+        pendingQuestions={[]}
+        onAgentResponse={vi.fn()}
+        onConversationTurn={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("参数预览需人工确认");
+    expect(html).toContain("待人工报价");
+    expect(html).toContain("需要人工确认报价");
+    expect(html).not.toContain("6,800.00");
   });
 });

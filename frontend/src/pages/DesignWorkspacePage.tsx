@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -11,11 +11,14 @@ import {
 } from "lucide-react";
 import ChatPanel from "@/components/chat/ChatPanel";
 import RoomView3D from "@/components/design/RoomView3D";
+import CustomFurniturePanel from "@/components/workspace/CustomFurniturePanel";
 import DesignWorkspaceInspector from "@/components/workspace/DesignWorkspaceInspector";
 import {
   fetchDesignAgentState,
   fetchFurnitureCatalog,
+  type AgentTurnResponse,
 } from "@/api/designApi";
+import { parseCustomFurniturePreview } from "@/lib/customFurnitureWorkspace";
 import { buildWorkspacePlan, DESIGN_ENTRY_MODES } from "@/lib/designProject";
 import {
   parseDesignProjectId,
@@ -27,6 +30,10 @@ import type { FurnitureItem } from "@/types/furniture";
 
 type AgentConnection = "checking" | "connected" | "unavailable";
 type MobilePanel = "conversation" | "scene" | "context";
+
+const FurnitureModelViewer = lazy(
+  () => import("@/components/furniture/FurnitureModelViewer"),
+);
 
 export default function DesignWorkspacePage() {
   const params = useParams();
@@ -43,6 +50,33 @@ export default function DesignWorkspacePage() {
   const [catalogError, setCatalogError] = useState("");
   const [agentConnection, setAgentConnection] = useState<AgentConnection>("checking");
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("conversation");
+
+  const applyWorkspaceAgentResponse = useCallback((response: AgentTurnResponse) => {
+    if (!projectId) return;
+    applyAgentState(projectId, {
+      stateVersion: response.state_version,
+      status: response.status,
+      activeMode: response.active_mode,
+      pendingQuestions: response.pending_questions,
+      sceneRef: response.scene_ref,
+      exitReason: response.exit_reason,
+      activeRoomId: response.active_room_id,
+      customFurnitureSpec: response.state.custom_furniture_spec,
+      customFurnitureResult: parseCustomFurniturePreview(response.result),
+      approvalRequired: response.approval_required,
+    });
+  }, [applyAgentState, projectId]);
+
+  const appendConversationTurn = useCallback((message: string, reply: string) => {
+    if (!projectId) return;
+    const current = useDesignProjectStore.getState().projects[projectId]?.messages ?? [];
+    const stamp = Date.now();
+    setMessages(projectId, [
+      ...current,
+      { id: `local-user-${stamp}`, role: "user", content: message },
+      { id: `local-ai-${stamp}`, role: "ai", content: reply },
+    ]);
+  }, [projectId, setMessages]);
 
   useEffect(() => {
     if (project) selectProject(project.id);
@@ -62,6 +96,9 @@ export default function DesignWorkspacePage() {
           sceneRef: checkpoint.scene_ref,
           exitReason: checkpoint.exit_reason,
           activeRoomId: checkpoint.active_room_id,
+          customFurnitureSpec: checkpoint.custom_furniture_spec,
+          customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
+          approvalRequired: checkpoint.approval_required,
         });
         setMessages(
           project.id,
@@ -82,7 +119,15 @@ export default function DesignWorkspacePage() {
   }, [applyAgentState, project?.id, setMessages]);
 
   useEffect(() => {
+    if (project?.mode === "custom_furniture") {
+      setCatalog([]);
+      setCatalogError("");
+      setCatalogLoading(false);
+      return;
+    }
     let cancelled = false;
+    setCatalogLoading(true);
+    setCatalogError("");
     void fetchFurnitureCatalog(WORKSPACE_CATALOG_OPTIONS)
       .then((items) => {
         if (!cancelled) setCatalog(items);
@@ -96,7 +141,7 @@ export default function DesignWorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [project?.mode]);
 
   const activePlan = project?.activePlanId
     ? generatedPlans.find((item) => item.id === project.activePlanId)
@@ -171,7 +216,7 @@ export default function DesignWorkspacePage() {
           </div>
         </header>
 
-        {catalogError && (
+        {project.mode !== "custom_furniture" && catalogError && (
           <p role="alert" className="mb-3 border border-[#8f7040] bg-[#2b2718] px-4 py-3 text-xs text-[#f0d39e]">{catalogError}</p>
         )}
 
@@ -196,7 +241,7 @@ export default function DesignWorkspacePage() {
           })}
         </nav>
 
-        <div className="grid items-start gap-3 xl:grid-cols-[300px_minmax(620px,1fr)_310px]">
+        <div className="grid items-start gap-3 xl:grid-cols-[minmax(270px,300px)_minmax(0,1fr)_minmax(320px,360px)]">
           <div className={mobilePanel === "conversation" ? "block" : "hidden xl:block"}>
             <ChatPanel
               key={project.id}
@@ -209,38 +254,66 @@ export default function DesignWorkspacePage() {
               initialMessages={project.messages}
               pendingQuestions={project.pendingQuestions}
               onMessagesChange={(messages) => setMessages(project.id, messages)}
-              onAgentResponse={(response) =>
-                applyAgentState(project.id, {
-                  stateVersion: response.state_version,
-                  status: response.status,
-                  activeMode: response.active_mode,
-                  pendingQuestions: response.pending_questions,
-                  sceneRef: response.scene_ref,
-                  exitReason: response.exit_reason,
-                  activeRoomId: response.active_room_id,
-                })
-              }
+              onAgentResponse={applyWorkspaceAgentResponse}
             />
           </div>
 
           <main className={`min-w-0 rounded-lg border border-[#293229] bg-[#d9d5ca] p-2 ${mobilePanel === "scene" ? "block" : "hidden xl:block"}`}>
             <div className="mb-2 flex min-h-9 items-center justify-between gap-3 border-b border-[#1d241f]/15 px-2 pb-2 text-[#303831]">
               <div>
-                <p className="font-mono text-[9px] tracking-[0.14em] text-[#69736a] uppercase">Live scene</p>
-                <p className="mt-0.5 text-xs font-medium">{roomType} · {selectedFurniture.length} 件家具</p>
+                <p className="font-mono text-[9px] tracking-[0.14em] text-[#69736a] uppercase">
+                  {project.mode === "custom_furniture" ? "Parameter preview" : "Live scene"}
+                </p>
+                <p className="mt-0.5 text-xs font-medium">
+                  {project.mode === "custom_furniture"
+                    ? project.customFurnitureResult?.spec.name ?? "自定义家具参数草案"
+                    : `${roomType} · ${selectedFurniture.length} 件家具`}
+                </p>
               </div>
-              <span className="text-[10px] text-[#69736a]">{plan.planVersionId ? `VERSION ${plan.planVersionId}` : "LOCAL DRAFT"}</span>
+              <span className="text-[10px] text-[#69736a]">
+                {project.mode === "custom_furniture" || !plan.planVersionId ? "LOCAL DRAFT" : `VERSION ${plan.planVersionId}`}
+              </span>
             </div>
-            <RoomView3D key={sceneKey} plan={plan} roomType={roomType} roomModel={project.roomModel} />
+            {project.mode === "custom_furniture" ? (
+              project.customFurnitureResult ? (
+                <div className="h-[540px] min-h-[420px] overflow-hidden border border-[#1d241f]/15 bg-[#efe8db]">
+                  <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-[#69736a]">正在加载确定性模型…</div>}>
+                    <FurnitureModelViewer spec={project.customFurnitureResult.model_spec} />
+                  </Suspense>
+                </div>
+              ) : (
+                <div className="flex h-[540px] min-h-[420px] items-center justify-center border border-dashed border-[#69736a]/40 bg-[#e4dfd3] px-8 text-center">
+                  <div className="max-w-sm">
+                    <Box className="mx-auto h-8 w-8 text-[#69736a]" />
+                    <p className="mt-4 text-sm font-medium text-[#303831]">尚无可验证的 3D 参数预览</p>
+                    <p className="mt-2 text-xs leading-5 text-[#69736a]">提交右侧结构化参数后，仅在服务端返回确定性模型规则时显示本地草案。当前内容不代表施工图、已保存方案或已核价结果。</p>
+                  </div>
+                </div>
+              )
+            ) : (
+              <RoomView3D key={sceneKey} plan={plan} roomType={roomType} roomModel={project.roomModel} />
+            )}
           </main>
 
           <div className={mobilePanel === "context" ? "block" : "hidden xl:block"}>
-            <DesignWorkspaceInspector
-              project={project}
-              catalog={catalog}
-              catalogLoading={catalogLoading}
-              budget={plan.budget}
-            />
+            {project.mode === "custom_furniture" ? (
+              <CustomFurniturePanel
+                taskId={project.id}
+                initialSpec={project.customFurnitureSpec}
+                preview={project.customFurnitureResult}
+                approvalRequired={project.approvalRequired}
+                pendingQuestions={project.pendingQuestions}
+                onAgentResponse={applyWorkspaceAgentResponse}
+                onConversationTurn={appendConversationTurn}
+              />
+            ) : (
+              <DesignWorkspaceInspector
+                project={project}
+                catalog={catalog}
+                catalogLoading={catalogLoading}
+                budget={plan.budget}
+              />
+            )}
           </div>
         </div>
       </div>

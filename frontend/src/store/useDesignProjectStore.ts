@@ -7,6 +7,10 @@ import type {
   AgentPendingQuestion,
   AgentSceneReference,
 } from "@/types/agent";
+import type {
+  CustomFurniturePreviewResult,
+  CustomFurnitureSpecPatch,
+} from "@/types/customFurniture";
 import {
   createDesignProject,
   type DesignProject,
@@ -41,6 +45,9 @@ interface DesignProjectState {
       sceneRef: AgentSceneReference | null;
       exitReason: AgentExitReason | null;
       activeRoomId?: string | null;
+      customFurnitureSpec?: CustomFurnitureSpecPatch | null;
+      customFurnitureResult?: CustomFurniturePreviewResult | null;
+      approvalRequired?: boolean;
     },
   ) => void;
 }
@@ -134,19 +141,35 @@ export const useDesignProjectStore = create<DesignProjectState>()(
               checkpoint.activeRoomId === undefined
                 ? project.activeRoomId
                 : checkpoint.activeRoomId,
+            customFurnitureSpec:
+              checkpoint.customFurnitureSpec === undefined
+                ? project.customFurnitureSpec
+                : checkpoint.customFurnitureSpec,
+            customFurnitureResult:
+              checkpoint.customFurnitureResult === undefined
+                ? project.customFurnitureResult
+                : checkpoint.customFurnitureResult,
+            approvalRequired:
+              checkpoint.approvalRequired ?? project.approvalRequired,
           })),
         ),
     }),
     {
       name: "ai-home-design-projects",
-      version: 1,
+      version: 2,
       migrate: (persisted) => {
         const state = persisted as Partial<DesignProjectState>;
         return {
           projects: Object.fromEntries(
             Object.entries(state.projects ?? {}).map(([id, project]) => [
               id,
-              { ...project, messages: [] },
+              {
+                ...project,
+                messages: [],
+                customFurnitureSpec: null,
+                customFurnitureResult: null,
+                approvalRequired: false,
+              },
             ]),
           ),
           currentProjectId: state.currentProjectId ?? null,
@@ -156,7 +179,13 @@ export const useDesignProjectStore = create<DesignProjectState>()(
         projects: Object.fromEntries(
           Object.entries(state.projects).map(([id, project]) => [
             id,
-            { ...project, messages: [] },
+            {
+              ...project,
+              messages: [],
+              customFurnitureSpec: null,
+              customFurnitureResult: null,
+              approvalRequired: false,
+            },
           ]),
         ),
         currentProjectId: state.currentProjectId,

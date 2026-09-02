@@ -12,6 +12,7 @@ export interface AgentSceneReference {
 export type AgentExitReason =
   | "goal_completed"
   | "missing_facts"
+  | "invalid_facts"
   | "approval_required"
   | "retry_exhausted"
   | "safety_blocked"
