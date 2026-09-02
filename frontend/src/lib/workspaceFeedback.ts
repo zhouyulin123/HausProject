@@ -76,6 +76,32 @@ export function buildFinalSelectFeedbackEvent(
   };
 }
 
+export function buildReplaceFeedbackEvent(input: {
+  clientEventId: string;
+  planVersionId: number | null | undefined;
+  sourceSku: string | null | undefined;
+  targetSku: string | null | undefined;
+  roomId: string | null | undefined;
+}): DesignFeedbackEventRequest | null {
+  const sourceSku = cleanIdentifier(input.sourceSku)?.toUpperCase() ?? null;
+  const targetSku = cleanIdentifier(input.targetSku)?.toUpperCase() ?? null;
+  if (
+    !positiveInteger(input.planVersionId)
+    || !sourceSku
+    || !targetSku
+    || sourceSku === targetSku
+  ) return null;
+  const roomId = cleanIdentifier(input.roomId);
+  return {
+    client_event_id: input.clientEventId,
+    action_type: "replace",
+    plan_version_id: input.planVersionId,
+    source_sku: sourceSku,
+    target_sku: targetSku,
+    ...(roomId ? { room_id: roomId } : {}),
+  };
+}
+
 export function buildMoveFeedbackEvent(
   clientEventId: string,
   sceneId: number | null | undefined,

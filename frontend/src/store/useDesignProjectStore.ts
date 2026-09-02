@@ -30,6 +30,11 @@ interface DesignProjectState {
   setMessages: (projectId: number, messages: ChatMessage[]) => void;
   toggleFurniture: (projectId: number, furnitureId: string) => void;
   setFurnitureSelection: (projectId: number, furnitureIds: string[]) => void;
+  replaceFurniture: (
+    projectId: number,
+    sourceFurnitureId: string,
+    targetFurnitureId: string,
+  ) => boolean;
   setRoomModel: (projectId: number, roomModel: RoomModel | null) => void;
   attachPlan: (
     projectId: number,
@@ -110,6 +115,26 @@ export const useDesignProjectStore = create<DesignProjectState>()(
             selectedFurnitureIds: [...new Set(furnitureIds)],
           })),
         ),
+      replaceFurniture: (projectId, sourceFurnitureId, targetFurnitureId) => {
+        let replaced = false;
+        set((state) => {
+          const project = state.projects[projectId];
+          if (
+            !project
+            || sourceFurnitureId === targetFurnitureId
+            || !project.selectedFurnitureIds.includes(sourceFurnitureId)
+            || project.selectedFurnitureIds.includes(targetFurnitureId)
+          ) return state;
+          replaced = true;
+          return updateProject(state, projectId, (current) => ({
+            ...current,
+            selectedFurnitureIds: current.selectedFurnitureIds.map((id) =>
+              id === sourceFurnitureId ? targetFurnitureId : id,
+            ),
+          }));
+        });
+        return replaced;
+      },
       setRoomModel: (projectId, roomModel) =>
         set((state) =>
           updateProject(state, projectId, (project) => ({

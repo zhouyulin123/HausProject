@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { createDesignProject } from "@/lib/designProject";
 import { emptyRequirement } from "@/types/requirement";
 import type { FurnitureItem } from "@/types/furniture";
-import DesignWorkspaceInspector from "./DesignWorkspaceInspector";
+import DesignWorkspaceInspector, {
+  commitFurnitureReplacement,
+} from "./DesignWorkspaceInspector";
 
 const catalog: FurnitureItem[] = [
   {
@@ -41,6 +43,45 @@ const catalog: FurnitureItem[] = [
 ];
 
 describe("工作台家具替换入口", () => {
+  it("仅在本地替换成功且有真实方案版本时构建一条 replace 事件", () => {
+    const rejected = vi.fn(() => false);
+    expect(commitFurnitureReplacement({
+      replaceSelection: rejected,
+      clientEventId: "feedback-42-replace-rejected",
+      planVersionId: 8,
+      sourceSku: "SOFA-OLD",
+      targetSku: "SOFA-NEW",
+      roomId: null,
+    })).toEqual({ completed: false, event: null });
+    expect(rejected).toHaveBeenCalledOnce();
+
+    const localOnly = vi.fn(() => true);
+    expect(commitFurnitureReplacement({
+      replaceSelection: localOnly,
+      clientEventId: "feedback-42-replace-local",
+      planVersionId: null,
+      sourceSku: "SOFA-OLD",
+      targetSku: "SOFA-NEW",
+      roomId: null,
+    })).toEqual({ completed: true, event: null });
+
+    expect(commitFurnitureReplacement({
+      replaceSelection: () => true,
+      clientEventId: "feedback-42-replace-sent",
+      planVersionId: 8,
+      sourceSku: "SOFA-OLD",
+      targetSku: "SOFA-NEW",
+      roomId: "living-room",
+    })).toMatchObject({
+      completed: true,
+      event: {
+        action_type: "replace",
+        source_sku: "SOFA-OLD",
+        target_sku: "SOFA-NEW",
+      },
+    });
+  });
+
   it("为已选家具提供明确替换动作，并保留目录加入/移除语义", () => {
     const project = createDesignProject(
       "catalog_design",

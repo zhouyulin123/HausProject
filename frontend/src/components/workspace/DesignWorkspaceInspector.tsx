@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import {
+  ArrowLeftRight,
   Box,
   Check,
   CircleDollarSign,
@@ -8,6 +9,7 @@ import {
   Plus,
   Search,
   Upload,
+  X,
 } from "lucide-react";
 import { analyzeRoomImage } from "@/api/designApi";
 import type { DesignProject } from "@/lib/designProject";
@@ -17,11 +19,24 @@ import type { FurnitureItem } from "@/types/furniture";
 import { getFurnitureDataOriginLabel } from "@/lib/furnitureDataOrigin";
 import {
   buildFurnitureFeedbackEvent,
+  buildReplaceFeedbackEvent,
   createFeedbackClientEventId,
 } from "@/lib/workspaceFeedback";
 import type { DesignFeedbackEventRequest } from "@/types/feedback";
 
 type InspectorTab = "room" | "catalog" | "budget";
+
+export function commitFurnitureReplacement(input: {
+  replaceSelection: () => boolean;
+  clientEventId: string;
+  planVersionId: number | null;
+  sourceSku: string | undefined;
+  targetSku: string | undefined;
+  roomId: string | null;
+}): { completed: boolean; event: DesignFeedbackEventRequest | null } {
+  if (!input.replaceSelection()) return { completed: false, event: null };
+  return { completed: true, event: buildReplaceFeedbackEvent(input) };
+}
 
 function amountFromPrice(text: string): number {
   const values = text.replace(/,/g, "").match(/\d+(?:\.\d+)?/g);
@@ -49,8 +64,10 @@ export default function DesignWorkspaceInspector({
   const [query, setQuery] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  const [replacementSourceId, setReplacementSourceId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const toggleFurniture = useDesignProjectStore((state) => state.toggleFurniture);
+  const replaceFurniture = useDesignProjectStore((state) => state.replaceFurniture);
   const setProjectRoomModel = useDesignProjectStore((state) => state.setRoomModel);
 
   const selectedItems = catalog.filter((item) =>
@@ -67,6 +84,9 @@ export default function DesignWorkspaceInspector({
         .includes(query.trim().toLowerCase()),
     )
     .slice(0, 12);
+  const replacementSource = replacementSourceId
+    ? selectedItems.find((item) => item.id === replacementSourceId) ?? null
+    : null;
 
   const toggleCatalogItem = (item: FurnitureItem) => {
     const currentProject = useDesignProjectStore.getState().projects[project.id];
@@ -84,6 +104,30 @@ export default function DesignWorkspaceInspector({
       onFeedbackEvent(
         request,
         selectedBeforeToggle ? `移除“${item.name}”` : `采用“${item.name}”`,
+      );
+    }
+  };
+
+  const replaceWithCatalogItem = (target: FurnitureItem) => {
+    if (!replacementSource) return;
+    const replacement = commitFurnitureReplacement({
+      replaceSelection: () => replaceFurniture(
+        project.id,
+        replacementSource.id,
+        target.id,
+      ),
+      clientEventId: createFeedbackClientEventId(project.id, "replace"),
+      planVersionId,
+      sourceSku: replacementSource.sku,
+      targetSku: target.sku,
+      roomId: project.activeRoomId,
+    });
+    if (!replacement.completed) return;
+    setReplacementSourceId(null);
+    if (replacement.event) {
+      onFeedbackEvent(
+        replacement.event,
+        `用“${target.name}”替换“${replacementSource.name}”`,
       );
     }
   };
@@ -187,6 +231,52 @@ export default function DesignWorkspaceInspector({
 
         {tab === "catalog" && (
           <div>
+            {selectedItems.length > 0 && (
+              <section className="mb-4 border-b border-white/10 pb-4" aria-label="已选家具替换">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-mono text-[10px] tracking-[0.14em] text-[#7f8b81] uppercase">
+                    已选家具
+                  </p>
+                  <span className="text-[10px] text-[#657067]">{selectedItems.length} 件</span>
+                </div>
+                <div className="mt-2 space-y-1.5">
+                  {selectedItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="grid min-h-9 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border border-white/10 px-2"
+                    >
+                      <span className="truncate text-[11px] text-[#c5ccc5]">{item.name}</span>
+                      <button
+                        type="button"
+                        aria-label={`替换${item.name}`}
+                        aria-pressed={replacementSourceId === item.id}
+                        onClick={() => setReplacementSourceId(item.id)}
+                        className="inline-flex min-h-7 shrink-0 items-center gap-1 px-1.5 text-[10px] text-[#d5ff67] hover:bg-white/5"
+                      >
+                        <ArrowLeftRight className="h-3 w-3" />
+                        替换
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+            {replacementSource && (
+              <div className="mb-3 flex min-w-0 items-center justify-between gap-2 border border-[#d5ff67]/35 bg-[#20291f] px-3 py-2 text-[11px]">
+                <p className="min-w-0 truncate text-[#cbd3cb]">
+                  选择目录商品替换“{replacementSource.name}”
+                </p>
+                <button
+                  type="button"
+                  title="取消替换"
+                  aria-label="取消替换"
+                  onClick={() => setReplacementSourceId(null)}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center text-[#8f9a90] hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
             <label className="flex items-center gap-2 border-b border-white/15 pb-2 text-[#89948a]">
               <Search className="h-4 w-4" />
               <input
@@ -201,6 +291,8 @@ export default function DesignWorkspaceInspector({
               {!catalogLoading && filteredCatalog.length === 0 && <p className="py-5 text-xs text-[#7f8b81]">没有匹配商品</p>}
               {filteredCatalog.map((item) => {
                 const selected = project.selectedFurnitureIds.includes(item.id);
+                const choosingReplacement = replacementSource !== null;
+                const replacementDisabled = choosingReplacement && selected;
                 return (
                   <div key={item.id} className="grid grid-cols-[44px_1fr_32px] items-center gap-3 py-3">
                     <div className={`h-11 overflow-hidden ${item.gradient}`}>
@@ -215,12 +307,21 @@ export default function DesignWorkspaceInspector({
                     </div>
                     <button
                       type="button"
-                      title={selected ? "从项目移除" : "加入当前项目"}
-                      aria-label={selected ? `移除${item.name}` : `加入${item.name}`}
-                      onClick={() => toggleCatalogItem(item)}
-                      className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${selected ? "bg-[#d5ff67] text-[#111713]" : "border border-white/15 text-[#9ca69d] hover:border-[#d5ff67] hover:text-[#d5ff67]"}`}
+                      disabled={replacementDisabled}
+                      title={choosingReplacement
+                        ? selected ? "已在当前方案中" : `替换为${item.name}`
+                        : selected ? "从项目移除" : "加入当前项目"}
+                      aria-label={choosingReplacement
+                        ? selected ? `${item.name}已在当前方案中` : `用${item.name}替换${replacementSource.name}`
+                        : selected ? `移除${item.name}` : `加入${item.name}`}
+                      onClick={() => choosingReplacement
+                        ? replaceWithCatalogItem(item)
+                        : toggleCatalogItem(item)}
+                      className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${selected ? "bg-[#d5ff67] text-[#111713]" : "border border-white/15 text-[#9ca69d] hover:border-[#d5ff67] hover:text-[#d5ff67]"}`}
                     >
-                      {selected ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                      {choosingReplacement && !selected
+                        ? <ArrowLeftRight className="h-4 w-4" />
+                        : selected ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                     </button>
                   </div>
                 );
