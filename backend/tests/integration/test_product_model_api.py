@@ -97,6 +97,8 @@ def test_upload_product_model_validates_and_binds_randomized_glb(product_api):
     assert response.status_code == 200
     body = response.json()
     assert body["model_status"] == "pending_review"
+    assert body["asset_mode"] == "parametric"
+    assert body["fallback_reason"] == "glb_pending_review"
     assert body["model_url"].startswith("/uploads/models/")
     stored_name = body["model_url"].rsplit("/", 1)[-1]
     assert stored_name != "supplier sofa.glb"
@@ -108,6 +110,8 @@ def test_upload_product_model_validates_and_binds_randomized_glb(product_api):
     )
     assert approved.status_code == 200
     assert approved.json()["model_status"] == "ready"
+    assert approved.json()["asset_mode"] == "approved_glb"
+    assert approved.json()["fallback_reason"] is None
     assert approved.json()["model_reviewed_by"] == "user:999"
     assert approved.json()["model_reviewed_at"] is not None
 

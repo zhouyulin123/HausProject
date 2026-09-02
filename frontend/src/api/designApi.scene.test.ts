@@ -322,6 +322,57 @@ describe("3D 场景 API", () => {
     ).rejects.toThrow("商品库加载失败");
   });
 
+  it("保留后端审核后的商品资产展示契约", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          products: [
+            {
+              id: 1,
+              sku: "SOFA-001",
+              name: "审核沙发",
+              category: "沙发",
+              room: "客厅",
+              style: "现代简约",
+              material: "布艺",
+              price_text: "¥6,800",
+              size: "2200×850×950mm",
+              selling_point: "",
+              alternative: "",
+              image_url: null,
+              model_url: "/uploads/models/sofa.glb",
+              model_status: "ready",
+              model_width_mm: 2200,
+              model_height_mm: 850,
+              model_depth_mm: 950,
+              model_license: "供应商书面商用授权",
+              model_source: "supplier:SOFA-001",
+              model_spec_json: null,
+              asset_mode: "approved_glb",
+              fallback_reason: null,
+              data_origin: "merchant",
+              source_name: null,
+              source_url: null,
+            },
+          ],
+        }),
+      );
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchFurnitureCatalog } = await import("./designApi");
+    const [product] = await fetchFurnitureCatalog({ fallbackToMock: false });
+
+    expect(product.assetMode).toBe("approved_glb");
+    expect(product.fallbackReason).toBeUndefined();
+  });
+
   it("未显式开启 Demo 模式时商品库默认拒绝静默 mock 降级", async () => {
     const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
     const storage = createLocalStorage({

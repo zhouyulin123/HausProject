@@ -113,6 +113,42 @@ def test_region_specific_product_requires_explicit_region_context():
     assert is_product_eligible(global_product, at=NOW).eligible
 
 
+def test_enrichment_exposes_only_audited_glb_as_approved_asset(db):
+    product = _product(
+        "SOFA-GLB-001",
+        model_url="/uploads/models/sofa.glb",
+        model_status="ready",
+        model_license="供应商书面商用授权",
+        model_source="supplier:SOFA-GLB-001",
+        model_reviewed_at=NOW,
+        model_reviewed_by="user:7",
+        model_spec_json={"确定性建模规则": {"规则状态": "ready"}},
+    )
+    db.add(product)
+    db.commit()
+    plans = [
+        {
+            "id": "plan-a",
+            "name": "审核资产方案",
+            "style": "现代简约",
+            "furnitureSuggestions": [{"sku": product.sku}],
+        }
+    ]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
+
+    enriched = plans[0]["furnitureSuggestions"][0]
+    assert enriched["assetMode"] == "approved_glb"
+    assert enriched["fallbackReason"] is None
+    assert enriched["modelUrl"] == "/uploads/models/sofa.glb"
+    assert enriched["modelStatus"] == "ready"
+    assert enriched["modelDimensionsMm"] == {
+        "width": 2200,
+        "height": 800,
+        "depth": 950,
+    }
+
+
 def test_catalog_context_only_contains_current_eligible_products(db):
     verified = _product("GOOD-001")
     draft = _product("DRAFT-001", verification_status="draft", data_origin="merchant_draft")

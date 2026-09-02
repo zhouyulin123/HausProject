@@ -36,6 +36,8 @@ def _valid_scene() -> dict:
             {
                 "instanceId": "sofa-main",
                 "sku": "SOFA-001",
+                "assetMode": "fallback",
+                "fallbackReason": "glb_load_failed",
                 "transform": {
                     "position": {"x": 2.5, "y": 0, "z": 3.2},
                     "rotation": {"x": 0, "y": 3.1416, "z": 0},
@@ -56,6 +58,17 @@ def test_scene_document_accepts_canonical_web_3d_payload():
     assert payload["coordinateSystem"] == "right-handed-y-up"
     assert payload["room"]["floorPolygon"][2] == {"x": 5.0, "z": 4.0}
     assert payload["items"][0]["instanceId"] == "sofa-main"
+    assert payload["items"][0]["assetMode"] == "fallback"
+    assert payload["items"][0]["fallbackReason"] == "glb_load_failed"
+
+
+@pytest.mark.unit
+def test_scene_fallback_asset_requires_structured_reason():
+    payload = _valid_scene()
+    payload["items"][0]["fallbackReason"] = None
+
+    with pytest.raises(ValidationError, match="fallbackReason"):
+        SceneDocument.model_validate(payload)
 
 
 @pytest.mark.unit

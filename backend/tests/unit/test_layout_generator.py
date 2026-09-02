@@ -84,5 +84,18 @@ def test_generate_layouts_items_have_real_dimensions():
 
 
 @pytest.mark.unit
+def test_generate_layouts_preserves_per_instance_asset_contract():
+    furniture = _furniture()
+    furniture[0].asset_mode = "approved_glb"
+    furniture[0].fallback_reason = None
+
+    scene, _ = generate_layouts(_room(), [], furniture)[0]
+    sofa = next(item for item in scene.items if item.sku == "SOFA-001")
+
+    assert sofa.asset_mode == "approved_glb"
+    assert sofa.fallback_reason is None
+
+
+@pytest.mark.unit
 def test_generate_layouts_empty_furniture_returns_empty():
     assert generate_layouts(_room(), [], []) == []

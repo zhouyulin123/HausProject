@@ -126,6 +126,25 @@ describe("方案到 3D 场景转换", () => {
     expect(scene.room.ceilingHeight).toBe(3.0);
   });
 
+  it("为每个实例序列化审核资产或参数化体块模式", () => {
+    const plan = structuredClone(mockDesigns[0]);
+    plan.furnitureSuggestions[0].assetMode = "approved_glb";
+    plan.furnitureSuggestions[0].fallbackReason = undefined;
+
+    const scene = buildSceneDocument(plan, "客厅");
+    const item = scene.items.find(
+      (candidate) => candidate.sku === plan.furnitureSuggestions[0].sku,
+    );
+
+    expect(item).toMatchObject({
+      assetMode: "approved_glb",
+      fallbackReason: null,
+    });
+    expect(
+      scene.items.every((candidate) => Boolean(candidate.assetMode)),
+    ).toBe(true);
+  });
+
   it("保留 RoomModel 的非矩形轮廓并把门窗转换为米制洞口", () => {
     const roomModel = livingRoomModel({
       rooms: [
