@@ -297,6 +297,33 @@ def test_space_paths_are_addressed_by_room_id_without_single_room_fallback(db, t
     assert result["space_fact_total"] == 1
 
 
+def test_failed_generation_still_counts_frozen_prediction_denominators(db, tmp_path):
+    dataset = _dataset(tmp_path)
+    task, _, _ = _task_with_predictions(db, dataset)
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=dataset.cases[0].id,
+        task=task,
+    )
+    run.attempt_count = 1
+    run.started_at = datetime.now(timezone.utc)
+    generation_run_service.mark_failed(
+        db,
+        run=run,
+        error_message="generation failed after perception",
+    )
+
+    result = _collect(db, dataset, run)["executions"][0]["result"]
+
+    assert result["generation_succeeded"] is False
+    assert result["requirement_correct"] == 1
+    assert result["requirement_total"] == 1
+    assert result["space_fact_correct"] == 1
+    assert result["space_fact_total"] == 1
+
+
 def test_binding_revalidation_rejects_mutated_source_prediction(db, tmp_path):
     dataset = _dataset(tmp_path)
     task, parse_result, _ = _task_with_predictions(db, dataset)
