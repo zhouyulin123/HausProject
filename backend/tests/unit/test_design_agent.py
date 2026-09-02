@@ -1,5 +1,6 @@
 import pytest
 
+from app.agents import design_agent as design_agent_module
 from app.agents.design_agent import (
     AgentToolRejected,
     DesignAgentWorkflow,
@@ -16,6 +17,108 @@ def _facts(**overrides):
     }
     values.update(overrides)
     return values
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("message", "expected_codes"),
+    [
+        ("请拆除客厅承重墙扩大空间", ["load_bearing_structure_change"]),
+        ("普通隔墙可以开一个门洞吗？", ["wall_demolition_or_opening"]),
+        ("消防喷淋能移位到吊顶边缘吗？", ["fire_safety_system_change"]),
+        ("把厨房燃气管改到另一侧", ["gas_system_change"]),
+        ("插座和配电箱都要移位", ["electrical_system_change"]),
+        ("卫生间给排水管需要改造", ["plumbing_system_change"]),
+        (
+            "请做全屋水电改造",
+            ["electrical_system_change", "plumbing_system_change"],
+        ),
+    ],
+)
+def test_high_risk_construction_classifier_returns_stable_reason_codes(
+    message,
+    expected_codes,
+):
+    assert (
+        design_agent_module.classify_high_risk_construction_intent(message)
+        == expected_codes
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "message",
+    [
+        "不拆墙、不动水电，只换家具",
+        "不要移动燃气管，只调整餐桌位置",
+        "不改消防设施，帮我选一组沙发",
+        "墙面只刷漆，不开洞",
+    ],
+)
+def test_high_risk_construction_classifier_respects_negation_scope(message):
+    assert design_agent_module.classify_high_risk_construction_intent(message) == []
+
+
+@pytest.mark.unit
+def test_high_risk_construction_classifier_only_negates_its_own_clause():
+    assert design_agent_module.classify_high_risk_construction_intent(
+        "不要拆承重墙，但是消防喷淋能移位吗？"
+    ) == ["fire_safety_system_change"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("intent", "message", "expected_code", "scene_context"),
+    [
+        ("design", "拆除承重墙后做方案", "load_bearing_structure_change", None),
+        ("catalog_search", "燃气管移位后选橱柜", "gas_system_change", None),
+        (
+            "scene_edit",
+            "在隔墙开门洞",
+            "wall_demolition_or_opening",
+            {"scene_id": 9, "base_version": 1},
+        ),
+        ("custom_furniture", "先改造水电再做衣柜", "electrical_system_change", None),
+    ],
+)
+def test_agent_blocks_construction_risk_before_any_tool_call(
+    intent,
+    message,
+    expected_code,
+    scene_context,
+):
+    calls = []
+    workflow = DesignAgentWorkflow(
+        retrieve_catalog=lambda _: calls.append("catalog") or {},
+        execute_design=lambda _: calls.append("design") or {},
+        execute_scene=lambda _: calls.append("scene") or {},
+        execute_custom=lambda _: calls.append("custom") or {},
+    )
+
+    result = workflow.run(
+        task_id=1,
+        turn_id=99,
+        active_mode=(
+            "custom_furniture" if intent == "custom_furniture" else "catalog_design"
+        ),
+        intent=intent,
+        message=message,
+        facts=_facts(),
+        scene_context=scene_context,
+    )
+
+    assert calls == []
+    assert result["status"] == "needs_human"
+    assert result["approval_required"] is True
+    assert result["exit_reason"] == "safety_blocked"
+    assert expected_code in result["hard_errors"]
+    assert result["tool_events"] == [
+        {
+            "tool": "safety_intent_gate",
+            "status": "rejected",
+            "payload": {"reason_codes": result["hard_errors"]},
+        }
+    ]
 
 
 @pytest.mark.unit

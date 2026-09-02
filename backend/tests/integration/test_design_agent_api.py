@@ -215,6 +215,104 @@ def test_agent_turn_resumes_from_structured_answers(agent_api_context):
 
 
 @pytest.mark.integration
+def test_agent_api_persists_construction_safety_block_before_tools(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    calls = []
+    monkeypatch.setattr(
+        design_agent.design_agent_service,
+        "_catalog_tool",
+        lambda *_: lambda _: calls.append("catalog") or {},
+    )
+    monkeypatch.setattr(
+        design_agent.design_agent_service,
+        "_design_tool",
+        lambda *_: lambda _: calls.append("design") or {},
+    )
+    monkeypatch.setattr(
+        design_agent.design_agent_service,
+        "_scene_tool",
+        lambda *_: lambda _: calls.append("scene") or {},
+    )
+    monkeypatch.setattr(
+        design_agent.design_agent_service,
+        "_custom_furniture_tool",
+        lambda *_: lambda _: calls.append("custom") or {},
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "construction-risk-001",
+            "message": "拆除承重墙，并把消防喷淋移位",
+            "active_mode": "catalog_design",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert calls == []
+    assert payload["status"] == "needs_human"
+    assert payload["approval_required"] is True
+    assert payload["exit_reason"] == "safety_blocked"
+    assert payload["state"]["hard_errors"] == [
+        "load_bearing_structure_change",
+        "fire_safety_system_change",
+    ]
+    gate_event = next(
+        event for event in payload["events"] if event["node"] == "safety_intent_gate"
+    )
+    assert gate_event["type"] == "validation_failed"
+    assert gate_event["status"] == "rejected"
+    assert gate_event["source"] == "deterministic"
+    assert gate_event["details"]["reason_codes"] == payload["state"]["hard_errors"]
+
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        events = db.scalars(
+            select(DesignAgentEvent).where(DesignAgentEvent.task_id == task_id)
+        ).all()
+        assert task.agent_state_json["exit_reason"] == "safety_blocked"
+        assert task.agent_state_json["approval_required"] is True
+        assert any(event.node == "safety_intent_gate" for event in events)
+
+
+@pytest.mark.integration
+def test_agent_api_does_not_block_explicit_negative_construction_constraints(
+    agent_api_context,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "construction-negative-001",
+            "message": "不拆墙、不动水电，只换家具",
+            "active_mode": "catalog_design",
+            "answers": {
+                "budget_max": 20000,
+                "room_width_m": 4,
+                "room_depth_m": 5,
+                "delivery_region": "CN-SH",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["exit_reason"] == "goal_completed"
+    assert payload["approval_required"] is False
+    assert not any(
+        event["node"] == "safety_intent_gate" for event in payload["events"]
+    )
+
+
+@pytest.mark.integration
 def test_agent_turn_accumulates_steps_across_pause_and_resume(
     agent_api_context,
 ):
