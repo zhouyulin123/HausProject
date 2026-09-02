@@ -114,6 +114,33 @@ def test_workflow_rejects_plan_without_server_quote():
         )
 
 
+def test_workflow_propagates_catalog_validation_codes():
+    def enrich(plans):
+        plans[0]["furnitureSuggestions"] = [{"id": "SOFA-001"}]
+        plans[0]["catalogValidation"] = {
+            "hardErrors": ["custom_quote_rule_ambiguous"],
+        }
+        plans[0]["shopQuote"] = {
+            "furnitureTotal": 5000,
+            "customTotal": 0,
+            "total": 5000,
+        }
+
+    workflow = DesignWorkflow(
+        generate_plans=lambda *_: [{
+            "id": "plan-a",
+            "furnitureSuggestions": [{"sku": "SOFA-001"}],
+        }],
+        build_template_plans=lambda _: [],
+        enrich_plans=enrich,
+    )
+
+    with pytest.raises(WorkflowQualityError) as caught:
+        workflow.run(requirement={}, image_context=[], catalog_context="")
+
+    assert caught.value.codes == ["custom_quote_rule_ambiguous"]
+
+
 def test_workflow_emits_each_completed_node_for_live_progress():
     emitted: list[dict] = []
 

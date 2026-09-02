@@ -28,7 +28,6 @@ from app.db.models import (
     DesignRevision,
     DesignScene,
     DesignTask,
-    Product,
     UploadedImage,
 )
 from app.schemas.design_agent import AgentTurnRequest
@@ -88,6 +87,12 @@ def _normalize_requirement_facts(requirement: dict[str, Any]) -> dict[str, Any]:
             "ceilingHeightM",
             "ceilingHeight",
         ),
+        "delivery_region": (
+            "delivery_region",
+            "deliveryRegion",
+            "region_code",
+            "regionCode",
+        ),
     }
     for target, keys in aliases.items():
         for key in keys:
@@ -108,6 +113,8 @@ def _normalize_requirement_facts(requirement: dict[str, Any]) -> dict[str, Any]:
         facts["budget_min"] = budget_min
     if "budget_max" not in facts and budget_max is not None:
         facts["budget_max"] = budget_max
+    if "delivery_region" in facts:
+        facts["delivery_region"] = str(facts["delivery_region"]).strip().upper()
     return facts
 
 
@@ -214,17 +221,44 @@ def _custom_spec_for_turn(
     return _merge_nested_dict(current, patch)
 
 
+def _max_dimensions_from_facts(
+    facts: dict[str, Any],
+) -> dict[str, int] | None:
+    width = facts.get("room_width_m")
+    depth = facts.get("room_depth_m")
+    if not isinstance(width, (int, float)) or not isinstance(depth, (int, float)):
+        return None
+    dimensions = {
+        "width": round(float(width) * 1000),
+        "depth": round(float(depth) * 1000),
+    }
+    height = facts.get("ceiling_height_m")
+    if isinstance(height, (int, float)):
+        dimensions["height"] = round(float(height) * 1000)
+    return dimensions
+
+
 def _catalog_tool(db: Session):
     def execute(state: dict[str, Any]) -> dict[str, Any]:
         facts = state.get("facts", {})
-        statement = select(Product).where(Product.is_active.is_(True))
-        statement = statement.where(Product.data_origin != "public_reference")
-        if facts.get("space_type"):
-            statement = statement.where(Product.room == facts["space_type"])
+        region = facts.get("delivery_region")
+        if not region:
+            raise AgentToolRejected(
+                "缺少配送地区，禁止检索商用商品",
+                codes=["delivery_region_required"],
+            )
         budget = facts.get("budget_max")
-        if isinstance(budget, int) and budget > 0:
-            statement = statement.where(Product.price <= budget)
-        products = db.scalars(statement.order_by(Product.price, Product.id)).all()
+        max_unit_price = budget if isinstance(budget, int) and budget > 0 else None
+        products = catalog_service.eligible_products(
+            db,
+            region=region,
+            max_unit_price=max_unit_price,
+            max_dimensions_mm=_max_dimensions_from_facts(facts),
+        )
+        space_type = facts.get("space_type")
+        if space_type:
+            products = [product for product in products if product.room == space_type]
+        products.sort(key=lambda product: (product.price, product.id or 0))
         status_counts: dict[str, int] = {}
         for product in products:
             status = product.data_origin or "unknown"
@@ -269,26 +303,24 @@ def _design_tool(db: Session, task: DesignTask):
             if isinstance(findings, list):
                 image_context.extend(str(item) for item in findings)
 
-        active_skus = set(
-            db.scalars(
-                select(Product.sku).where(
-                    Product.is_active.is_(True),
-                    Product.data_origin != "public_reference",
-                )
+        facts = state.get("facts", {})
+        region = facts.get("delivery_region")
+        if not region:
+            raise AgentToolRejected(
+                "缺少配送地区，禁止生成商用方案",
+                codes=["delivery_region_required"],
             )
-        )
+        budget = facts.get("budget_max")
+        max_dimensions_mm = _max_dimensions_from_facts(facts)
 
         def strict_enrich(plans: list[dict[str, Any]]) -> None:
-            for plan in plans:
-                items = plan.get("furnitureSuggestions")
-                raw_skus = [
-                    item.get("sku") or item.get("id")
-                    for item in items or []
-                    if isinstance(item, dict)
-                ]
-                if not raw_skus or any(sku not in active_skus for sku in raw_skus):
-                    raise WorkflowQualityError("方案包含无效商品 SKU")
-            catalog_service.verify_and_enrich_plans(db, plans)
+            catalog_service.verify_and_enrich_plans(
+                db,
+                plans,
+                region=region,
+                budget_max=budget if isinstance(budget, int) else None,
+                max_dimensions_mm=max_dimensions_mm,
+            )
 
         workflow = DesignWorkflow(
             generate_plans=llm_service.generate_plans,
@@ -299,14 +331,19 @@ def _design_tool(db: Session, task: DesignTask):
             result = workflow.run(
                 requirement=requirement,
                 image_context=image_context,
-                catalog_context=catalog_service.build_catalog_context(db),
+                catalog_context=catalog_service.build_catalog_context(
+                    db,
+                    region=region,
+                    max_unit_price=budget if isinstance(budget, int) else None,
+                    max_dimensions_mm=max_dimensions_mm,
+                ),
             )
         except WorkflowQualityError as exc:
-            codes = []
+            codes = list(exc.codes)
             message = str(exc)
-            if "SKU" in message or "商品" in message:
+            if not codes and ("SKU" in message or "商品" in message):
                 codes.append("invalid_sku")
-            if "报价" in message:
+            if not codes and "报价" in message:
                 codes.append("invalid_quote")
             raise AgentToolRejected(
                 message,

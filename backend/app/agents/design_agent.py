@@ -90,6 +90,11 @@ _QUESTIONS = {
         "prompt": "请提供房间的宽度和深度，或先完成户型尺寸校准。",
         "reason": "真实尺寸是摆放与碰撞校验的基础",
     },
+    "delivery_region": {
+        "field": "delivery_region",
+        "prompt": "商品需要配送到哪个地区？请提供城市或地区编码。",
+        "reason": "配送地区是库存、价格和可售范围的硬约束",
+    },
     "scene_context": {
         "field": "scene_context",
         "prompt": "请先打开需要修改的 3D 场景。",
@@ -273,6 +278,11 @@ class DesignAgentWorkflow:
                 missing.append("budget_max")
             if not (facts.get("room_width_m") and facts.get("room_depth_m")):
                 missing.append("room_dimensions")
+            if not facts.get("delivery_region"):
+                missing.append("delivery_region")
+        elif state["intent"] == "catalog_search":
+            if not facts.get("delivery_region"):
+                missing.append("delivery_region")
         elif state["intent"] == "scene_edit" and not state.get(
             "scene_context"
         ):

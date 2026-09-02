@@ -188,9 +188,18 @@ def build_catalog_context(
     at: datetime | None = None,
     region: str | None = None,
     allow_draft: bool = False,
+    max_unit_price: int | None = None,
+    max_dimensions_mm: Mapping[str, int] | None = None,
 ) -> str:
     """只把通过统一资格门禁的商品暴露给模型。"""
-    products = eligible_products(db, at=at, region=region, allow_draft=allow_draft)
+    products = eligible_products(
+        db,
+        at=at,
+        region=region,
+        allow_draft=allow_draft,
+        max_unit_price=max_unit_price,
+        max_dimensions_mm=max_dimensions_mm,
+    )
     lines = ["【本店成品家具库】格式: sku|名称|类别|空间|风格|材质|价格(元)|尺寸"]
     for product in products:
         price = (
@@ -255,7 +264,9 @@ def find_product_alternatives(
             reasons.append("same_room")
         if product.price <= source.price:
             reasons.append("price_not_higher")
-        reasons.append("dimensions_fit")
+        reasons.append(
+            "dimensions_fit" if max_dimensions_mm else "dimensions_known"
+        )
         sort_key = (
             0 if is_explicit else 1,
             explicit.get(product.sku, 9999),
@@ -269,38 +280,23 @@ def find_product_alternatives(
     return [item for _, item in sorted(candidates, key=lambda entry: entry[0])[:limit]]
 
 
-def _fallback_furniture(products: List[Product], plan_style: str, count: int = 4):
-    def score(product: Product) -> tuple[int, str]:
-        style_score = 0
-        if product.style:
-            style_score = (
-                2 if product.style in plan_style else int(product.style[:2] in plan_style)
-            )
-        return (-style_score, product.sku or "")
-
-    return [
-        {"sku": product.sku, "quantity": 1}
-        for product in sorted(products, key=score)[:count]
-    ]
-
-
 def _match_rule(
     rules: List[CustomQuoteRule], project: str, grade: Optional[str]
-) -> Optional[CustomQuoteRule]:
-    exact = [
-        rule for rule in rules
-        if rule.project_name == project and grade and rule.material_grade == grade
+) -> tuple[Optional[CustomQuoteRule], str | None, list[int]]:
+    matches = [
+        rule
+        for rule in rules
+        if project
+        and grade
+        and rule.project_name == project
+        and rule.material_grade == grade
     ]
-    if exact:
-        return exact[0]
-    by_project = [rule for rule in rules if rule.project_name == project]
-    if by_project:
-        return by_project[0]
-    loose = [
-        rule for rule in rules
-        if project and (project in rule.project_name or rule.project_name in project)
-    ]
-    return loose[0] if loose else None
+    matching_ids = [rule.id for rule in matches if rule.id is not None]
+    if len(matches) == 1:
+        return matches[0], None, matching_ids
+    if len(matches) > 1:
+        return None, "custom_quote_rule_ambiguous", matching_ids
+    return None, "custom_quote_rule_missing", []
 
 
 def verify_and_enrich_plans(
@@ -332,15 +328,23 @@ def verify_and_enrich_plans(
 
     for plan in plans:
         raw_items = plan.get("furnitureSuggestions") or []
+        hard_errors: list[str] = []
         if not raw_items:
-            raw_items = _fallback_furniture(products, str(plan.get("style", "")))
+            hard_errors.append("missing_product_sku")
         resolved_items: list[tuple[dict[str, Any], Product, str | None, list[str]]] = []
         rejected: list[dict[str, Any]] = []
         for item in raw_items:
             if not isinstance(item, dict):
                 rejected.append({"sku": None, "reason_codes": ["invalid_item"]})
+                hard_errors.append("invalid_sku")
                 continue
             requested_sku = item.get("sku") or item.get("id")
+            if not requested_sku:
+                rejected.append(
+                    {"sku": None, "reason_codes": ["missing_product_sku"]}
+                )
+                hard_errors.append("missing_product_sku")
+                continue
             product = eligible_by_sku.get(requested_sku)
             replaced_sku = None
             replacement_reasons: list[str] = []
@@ -363,11 +367,19 @@ def verify_and_enrich_plans(
                         replacement_reasons = replacement["reason_codes"]
                 if product is None:
                     reasons = (
-                        is_product_eligible(source, at=current, region=region).reason_codes
+                        is_product_eligible(
+                            source,
+                            at=current,
+                            region=region,
+                            allow_draft=allow_draft,
+                            max_unit_price=budget_max,
+                            max_dimensions_mm=max_dimensions_mm,
+                        ).reason_codes
                         if source is not None
                         else ("sku_not_found",)
                     )
                     rejected.append({"sku": requested_sku, "reason_codes": list(reasons)})
+                    hard_errors.append("invalid_sku")
                     continue
             resolved_items.append((item, product, replaced_sku, replacement_reasons))
 
@@ -431,16 +443,35 @@ def verify_and_enrich_plans(
 
         custom_items = []
         custom_lines = []
+        custom_rule_errors: list[dict[str, Any]] = []
         custom_total = 0
-        raw_customs = plan.get("customItems") or [
-            {"project": "定制衣柜", "quantity": 6, "note": "主卧衣柜投影约 6㎡"},
-            {"project": "电视柜背景墙", "quantity": 4, "note": "客厅整墙约 4㎡"},
-        ]
+        raw_customs = plan.get("customItems") or []
         for item in raw_customs:
             if not isinstance(item, dict):
+                hard_errors.append("custom_quote_rule_missing")
+                custom_rule_errors.append({
+                    "project": None,
+                    "grade": None,
+                    "reason_code": "custom_quote_rule_missing",
+                    "matching_rule_ids": [],
+                })
                 continue
-            rule = _match_rule(rules, str(item.get("project", "")), item.get("grade"))
+            project = str(item.get("project") or "").strip()
+            grade = str(item.get("grade") or "").strip()
+            rule, rule_error, matching_rule_ids = _match_rule(
+                rules,
+                project,
+                grade,
+            )
             if rule is None:
+                code = rule_error or "custom_quote_rule_missing"
+                hard_errors.append(code)
+                custom_rule_errors.append({
+                    "project": project or None,
+                    "grade": grade or None,
+                    "reason_code": code,
+                    "matching_rule_ids": matching_rule_ids,
+                })
                 continue
             try:
                 quantity = max(0.5, min(60.0, float(item.get("quantity", 1))))
@@ -479,7 +510,16 @@ def verify_and_enrich_plans(
                 for line in line_items
             ],
         )
-        plan["catalogValidation"] = {"rejected": rejected}
+        hard_errors = list(dict.fromkeys(hard_errors))
+        plan["catalogValidation"] = {
+            "rejected": rejected,
+            "customRuleErrors": custom_rule_errors,
+            "hardErrors": hard_errors,
+            "quoteStatus": "blocked" if hard_errors else "priced",
+        }
+        if hard_errors:
+            plan.pop("shopQuote", None)
+            continue
         plan["shopQuote"] = {
             "furnitureTotal": furniture_total,
             "customTotal": custom_total,

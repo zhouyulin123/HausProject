@@ -73,7 +73,7 @@ def agent_api_context(monkeypatch):
                 verification_status="verified",
                 availability_status="in_stock",
                 stock_quantity=5,
-                region_codes=["*"],
+                region_codes=["CN-SH"],
                 price_valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
                 price_valid_to=datetime(2027, 1, 1, tzinfo=timezone.utc),
                 verified_at=datetime(2026, 1, 1, tzinfo=timezone.utc),

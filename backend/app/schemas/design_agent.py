@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.custom_furniture import CustomFurnitureSpecPatch
 
@@ -23,6 +23,12 @@ class AgentFactsPatch(BaseModel):
     room_width_m: float | None = Field(default=None, gt=0, le=50)
     room_depth_m: float | None = Field(default=None, gt=0, le=50)
     ceiling_height_m: float | None = Field(default=None, ge=1.8, le=8)
+    delivery_region: str | None = Field(default=None, min_length=2, max_length=50)
+
+    @field_validator("delivery_region")
+    @classmethod
+    def normalize_delivery_region(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value is not None else None
 
     @model_validator(mode="after")
     def validate_budget_range(self) -> "AgentFactsPatch":

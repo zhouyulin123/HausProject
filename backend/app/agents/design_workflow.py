@@ -25,6 +25,10 @@ OnStep = Callable[["WorkflowStep"], None]
 class WorkflowQualityError(ValueError):
     """工作流产物没有通过确定性质量门禁。"""
 
+    def __init__(self, message: str, *, codes: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.codes = list(dict.fromkeys(codes or []))
+
 
 class WorkflowStep(TypedDict, total=False):
     node: str
@@ -165,11 +169,28 @@ class DesignWorkflow:
 
         for plan in plans:
             plan_name = str(plan.get("name") or plan.get("id") or "未知方案")
+            validation = plan.get("catalogValidation")
+            hard_errors = (
+                validation.get("hardErrors", [])
+                if isinstance(validation, dict)
+                else []
+            )
+            if hard_errors:
+                raise WorkflowQualityError(
+                    f"{plan_name} 未通过商品与报价规则校验",
+                    codes=[str(code) for code in hard_errors],
+                )
             furniture = plan.get("furnitureSuggestions")
             if not isinstance(furniture, list) or not furniture:
-                raise WorkflowQualityError(f"{plan_name} 缺少有效商品")
+                raise WorkflowQualityError(
+                    f"{plan_name} 缺少有效商品",
+                    codes=["missing_product_sku"],
+                )
             if any(not isinstance(item, dict) or not item.get("id") for item in furniture):
-                raise WorkflowQualityError(f"{plan_name} 包含无效商品 SKU")
+                raise WorkflowQualityError(
+                    f"{plan_name} 包含无效商品 SKU",
+                    codes=["invalid_sku"],
+                )
 
             quote = plan.get("shopQuote")
             if not isinstance(quote, dict):
