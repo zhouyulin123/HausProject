@@ -15,6 +15,11 @@ import { useDesignProjectStore } from "@/store/useDesignProjectStore";
 import { useRoomModelStore } from "@/store/useRoomModelStore";
 import type { FurnitureItem } from "@/types/furniture";
 import { getFurnitureDataOriginLabel } from "@/lib/furnitureDataOrigin";
+import {
+  buildFurnitureFeedbackEvent,
+  createFeedbackClientEventId,
+} from "@/lib/workspaceFeedback";
+import type { DesignFeedbackEventRequest } from "@/types/feedback";
 
 type InspectorTab = "room" | "catalog" | "budget";
 
@@ -28,11 +33,15 @@ export default function DesignWorkspaceInspector({
   catalog,
   catalogLoading,
   budget,
+  planVersionId,
+  onFeedbackEvent,
 }: {
   project: DesignProject;
   catalog: FurnitureItem[];
   catalogLoading: boolean;
   budget: number;
+  planVersionId: number | null;
+  onFeedbackEvent: (event: DesignFeedbackEventRequest, label: string) => void;
 }) {
   const [tab, setTab] = useState<InspectorTab>(
     project.mode === "room_reconstruction" ? "room" : "catalog",
@@ -58,6 +67,26 @@ export default function DesignWorkspaceInspector({
         .includes(query.trim().toLowerCase()),
     )
     .slice(0, 12);
+
+  const toggleCatalogItem = (item: FurnitureItem) => {
+    const currentProject = useDesignProjectStore.getState().projects[project.id];
+    const selectedBeforeToggle = currentProject?.selectedFurnitureIds.includes(item.id) ?? false;
+    toggleFurniture(project.id, item.id);
+    const action = selectedBeforeToggle ? "remove" : "adopt";
+    const request = buildFurnitureFeedbackEvent({
+      clientEventId: createFeedbackClientEventId(project.id, action),
+      selectedBeforeToggle,
+      planVersionId,
+      sku: item.sku,
+      roomId: project.activeRoomId,
+    });
+    if (request) {
+      onFeedbackEvent(
+        request,
+        selectedBeforeToggle ? `移除“${item.name}”` : `采用“${item.name}”`,
+      );
+    }
+  };
 
   const uploadRoom = async (file: File) => {
     setUploading(true);
@@ -188,7 +217,7 @@ export default function DesignWorkspaceInspector({
                       type="button"
                       title={selected ? "从项目移除" : "加入当前项目"}
                       aria-label={selected ? `移除${item.name}` : `加入${item.name}`}
-                      onClick={() => toggleFurniture(project.id, item.id)}
+                      onClick={() => toggleCatalogItem(item)}
                       className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${selected ? "bg-[#d5ff67] text-[#111713]" : "border border-white/15 text-[#9ca69d] hover:border-[#d5ff67] hover:text-[#d5ff67]"}`}
                     >
                       {selected ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}

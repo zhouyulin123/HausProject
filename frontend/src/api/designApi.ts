@@ -16,6 +16,10 @@ import type {
   CustomFurnitureSpecPatch,
 } from "@/types/customFurniture";
 import type {
+  DesignFeedbackEventRequest,
+  DesignFeedbackEventResponse,
+} from "@/types/feedback";
+import type {
   BlenderRenderJob,
   BlenderRenderProfile,
   DesignScene,
@@ -1106,6 +1110,17 @@ export async function fetchDesignAgentState(
 ): Promise<DesignAgentStateResponse> {
   return request<DesignAgentStateResponse>(
     `/api/design/tasks/${taskId}/agent-state`,
+  );
+}
+
+/** 记录任务级结构化反馈；调用方负责持有 client_event_id 以安全重试。 */
+export async function sendDesignFeedbackEvent(
+  taskId: number,
+  event: DesignFeedbackEventRequest,
+): Promise<DesignFeedbackEventResponse> {
+  return request<DesignFeedbackEventResponse>(
+    `/api/design/tasks/${taskId}/feedback-events`,
+    { method: "POST", body: JSON.stringify(event) },
   );
 }
 

@@ -59,7 +59,11 @@ interface UseSceneEditorResult {
   blenderRenderPending: boolean;
   selectItem: (instanceId: string | null) => void;
   setTransformMode: (mode: TransformMode) => void;
-  commitTransform: (instanceId: string, transform: SceneTransform) => void;
+  commitTransform: (
+    instanceId: string,
+    transform: SceneTransform,
+    trackMove?: boolean,
+  ) => void;
   nudgeSelected: (x: number, z: number) => void;
   rotateSelected: (radians?: number) => void;
   undo: () => void;
@@ -73,6 +77,11 @@ export function useSceneEditor(
   plan: DesignPlan,
   roomType: string,
   roomModel?: RoomModel | null,
+  onMovePersisted?: (move: {
+    sceneId: number;
+    sceneVersion: number;
+    instanceId: string;
+  }) => void,
 ): UseSceneEditorResult {
   const initialScene = useMemo(
     () => buildSceneDocument(plan, roomType, roomModel),
@@ -106,6 +115,12 @@ export function useSceneEditor(
   const blenderRenderInFlightRef = useRef(false);
   const lastSavedChangeIdRef = useRef(0);
   const savePromiseRef = useRef<Promise<void> | null>(null);
+  const pendingMoveChangeIdsRef = useRef(new Map<string, number>());
+  const onMovePersistedRef = useRef(onMovePersisted);
+
+  useEffect(() => {
+    onMovePersistedRef.current = onMovePersisted;
+  }, [onMovePersisted]);
 
   useEffect(() => {
     historyRef.current = history;
@@ -121,6 +136,7 @@ export function useSceneEditor(
     sceneIdRef.current = null;
     serverVersionRef.current = null;
     lastSavedChangeIdRef.current = 0;
+    pendingMoveChangeIdsRef.current.clear();
     setValidation(null);
     setSceneAgentState("idle");
     setSceneAgentMessage("");
@@ -175,6 +191,9 @@ export function useSceneEditor(
     }
 
     const savingChangeId = currentHistory.changeId;
+    const persistedMoveCandidates = [...pendingMoveChangeIdsRef.current.entries()]
+      .filter(([, changeId]) => changeId <= savingChangeId)
+      .map(([instanceId]) => instanceId);
     syncStateRef.current = "saving";
     setSyncState("saving");
     let shouldFlushAgain = false;
@@ -187,6 +206,17 @@ export function useSceneEditor(
         );
         serverVersionRef.current = saved.current_version;
         lastSavedChangeIdRef.current = savingChangeId;
+        for (const instanceId of persistedMoveCandidates) {
+          const latestChangeId = pendingMoveChangeIdsRef.current.get(instanceId);
+          if (latestChangeId !== undefined && latestChangeId <= savingChangeId) {
+            pendingMoveChangeIdsRef.current.delete(instanceId);
+          }
+          onMovePersistedRef.current?.({
+            sceneId: saved.id,
+            sceneVersion: saved.current_version,
+            instanceId,
+          });
+        }
         setValidation(saved.validation);
         shouldFlushAgain =
           historyRef.current.changeId !== lastSavedChangeIdRef.current;
@@ -230,7 +260,7 @@ export function useSceneEditor(
   }, [flushSave, history.changeId, syncState]);
 
   const commitTransform = useCallback(
-    (instanceId: string, transform: SceneTransform) => {
+    (instanceId: string, transform: SceneTransform, trackMove = false) => {
       if (
         sceneAgentStateRef.current === "thinking" ||
         blenderRenderInFlightRef.current
@@ -247,7 +277,7 @@ export function useSceneEditor(
           item,
           transform,
         );
-        return commitScene(
+        const next = commitScene(
           current,
           updateSceneItemTransform(
             current.present,
@@ -255,6 +285,10 @@ export function useSceneEditor(
             constrained,
           ),
         );
+        if (trackMove && next.changeId !== current.changeId) {
+          pendingMoveChangeIdsRef.current.set(instanceId, next.changeId);
+        }
+        return next;
       });
     },
     [],
@@ -274,7 +308,7 @@ export function useSceneEditor(
           x: item.transform.position.x + x,
           z: item.transform.position.z + z,
         },
-      });
+      }, true);
     },
     [commitTransform, selectedItemId],
   );

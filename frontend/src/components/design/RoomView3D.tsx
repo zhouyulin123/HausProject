@@ -285,12 +285,18 @@ export default function RoomView3D({
   plan,
   roomType,
   roomModel,
+  onMovePersisted,
 }: {
   plan: DesignPlan;
   roomType: string;
   roomModel?: RoomModel | null;
+  onMovePersisted?: (move: {
+    sceneId: number;
+    sceneVersion: number;
+    instanceId: string;
+  }) => void;
 }) {
-  const editor = useSceneEditor(plan, roomType, roomModel);
+  const editor = useSceneEditor(plan, roomType, roomModel, onMovePersisted);
   const [agentInstruction, setAgentInstruction] = useState("");
   const [cameraPreset, setCameraPreset] =
     useState<RoomCameraPreset>("perspective");
@@ -507,7 +513,11 @@ export default function RoomView3D({
             mode={editor.transformMode}
             onSelect={() => editor.selectItem(item.instanceId)}
             onCommit={(transform) =>
-              editor.commitTransform(item.instanceId, transform)
+              editor.commitTransform(
+                item.instanceId,
+                transform,
+                editor.transformMode === "translate",
+              )
             }
             modelAsset={itemModels[item.instanceId]}
           />

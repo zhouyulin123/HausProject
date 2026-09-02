@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -13,12 +13,19 @@ import ChatPanel from "@/components/chat/ChatPanel";
 import RoomView3D from "@/components/design/RoomView3D";
 import CustomFurniturePanel from "@/components/workspace/CustomFurniturePanel";
 import DesignWorkspaceInspector from "@/components/workspace/DesignWorkspaceInspector";
+import WorkspaceFeedbackControls from "@/components/workspace/WorkspaceFeedbackControls";
 import {
   fetchDesignAgentState,
   fetchFurnitureCatalog,
   type AgentTurnResponse,
 } from "@/api/designApi";
 import { parseCustomFurniturePreview } from "@/lib/customFurnitureWorkspace";
+import { useFeedbackDelivery } from "@/hooks/useFeedbackDelivery";
+import {
+  buildFinalSelectFeedbackEvent,
+  buildMoveFeedbackEvent,
+  createFeedbackClientEventId,
+} from "@/lib/workspaceFeedback";
 import { buildWorkspacePlan, DESIGN_ENTRY_MODES } from "@/lib/designProject";
 import {
   parseDesignProjectId,
@@ -50,6 +57,9 @@ export default function DesignWorkspacePage() {
   const [catalogError, setCatalogError] = useState("");
   const [agentConnection, setAgentConnection] = useState<AgentConnection>("checking");
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("conversation");
+  const [satisfaction, setSatisfaction] = useState<1 | 2 | 3 | 4 | 5 | null>(null);
+  const finalSelectRef = useRef<{ signature: string; clientEventId: string } | null>(null);
+  const feedback = useFeedbackDelivery(projectId ?? 0);
 
   const applyWorkspaceAgentResponse = useCallback((response: AgentTurnResponse) => {
     if (!projectId) return;
@@ -159,6 +169,38 @@ export default function DesignWorkspacePage() {
   const entry = project
     ? DESIGN_ENTRY_MODES.find((item) => item.id === project.mode)
     : null;
+  const planVersionId = plan?.planVersionId ?? null;
+
+  const confirmCurrentPlan = useCallback(() => {
+    if (!projectId || !planVersionId) return;
+    const signature = `${planVersionId}:${satisfaction ?? "none"}`;
+    const clientEventId = finalSelectRef.current?.signature === signature
+      ? finalSelectRef.current.clientEventId
+      : createFeedbackClientEventId(projectId, "final_select");
+    finalSelectRef.current = { signature, clientEventId };
+    const event = buildFinalSelectFeedbackEvent(
+      clientEventId,
+      planVersionId,
+      satisfaction,
+    );
+    if (event) feedback.submit(event, "确认当前方案");
+  }, [feedback.submit, planVersionId, projectId, satisfaction]);
+
+  const reportPersistedMove = useCallback((saved: {
+    sceneId: number;
+    sceneVersion: number;
+    instanceId: string;
+  }) => {
+    if (!projectId) return;
+    const event = buildMoveFeedbackEvent(
+      createFeedbackClientEventId(projectId, "move"),
+      saved.sceneId,
+      saved.sceneVersion,
+      saved.instanceId,
+      project?.activeRoomId,
+    );
+    if (event) feedback.submit(event, "家具位置调整");
+  }, [feedback.submit, project?.activeRoomId, projectId]);
 
   if (!project || !plan || !entry) {
     return (
@@ -215,6 +257,15 @@ export default function DesignWorkspacePage() {
             </Link>
           </div>
         </header>
+
+        <WorkspaceFeedbackControls
+          planVersionId={planVersionId}
+          satisfaction={satisfaction}
+          delivery={feedback.deliveries[0] ?? null}
+          onSatisfactionChange={setSatisfaction}
+          onConfirm={confirmCurrentPlan}
+          onRetry={feedback.retry}
+        />
 
         {project.mode !== "custom_furniture" && catalogError && (
           <p role="alert" className="mb-3 border border-[#8f7040] bg-[#2b2718] px-4 py-3 text-xs text-[#f0d39e]">{catalogError}</p>
@@ -291,7 +342,13 @@ export default function DesignWorkspacePage() {
                 </div>
               )
             ) : (
-              <RoomView3D key={sceneKey} plan={plan} roomType={roomType} roomModel={project.roomModel} />
+              <RoomView3D
+                key={sceneKey}
+                plan={plan}
+                roomType={roomType}
+                roomModel={project.roomModel}
+                onMovePersisted={reportPersistedMove}
+              />
             )}
           </main>
 
@@ -312,6 +369,8 @@ export default function DesignWorkspacePage() {
                 catalog={catalog}
                 catalogLoading={catalogLoading}
                 budget={plan.budget}
+                planVersionId={planVersionId}
+                onFeedbackEvent={feedback.submit}
               />
             )}
           </div>
