@@ -219,4 +219,49 @@ describe("方案结果恢复", () => {
       expect.anything(),
     );
   });
+
+  it.each([
+    ["dead_letter", "供应商调用超过硬截止时间"],
+    ["cancelled", "方案生成已取消"],
+  ] as const)("生成任务进入 %s 后立即停止轮询", async (status, expected) => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    let statusPolls = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const path = String(input);
+      if (path === `/api/sessions/${sessionId}`) {
+        return jsonResponse({ session_id: sessionId });
+      }
+      if (path === "/api/design/tasks/42/generate-async") {
+        return jsonResponse({ run_id: 7, status: "queued" });
+      }
+      if (path === "/api/design/tasks/42/generation") {
+        statusPolls += 1;
+        return jsonResponse({
+          run_id: 7,
+          attempt: 1,
+          status,
+          progress: 100,
+          current_node: status,
+          generator: null,
+          error_message:
+            status === "dead_letter" ? "供应商调用超过硬截止时间" : null,
+          execution_deadline_at: "2026-09-02T04:00:00Z",
+          dead_lettered_at:
+            status === "dead_letter" ? "2026-09-02T04:00:00Z" : null,
+          events: [],
+        });
+      }
+      throw new Error(`未处理的请求: ${path}`);
+    });
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { generateDesignsForTask } = await import("./designApi");
+
+    await expect(generateDesignsForTask(42)).rejects.toThrow(expected);
+    expect(statusPolls).toBe(1);
+  });
 });
