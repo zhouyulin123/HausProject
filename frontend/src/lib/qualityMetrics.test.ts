@@ -3,6 +3,7 @@ import {
   ADMIN_QUALITY_PATH,
   QUALITY_WINDOWS,
   buildFailureCodeRows,
+  canAccessQualityDashboard,
   formatDuration,
   formatRate,
   hasQualitySamples,
@@ -40,6 +41,12 @@ describe("运营质量看板映射", () => {
   it("只开放经过约束的时间窗口和厂家后台路径", () => {
     expect(QUALITY_WINDOWS).toEqual([7, 30, 90]);
     expect(ADMIN_QUALITY_PATH).toBe("/admin/quality");
+  });
+
+  it("质量看板只允许管理员访问", () => {
+    expect(canAccessQualityDashboard("admin")).toBe(true);
+    expect(canAccessQualityDashboard("factory")).toBe(false);
+    expect(canAccessQualityDashboard("customer")).toBe(false);
   });
 
   it("缺样本时不伪造百分比或延迟", () => {
