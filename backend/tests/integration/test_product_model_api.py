@@ -49,6 +49,8 @@ def product_api(monkeypatch):
                 model_width_mm=2200,
                 model_height_mm=850,
                 model_depth_mm=950,
+                model_license="供应商书面商用授权",
+                model_source="supplier:SOFA-3D-001",
             )
         )
         db.add(
@@ -56,7 +58,7 @@ def product_api(monkeypatch):
                 id=999,
                 phone="13800009999",
                 nickname="13800009999",
-                role="factory",
+                role="admin",
                 phone_verified=True,
             )
         )
@@ -94,11 +96,37 @@ def test_upload_product_model_validates_and_binds_randomized_glb(product_api):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["model_status"] == "ready"
+    assert body["model_status"] == "pending_review"
     assert body["model_url"].startswith("/uploads/models/")
     stored_name = body["model_url"].rsplit("/", 1)[-1]
     assert stored_name != "supplier sofa.glb"
     assert (upload_dir / "models" / stored_name).read_bytes() == _glb_bytes()
+
+    approved = client.post(
+        "/api/products/1/model-review",
+        json={"decision": "approve", "note": "授权与尺寸已核验"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["model_status"] == "ready"
+    assert approved.json()["model_reviewed_by"] == "user:999"
+    assert approved.json()["model_reviewed_at"] is not None
+
+
+@pytest.mark.integration
+def test_upload_product_model_requires_license_and_source(product_api):
+    client, upload_dir = product_api
+    assert client.patch(
+        "/api/products/1",
+        json={"model_license": "", "model_source": ""},
+    ).status_code == 200
+
+    response = client.post(
+        "/api/products/1/model",
+        files={"file": ("sofa.glb", _glb_bytes(), "model/gltf-binary")},
+    )
+
+    assert response.status_code == 422
+    assert not (upload_dir / "models").exists()
 
 
 @pytest.mark.integration
