@@ -451,6 +451,9 @@ def test_generation_run_records_model_prompt_usage_and_cost(db):
             "model": "deepseek-ai/DeepSeek-V3",
             "prompt_snapshot": "你是资深室内设计师…",
             "input_snapshot": {"requirement": {"area": 90}, "has_catalog_context": True},
+            "prompt_digest": "sha256:" + "1" * 64,
+            "rules_digest": "sha256:" + "2" * 64,
+            "data_digest": "sha256:" + "3" * 64,
             "usage": {"prompt_tokens": 1200, "completion_tokens": 800, "total_tokens": 2000},
             "cost_cny": 0.0028,
         },
@@ -467,6 +470,9 @@ def test_generation_run_records_model_prompt_usage_and_cost(db):
     assert run.prompt_snapshot == "你是资深室内设计师…"
     assert run.input_snapshot["requirement"]["area"] == 90
     assert run.output_snapshot["plan_count"] == 3
+    assert run.prompt_digest == "sha256:" + "1" * 64
+    assert run.rules_digest == "sha256:" + "2" * 64
+    assert run.data_digest == "sha256:" + "3" * 64
     assert run.usage_json["total_tokens"] == 2000
     assert run.cost_cny == 0.0028
 

@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.db.database import Base
 from app.db.models import DesignTask, GenerationRun, GenerationRunEvent
+from app.services import generation_run_service
 from evals import collect_real_world_evidence
-from evals.real_world import EvaluationVersions, load_case_manifest
+from evals.real_world import load_case_manifest
 from evals.run_real_world_eval import (
     EvaluationInputError,
     build_evaluation_report,
@@ -120,6 +121,9 @@ def _completed_system_run(
         generator=generator,
         model="model-prod-7",
         prompt_snapshot="private prompt content",
+        prompt_digest="sha256:" + "1" * 64,
+        rules_digest="sha256:" + "2" * 64,
+        data_digest="sha256:" + "3" * 64,
         input_snapshot={"private_requirement": "do not serialize"},
         output_snapshot={
             "plan_count": 1,
@@ -197,12 +201,6 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
                 system_run_id=run.id,
             ),
         ),
-        versions=EvaluationVersions(
-            model="model-prod-7",
-            prompt="prompt-12",
-            rules="rules-8",
-            data=dataset.dataset_version,
-        ),
         signing_key=SIGNING_KEY,
         key_id="quality-ci-1",
     )
@@ -214,6 +212,12 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
     assert execution["task_id"] == run.task_id
     assert execution["system_run_id"] == run.id
     assert execution["model"] == run.model
+    assert bundle["versions"] == {
+        "model": "model-prod-7",
+        "prompt": run.prompt_digest,
+        "rules": run.rules_digest,
+        "data": run.data_digest,
+    }
     assert execution["output_digest"].startswith("sha256:")
     assert execution["result_digest"].startswith("sha256:")
     assert "private-case-alias" not in serialized
@@ -241,12 +245,6 @@ def test_collector_rejects_non_system_execution_sources(db, tmp_path, generator)
             db,
             dataset=dataset,
             bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
-            versions=EvaluationVersions(
-                model="model-prod-7",
-                prompt="prompt-12",
-                rules="rules-8",
-                data=dataset.dataset_version,
-            ),
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
         )
@@ -262,13 +260,6 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
         db,
         idempotency_key=evaluation_run_idempotency_key(dataset, "private-b"),
     )
-    versions = EvaluationVersions(
-        model="model-prod-7",
-        prompt="prompt-12",
-        rules="rules-8",
-        data=dataset.dataset_version,
-    )
-
     with pytest.raises(EvaluationInputError, match="不属于任务"):
         collect_trusted_evidence(
             db,
@@ -277,7 +268,6 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
                 RunBinding("private-a", run.task_id + 1, run.id),
                 RunBinding("private-b", second_run.task_id, second_run.id),
             ),
-            versions=versions,
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
         )
@@ -292,7 +282,6 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
                 RunBinding("private-a", run.task_id, run.id),
                 RunBinding("private-b", second_run.task_id, second_run.id),
             ),
-            versions=versions,
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
         )
@@ -307,7 +296,6 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
                 RunBinding("private-a", run.task_id, run.id),
                 RunBinding("private-b", run.task_id, run.id),
             ),
-            versions=versions,
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
         )
@@ -335,12 +323,59 @@ def test_run_is_bound_to_dataset_case_before_execution_and_cannot_be_swapped(
                 RunBinding("private-a", run_b.task_id, run_b.id),
                 RunBinding("private-b", run_a.task_id, run_a.id),
             ),
-            versions=EvaluationVersions(
-                model="model-prod-7",
-                prompt="prompt-12",
-                rules="rules-8",
-                data=dataset.dataset_version,
-            ),
+            signing_key=SIGNING_KEY,
+            key_id="quality-ci-1",
+        )
+
+
+def test_eval_idempotency_key_is_persisted_and_does_not_expose_case_id(db, tmp_path):
+    dataset = _dataset(tmp_path)
+    key = evaluation_run_idempotency_key(dataset, "private-case-alias")
+    task = DesignTask(status="confirmed", progress=50)
+    db.add(task)
+    db.commit()
+
+    run = generation_run_service.create_run(db, task=task, idempotency_key=key)
+
+    assert run.idempotency_key == key
+    assert key.startswith("eval-v1:")
+    assert "private-case-alias" not in key
+
+
+def test_collector_rejects_historical_missing_or_mixed_runtime_versions(db, tmp_path):
+    dataset = _two_case_dataset(tmp_path)
+    run_a = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(dataset, "private-a"),
+    )
+    run_b = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(dataset, "private-b"),
+    )
+    bindings = (
+        RunBinding("private-a", run_a.task_id, run_a.id),
+        RunBinding("private-b", run_b.task_id, run_b.id),
+    )
+
+    run_a.prompt_digest = None
+    db.commit()
+    with pytest.raises(EvaluationInputError, match="版本摘要"):
+        collect_trusted_evidence(
+            db,
+            dataset=dataset,
+            bindings=bindings,
+            signing_key=SIGNING_KEY,
+            key_id="quality-ci-1",
+        )
+
+    run_a.prompt_digest = "sha256:" + "1" * 64
+    run_b.rules_digest = "sha256:" + "9" * 64
+    db.commit()
+    with pytest.raises(EvaluationInputError, match="版本不一致"):
+        collect_trusted_evidence(
+            db,
+            dataset=dataset,
+            bindings=bindings,
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
         )
@@ -385,12 +420,6 @@ def test_loader_rejects_tampered_signed_result(db, tmp_path):
         db,
         dataset=dataset,
         bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
-        versions=EvaluationVersions(
-            model="model-prod-7",
-            prompt="prompt-12",
-            rules="rules-8",
-            data=dataset.dataset_version,
-        ),
         signing_key=SIGNING_KEY,
         key_id="quality-ci-1",
     )
@@ -421,12 +450,6 @@ def test_loader_and_cli_fail_closed_without_verification_key(
         db,
         dataset=dataset,
         bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
-        versions=EvaluationVersions(
-            model="model-prod-7",
-            prompt="prompt-12",
-            rules="rules-8",
-            data=dataset.dataset_version,
-        ),
         signing_key=SIGNING_KEY,
         key_id="quality-ci-1",
     )
@@ -463,12 +486,6 @@ def test_verified_report_contains_only_anonymous_execution_provenance(db, tmp_pa
         db,
         dataset=dataset,
         bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
-        versions=EvaluationVersions(
-            model="model-prod-7",
-            prompt="prompt-12",
-            rules="rules-8",
-            data=dataset.dataset_version,
-        ),
         signing_key=SIGNING_KEY,
         key_id="quality-ci-1",
     )
@@ -531,10 +548,6 @@ def test_collector_and_evaluator_cli_use_the_same_fail_closed_contract(
             str(tmp_path / "manifest.json"),
             "--run-bindings",
             str(bindings_path),
-            "--prompt-version",
-            "prompt-12",
-            "--rules-version",
-            "rules-8",
             "--output",
             str(evidence_path),
         ]

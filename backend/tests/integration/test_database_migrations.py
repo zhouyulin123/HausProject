@@ -190,6 +190,9 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "cost_reserved_cny",
             "cost_limit_cny",
             "request_id",
+            "prompt_digest",
+            "rules_digest",
+            "data_digest",
         } <= generation_run_columns
         rendered_image_columns = {
             column["name"]
