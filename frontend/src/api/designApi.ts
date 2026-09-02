@@ -970,12 +970,14 @@ export interface DesignChatContext {
 /** 创建统一工作台项目。返回值就是路由 projectId，不生成前端替代编号。 */
 export async function createDesignTask(
   requirement: UserRequirement,
+  activeMode: AgentActiveMode = "catalog_design",
 ): Promise<number> {
   const task = await request<{ task_id: number }>("/api/design/tasks", {
     method: "POST",
     body: JSON.stringify({
       session_id: await getAnonymousSessionId(),
       user_input: summarizeRequirement(requirement),
+      active_mode: activeMode,
       requirement,
       image_ids: uploadedImageIds,
     }),

@@ -47,7 +47,7 @@ export default function DesignStartPage() {
     setCreatingMode(mode);
     setCreateError("");
     try {
-      const taskId = await createDesignTask(requirement);
+      const taskId = await createDesignTask(requirement, mode);
       registerProject(taskId, mode, { requirement, roomModel });
       navigate(designWorkspacePath(taskId));
     } catch {

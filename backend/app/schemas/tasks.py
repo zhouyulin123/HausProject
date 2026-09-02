@@ -8,6 +8,11 @@ class TaskCreate(BaseModel):
     session_id: Optional[str] = None
     image_ids: List[int] = []
     user_input: str = ""
+    active_mode: Literal[
+        "catalog_design",
+        "custom_furniture",
+        "room_reconstruction",
+    ] = "catalog_design"
     # 前端定制表单收集的结构化需求；提供时跳过解析直接确认
     requirement: Optional[Dict[str, Any]] = None
 

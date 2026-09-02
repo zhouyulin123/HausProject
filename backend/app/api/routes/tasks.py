@@ -94,7 +94,10 @@ def create_task(
     ):
         raise HTTPException(status_code=403, detail="上传图片不属于当前会话")
 
-    task = DesignTask(raw_user_input=task_data.user_input)
+    task = DesignTask(
+        raw_user_input=task_data.user_input,
+        active_mode=task_data.active_mode,
+    )
     if task_data.requirement:
         # 前端表单已收集结构化需求，直接进入已确认状态
         task.confirmed_requirement_json = task_data.requirement
