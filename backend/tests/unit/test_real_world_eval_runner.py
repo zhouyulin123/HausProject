@@ -7,6 +7,7 @@ from evals.real_world import DatasetValidationError, load_case_manifest
 from evals.run_real_world_eval import (
     EvaluationInputError,
     build_evaluation_report,
+    compare_evaluation_reports,
     load_case_results,
     render_markdown,
 )
@@ -189,3 +190,83 @@ def test_manifest_with_no_eligible_cases_cannot_produce_passing_report(tmp_path)
         "purpose_not_allowed",
         "split_not_assigned",
     ]
+
+
+def test_regression_comparison_fails_when_quality_drops_on_same_cases(tmp_path):
+    dataset = _manifest(tmp_path)
+    baseline_path = _write_json(
+        tmp_path / "baseline-results.json",
+        {
+            "schema_version": "1.0",
+            "versions": {
+                "model": "m1",
+                "prompt": "p1",
+                "rules": "r1",
+                "data": "data-1",
+            },
+            "results": [_result("case-a"), _result("case-b")],
+        },
+    )
+    candidate_result = _result("case-b")
+    candidate_result["requirement_correct"] = 18
+    candidate_result["severe_cross_user_access"] = 1
+    candidate_path = _write_json(
+        tmp_path / "candidate-results.json",
+        {
+            "schema_version": "1.0",
+            "versions": {
+                "model": "m2",
+                "prompt": "p2",
+                "rules": "r2",
+                "data": "data-1",
+            },
+            "results": [_result("case-a"), candidate_result],
+        },
+    )
+    baseline = build_evaluation_report(
+        dataset=dataset,
+        evidence=load_case_results(baseline_path, dataset=dataset),
+    )
+    candidate = build_evaluation_report(
+        dataset=dataset,
+        evidence=load_case_results(candidate_path, dataset=dataset),
+    )
+
+    comparison = compare_evaluation_reports(candidate, baseline)
+
+    assert comparison["passed"] is False
+    assert comparison["baseline_versions"]["model"] == "m1"
+    by_metric = {item["metric"]: item for item in comparison["items"]}
+    assert by_metric["requirement_accuracy"]["regressed"] is True
+    assert by_metric["severe_cross_user_access"]["regressed"] is True
+    assert by_metric["quote_consistency_rate"]["regressed"] is False
+
+
+def test_regression_comparison_rejects_different_dataset_or_case_set(tmp_path):
+    dataset = _manifest(tmp_path)
+    result_path = _write_json(
+        tmp_path / "results.json",
+        {
+            "schema_version": "1.0",
+            "versions": {
+                "model": "m1",
+                "prompt": "p1",
+                "rules": "r1",
+                "data": "data-1",
+            },
+            "results": [_result("case-a"), _result("case-b")],
+        },
+    )
+    report = build_evaluation_report(
+        dataset=dataset,
+        evidence=load_case_results(result_path, dataset=dataset),
+    )
+    wrong_data = json.loads(json.dumps(report))
+    wrong_data["versions"]["data"] = "data-2"
+    with pytest.raises(EvaluationInputError, match="数据版本"):
+        compare_evaluation_reports(report, wrong_data)
+
+    wrong_cases = json.loads(json.dumps(report))
+    wrong_cases["dataset"]["eligible_case_ids"] = ["case-a"]
+    with pytest.raises(EvaluationInputError, match="案例集合"):
+        compare_evaluation_reports(report, wrong_cases)
