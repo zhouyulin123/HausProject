@@ -205,6 +205,49 @@ class DesignAgentEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class DesignFeedbackEvent(Base):
+    """用户对方案与场景的结构化行为，用于真实质量反馈闭环。"""
+
+    __tablename__ = "design_feedback_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "client_event_id",
+            name="uq_design_feedback_task_client_event",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    client_event_id = Column(String(100), nullable=False)
+    action_type = Column(String(30), nullable=False, index=True)
+    payload_hash = Column(String(64), nullable=False)
+    plan_version_id = Column(
+        Integer,
+        ForeignKey("design_plan_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    scene_id = Column(
+        Integer,
+        ForeignKey("design_scenes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    scene_version = Column(Integer, nullable=True)
+    room_id = Column(String(100), nullable=True)
+    instance_id = Column(String(100), nullable=True)
+    source_sku = Column(String(50), nullable=True, index=True)
+    target_sku = Column(String(50), nullable=True, index=True)
+    satisfaction_score = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class ShopSetting(Base):
     """店铺信息（单行，id=1）：用于提案 PDF 页头/页脚与前端展示。"""
 

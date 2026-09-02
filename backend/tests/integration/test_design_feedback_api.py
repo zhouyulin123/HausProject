@@ -176,6 +176,12 @@ def test_feedback_event_rejects_idempotency_conflict_and_foreign_resources(
             "action_type": "final_select",
             "satisfaction_score": 6,
         },
+        {
+            "client_event_id": "invalid-blank-sku",
+            "action_type": "adopt",
+            "plan_version_id": 1,
+            "target_sku": "   ",
+        },
     ],
 )
 def test_feedback_event_validates_action_specific_fields(

@@ -8,6 +8,7 @@ from app.api.routes import (
     customers,
     demo,
     design_agent,
+    feedback,
     orders,
     products,
     proposal,
@@ -28,6 +29,11 @@ api_router.include_router(
     design_agent.router,
     prefix="/design/tasks",
     tags=["design_agent"],
+)
+api_router.include_router(
+    feedback.router,
+    prefix="/design/tasks",
+    tags=["design_feedback"],
 )
 api_router.include_router(chat.router, prefix="/design/chat", tags=["design_chat"])
 api_router.include_router(
