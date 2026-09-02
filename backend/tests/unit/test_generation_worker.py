@@ -24,6 +24,11 @@ def test_worker_claims_and_completes_one_generation(monkeypatch):
         run_id = run.id
 
     monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+    monkeypatch.setattr(
+        generation_worker.settings,
+        "generation_worker_execution_timeout_seconds",
+        90,
+    )
     executed: list[int] = []
 
     def executor(db, *, task, on_step, on_meta, before_persist, on_success):
@@ -43,6 +48,10 @@ def test_worker_claims_and_completes_one_generation(monkeypatch):
         assert completed is not None
         assert completed.status == "completed"
         assert completed.attempt_count == 1
+        assert completed.execution_deadline_at is not None
+        assert (
+            completed.execution_deadline_at - completed.started_at
+        ).total_seconds() == 90
     assert executed == [task.id]
 
 

@@ -229,9 +229,133 @@ def test_retryable_failure_waits_for_backoff_and_stops_at_max_attempts(db):
         retry_delay_seconds=30,
         now=now + timedelta(seconds=30),
     )
-    assert terminal == "failed"
-    assert second.status == "failed"
+    assert terminal == "dead_letter"
+    assert second.status == "dead_letter"
+    assert second.current_node == "dead_letter"
+    assert second.dead_lettered_at == now + timedelta(seconds=30)
     assert second.next_retry_at is None
+    db.refresh(task)
+    assert task.status == "failed"
+
+
+@pytest.mark.unit
+def test_worker_heartbeat_cannot_extend_lease_past_execution_deadline(db):
+    task = DesignTask(status="confirmed", progress=50)
+    db.add(task)
+    db.commit()
+    generation_run_service.create_run(db, task=task, max_attempts=3)
+    now = datetime.now(timezone.utc)
+
+    claimed = generation_run_service.claim_next_run(
+        db,
+        worker_id="worker-a",
+        lease_seconds=120,
+        execution_timeout_seconds=90,
+        now=now,
+    )
+
+    assert claimed is not None
+    assert claimed.execution_deadline_at == now + timedelta(seconds=90)
+    assert claimed.lease_expires_at == claimed.execution_deadline_at
+    assert generation_run_service.renew_lease(
+        db,
+        run_id=claimed.id,
+        worker_id="worker-a",
+        worker_attempt=1,
+        lease_seconds=120,
+        now=now + timedelta(seconds=30),
+    )
+    db.refresh(claimed)
+    assert claimed.lease_expires_at == claimed.execution_deadline_at
+    assert not generation_run_service.renew_lease(
+        db,
+        run_id=claimed.id,
+        worker_id="worker-a",
+        worker_attempt=1,
+        lease_seconds=120,
+        now=claimed.execution_deadline_at,
+    )
+
+
+@pytest.mark.unit
+def test_expired_execution_cannot_persist_metadata_or_complete(db):
+    task = DesignTask(status="confirmed", progress=50)
+    db.add(task)
+    db.commit()
+    generation_run_service.create_run(db, task=task, max_attempts=3)
+    now = datetime.now(timezone.utc)
+    claimed = generation_run_service.claim_next_run(
+        db,
+        worker_id="worker-a",
+        lease_seconds=60,
+        execution_timeout_seconds=30,
+        now=now,
+    )
+    assert claimed is not None
+
+    assert generation_run_service.record_step(
+        db,
+        run=claimed,
+        step={"node": "generate_plans", "status": "completed"},
+        worker_id="worker-a",
+        worker_attempt=1,
+        now=now + timedelta(seconds=31),
+    ) is None
+    assert not generation_run_service.record_generation_meta(
+        db,
+        run=claimed,
+        meta={"model": "provider/model", "cost_cny": 8.8},
+        output_snapshot={"plan_count": 1},
+        worker_id="worker-a",
+        worker_attempt=1,
+        now=now + timedelta(seconds=31),
+    )
+    assert not generation_run_service.mark_completed(
+        db,
+        run_id=claimed.id,
+        worker_id="worker-a",
+        worker_attempt=1,
+        generator="llm",
+        now=now + timedelta(seconds=31),
+    )
+    db.refresh(claimed)
+    assert claimed.status == "running"
+    assert claimed.cost_cny is None
+    assert claimed.output_snapshot is None
+    assert db.scalar(select(GenerationRunEvent)) is None
+
+
+@pytest.mark.unit
+def test_recovery_dead_letters_execution_deadline_even_with_live_lease(db):
+    task = DesignTask(status="confirmed", progress=50)
+    db.add(task)
+    db.commit()
+    generation_run_service.create_run(db, task=task, max_attempts=3)
+    now = datetime.now(timezone.utc)
+    claimed = generation_run_service.claim_next_run(
+        db,
+        worker_id="worker-a",
+        lease_seconds=120,
+        execution_timeout_seconds=30,
+        now=now,
+    )
+    assert claimed is not None
+    # 模拟旧版本或人工数据中租约晚于硬截止时间，恢复仍必须按 deadline 判定。
+    claimed.lease_expires_at = now + timedelta(seconds=120)
+    db.commit()
+
+    recovered = generation_run_service.recover_expired_runs(
+        db,
+        now=now + timedelta(seconds=31),
+    )
+
+    assert recovered == 1
+    db.refresh(claimed)
+    db.refresh(task)
+    assert claimed.status == "dead_letter"
+    assert claimed.dead_lettered_at == now + timedelta(seconds=31)
+    assert claimed.worker_id is None
+    assert task.status == "failed"
 
 
 @pytest.mark.unit

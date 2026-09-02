@@ -165,6 +165,8 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "max_attempts",
             "cancel_requested_at",
             "idempotency_key",
+            "execution_deadline_at",
+            "dead_lettered_at",
         } <= generation_run_columns
         generation_run_constraints = {
             constraint["name"]: set(constraint["column_names"])

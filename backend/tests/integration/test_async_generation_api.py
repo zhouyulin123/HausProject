@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -7,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes import tasks
 from app.db.database import Base, get_db
-from app.db.models import DesignTask
+from app.db.models import DesignTask, GenerationRun
 from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
@@ -55,14 +57,14 @@ def async_generation_context(monkeypatch):
 
     app.dependency_overrides[get_db] = override_db
     with TestClient(app) as client:
-        yield client, owner_id, stranger_id, task_id, scheduled
+        yield client, owner_id, stranger_id, task_id, scheduled, factory
 
 
 @pytest.mark.integration
 def test_owner_can_queue_and_query_persistent_generation(
     async_generation_context,
 ):
-    client, owner_id, _, task_id, scheduled = async_generation_context
+    client, owner_id, _, task_id, scheduled, _ = async_generation_context
 
     queued = client.post(
         f"/api/design/tasks/{task_id}/generate-async",
@@ -89,6 +91,8 @@ def test_owner_can_queue_and_query_persistent_generation(
         "error_message": None,
         "cancel_requested_at": None,
         "next_retry_at": None,
+        "execution_deadline_at": None,
+        "dead_lettered_at": None,
         "events": [],
     }
 
@@ -97,7 +101,7 @@ def test_owner_can_queue_and_query_persistent_generation(
 def test_legacy_synchronous_generation_is_deprecated_in_openapi(
     async_generation_context,
 ):
-    client, _, _, _, _ = async_generation_context
+    client, _, _, _, _, _ = async_generation_context
 
     operation = client.get("/openapi.json").json()["paths"][
         "/api/design/tasks/{task_id}/generate"
@@ -109,7 +113,7 @@ def test_legacy_synchronous_generation_is_deprecated_in_openapi(
 
 @pytest.mark.integration
 def test_foreign_session_cannot_queue_generation(async_generation_context):
-    client, _, stranger_id, task_id, scheduled = async_generation_context
+    client, _, stranger_id, task_id, scheduled, _ = async_generation_context
 
     response = client.post(
         f"/api/design/tasks/{task_id}/generate-async",
@@ -125,7 +129,7 @@ def test_explicit_development_inline_fallback_schedules_run(
     async_generation_context,
     monkeypatch,
 ):
-    client, owner_id, _, task_id, scheduled = async_generation_context
+    client, owner_id, _, task_id, scheduled, _ = async_generation_context
     monkeypatch.setattr(tasks.settings, "generation_inline_fallback", True)
 
     response = client.post(
@@ -139,7 +143,7 @@ def test_explicit_development_inline_fallback_schedules_run(
 
 @pytest.mark.integration
 def test_idempotent_queue_and_owner_cancel(async_generation_context):
-    client, owner_id, _, task_id, _ = async_generation_context
+    client, owner_id, _, task_id, _, _ = async_generation_context
     headers = {
         "X-Session-ID": owner_id,
         "Idempotency-Key": "customer-design-001",
@@ -168,7 +172,7 @@ def test_idempotent_queue_and_owner_cancel(async_generation_context):
 
 @pytest.mark.integration
 def test_foreign_session_cannot_cancel_generation(async_generation_context):
-    client, owner_id, stranger_id, task_id, _ = async_generation_context
+    client, owner_id, stranger_id, task_id, _, _ = async_generation_context
     client.post(
         f"/api/design/tasks/{task_id}/generate-async",
         headers={"X-Session-ID": owner_id},
@@ -180,3 +184,48 @@ def test_foreign_session_cannot_cancel_generation(async_generation_context):
     )
 
     assert response.status_code == 404
+
+
+@pytest.mark.integration
+def test_dead_letter_status_and_deadline_are_visible_to_owner(
+    async_generation_context,
+):
+    client, owner_id, _, task_id, _, factory = async_generation_context
+    headers = {
+        "X-Session-ID": owner_id,
+        "Idempotency-Key": "dead-letter-design-001",
+    }
+    queued = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers=headers,
+    )
+    dead_lettered_at = datetime.now(timezone.utc)
+    with factory() as db:
+        run = db.get(GenerationRun, queued.json()["run_id"])
+        assert run is not None
+        run.status = "dead_letter"
+        run.current_node = "dead_letter"
+        run.execution_deadline_at = dead_lettered_at
+        run.dead_lettered_at = dead_lettered_at
+        db.commit()
+
+    response = client.get(
+        f"/api/design/tasks/{task_id}/generation",
+        headers={"X-Session-ID": owner_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "dead_letter"
+    assert response.json()["current_node"] == "dead_letter"
+    assert response.json()["execution_deadline_at"] is not None
+    assert response.json()["dead_lettered_at"] is not None
+
+    duplicate = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers=headers,
+    )
+    assert duplicate.status_code == 202
+    assert duplicate.json() == {
+        "run_id": queued.json()["run_id"],
+        "status": "dead_letter",
+    }

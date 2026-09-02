@@ -57,6 +57,19 @@ def test_generation_worker_heartbeat_must_be_shorter_than_lease():
         )
 
 
+def test_generation_worker_execution_timeout_must_be_positive_and_bounded():
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            generation_worker_execution_timeout_seconds=0,
+        )
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            generation_worker_execution_timeout_seconds=7201,
+        )
+
+
 @pytest.mark.parametrize(
     ("database_url", "jwt_secret_key"),
     [
