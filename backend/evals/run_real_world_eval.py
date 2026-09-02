@@ -156,6 +156,7 @@ def build_evaluation_report(
         "dataset": {
             "schema_version": dataset.schema_version,
             "dataset_version": dataset.dataset_version,
+            "fingerprint": dataset.fingerprint,
             "case_count": len(dataset.cases),
             "eligible_case_count": len(dataset.eligible_cases()),
             "eligible_case_ids": sorted(
@@ -175,7 +176,7 @@ def _report_comparison_identity(
     report: dict[str, Any],
     *,
     label: str,
-) -> tuple[str, tuple[str, ...]]:
+) -> tuple[str, str, tuple[str, ...]]:
     if report.get("schema_version") != "1.0":
         raise EvaluationInputError(f"{label}报告 schema_version 不受支持")
     versions = report.get("versions")
@@ -183,9 +184,16 @@ def _report_comparison_identity(
     if not isinstance(versions, dict) or not isinstance(dataset, dict):
         raise EvaluationInputError(f"{label}报告缺少 versions 或 dataset")
     data_version = versions.get("data")
+    fingerprint = dataset.get("fingerprint")
     case_ids = dataset.get("eligible_case_ids")
     if not isinstance(data_version, str) or not data_version.strip():
         raise EvaluationInputError(f"{label}报告缺少数据版本")
+    if (
+        not isinstance(fingerprint, str)
+        or not fingerprint.startswith("sha256:")
+        or len(fingerprint) != len("sha256:") + 64
+    ):
+        raise EvaluationInputError(f"{label}报告缺少合法数据集指纹")
     if not isinstance(case_ids, list) or any(
         not isinstance(case_id, str) or not case_id.strip()
         for case_id in case_ids
@@ -194,7 +202,7 @@ def _report_comparison_identity(
     normalized_ids = tuple(sorted(case_id.strip() for case_id in case_ids))
     if len(set(normalized_ids)) != len(normalized_ids):
         raise EvaluationInputError(f"{label}报告的案例集合包含重复 ID")
-    return data_version.strip(), normalized_ids
+    return data_version.strip(), fingerprint, normalized_ids
 
 
 def _metric_value(
@@ -216,11 +224,11 @@ def compare_evaluation_reports(
     baseline: dict[str, Any],
 ) -> dict[str, Any]:
     """只在相同数据版本和案例集合上比较候选与基线。"""
-    candidate_data, candidate_cases = _report_comparison_identity(
+    candidate_data, candidate_fingerprint, candidate_cases = _report_comparison_identity(
         candidate,
         label="候选",
     )
-    baseline_data, baseline_cases = _report_comparison_identity(
+    baseline_data, baseline_fingerprint, baseline_cases = _report_comparison_identity(
         baseline,
         label="基线",
     )
@@ -228,6 +236,8 @@ def compare_evaluation_reports(
         raise EvaluationInputError(
             f"基线与候选数据版本不一致：{baseline_data} != {candidate_data}"
         )
+    if candidate_fingerprint != baseline_fingerprint:
+        raise EvaluationInputError("基线与候选数据集指纹不一致")
     if candidate_cases != baseline_cases:
         raise EvaluationInputError("基线与候选案例集合不一致")
     candidate_metrics = candidate.get("metrics")

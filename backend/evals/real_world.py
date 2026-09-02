@@ -90,6 +90,28 @@ class RealWorldDataset:
             if (reasons := case.ineligible_reasons())
         }
 
+    @property
+    def fingerprint(self) -> str:
+        """绑定实际准入资产、标签和分组，不能只靠人工版本名判断同集。"""
+        canonical_cases = [
+            {
+                "id": case.id,
+                "split": case.split,
+                "origin": case.origin,
+                "asset_sha256": case.asset_sha256,
+                "label_version": case.label_version,
+                "allowed_purposes": sorted(case.allowed_purposes),
+            }
+            for case in sorted(self.eligible_cases(), key=lambda item: item.id)
+        ]
+        encoded = json.dumps(
+            canonical_cases,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
 
 def _required_text(raw: dict[str, Any], field_name: str, case_id: str) -> str:
     value = raw.get(field_name)
