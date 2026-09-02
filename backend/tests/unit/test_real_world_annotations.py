@@ -126,6 +126,17 @@ def _payload(dataset: RealWorldDataset) -> dict:
                     "replacement_sku": "TABLE-002",
                     "quantity_delta": None,
                 },
+                {
+                    "edit_id": "edit-003",
+                    "action": "remove",
+                    "target_type": "furniture",
+                    "target_id": "lamp-main",
+                    "axis": None,
+                    "delta_mm": None,
+                    "delta_degrees": None,
+                    "replacement_sku": None,
+                    "quantity_delta": None,
+                },
             ],
         },
     }
@@ -172,9 +183,40 @@ def test_loads_complete_annotation_and_freezes_file_digest(tmp_path):
     assert annotation.budget.currency == "CNY"
     assert annotation.budget.minimum == 10000
     assert annotation.budget.maximum == 30000
-    assert annotation.style_tags == ("现代简约", "原木")
+    assert annotation.style_tags == ("原木", "现代简约")
     assert annotation.human_evaluation.overall_rating == 4
     assert annotation.content_fingerprint.startswith("sha256:")
+
+
+def test_semantic_fingerprint_is_independent_of_set_like_input_order(tmp_path):
+    dataset = _dataset(tmp_path)
+    payload = _payload(dataset)
+    first_path = _write_annotation(tmp_path, payload)
+    first = load_case_annotation(
+        first_path,
+        dataset=dataset,
+        dataset_root=tmp_path,
+    )
+
+    for field in (
+        "requirements",
+        "space_facts",
+        "allowed_skus",
+        "layout_hard_constraints",
+        "style_tags",
+    ):
+        payload[field].reverse()
+    payload["human_evaluation"]["dimension_scores"].reverse()
+    payload["human_evaluation"]["edit_facts"].reverse()
+    second_path = _write_annotation(tmp_path, payload)
+    second = load_case_annotation(
+        second_path,
+        dataset=dataset,
+        dataset_root=tmp_path,
+    )
+
+    assert first.file_sha256 != second.file_sha256
+    assert first.content_fingerprint == second.content_fingerprint
 
 
 @pytest.mark.parametrize(
@@ -238,6 +280,7 @@ def test_rejects_changed_annotation_file_digest(tmp_path):
         ("schema_version", "2.0", "schema_version"),
         ("annotation_type", "free_form", "annotation_type"),
         ("unexpected", True, "未知字段"),
+        ("file_sha256", "0" * 64, "未知字段"),
     ],
 )
 def test_rejects_unknown_schema_or_fields(tmp_path, field, value, error):
