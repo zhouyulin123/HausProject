@@ -1,6 +1,7 @@
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -347,12 +348,30 @@ class CustomQuoteRule(Base):
     """定制类项目报价规则（衣柜 / 橱柜 / 背景墙等，按面积或延米计价）。"""
 
     __tablename__ = "custom_quote_rules"
+    __table_args__ = (
+        CheckConstraint("waste_rate_bps >= 0 AND waste_rate_bps <= 10000"),
+        CheckConstraint("minimum_quantity >= 0"),
+        CheckConstraint("installation_fee >= 0"),
+        CheckConstraint("shipping_fee >= 0"),
+        CheckConstraint("tax_rate_bps >= 0 AND tax_rate_bps <= 10000"),
+        CheckConstraint("record_version >= 1"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     project_name = Column(String(100), nullable=False, index=True)  # 定制衣柜 / 橱柜地柜 ...
     category = Column(String(50), index=True)  # 柜类定制 / 厨房定制 / 背景墙 / 其他
     pricing_unit = Column(String(20), nullable=False)  # ㎡ / 延米 / 项
     material_grade = Column(String(50), nullable=True)  # 颗粒板 / 多层实木 / 实木 ...
     unit_price = Column(Integer, nullable=False)  # 单价（元/计价单位）
+    region_codes = Column(JSON, nullable=False, default=list)
+    waste_rate_bps = Column(Integer, nullable=False, default=0, server_default="0")
+    minimum_quantity = Column(Float, nullable=False, default=0, server_default="0")
+    installation_fee = Column(Integer, nullable=False, default=0, server_default="0")
+    shipping_fee = Column(Integer, nullable=False, default=0, server_default="0")
+    tax_rate_bps = Column(Integer, nullable=False, default=0, server_default="0")
+    data_version = Column(
+        String(100), nullable=False, default="draft-v1", server_default="draft-v1"
+    )
+    record_version = Column(Integer, nullable=False, default=1, server_default="1")
     description = Column(Text, nullable=True)  # 包含内容说明
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

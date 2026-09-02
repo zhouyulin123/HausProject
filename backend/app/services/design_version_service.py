@@ -90,7 +90,9 @@ def recalculate_quote_snapshot(snapshot: QuoteSnapshot) -> dict[str, Any]:
         if isinstance(item, dict)
     )
     custom_total = sum(
-        round(float(item.get("unitPrice") or 0) * float(item.get("quantity") or 0))
+        int(item["subtotal"])
+        if item.get("subtotal") is not None
+        else round(float(item.get("unitPrice") or 0) * float(item.get("quantity") or 0))
         for item in quote.get("customLineItems") or []
         if isinstance(item, dict)
     )

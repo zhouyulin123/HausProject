@@ -382,10 +382,13 @@ def _custom_furniture_tool(db: Session):
                 "定制家具规格未通过领域校验",
                 codes=["invalid_custom_furniture_spec"],
             ) from exc
-        return custom_furniture_service.build_preview(
-            db,
-            request.spec,
-        ).model_dump(mode="json")
+        region = (state.get("facts") or {}).get("delivery_region")
+        preview = (
+            custom_furniture_service.build_preview(db, request.spec, region=region)
+            if region
+            else custom_furniture_service.build_preview(db, request.spec)
+        )
+        return preview.model_dump(mode="json")
 
     return execute
 

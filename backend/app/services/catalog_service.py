@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
 import logging
@@ -147,10 +148,29 @@ def eligible_products(
     ]
 
 
-def _active_rules(db: Session) -> List[CustomQuoteRule]:
-    return db.scalars(
+def _rule_available_in_region(
+    rule: CustomQuoteRule,
+    region: str | None,
+) -> bool:
+    codes = {
+        str(code).strip().upper()
+        for code in (rule.region_codes or [])
+        if str(code).strip()
+    }
+    if not codes or "*" in codes:
+        return True
+    return region is not None and region.strip().upper() in codes
+
+
+def active_custom_quote_rules(
+    db: Session,
+    *,
+    region: str | None = None,
+) -> List[CustomQuoteRule]:
+    rules = db.scalars(
         select(CustomQuoteRule).where(CustomQuoteRule.is_active.is_(True))
     ).all()
+    return [rule for rule in rules if _rule_available_in_region(rule, region)]
 
 
 def _version_hash(prefix: str, payload: Any) -> str:
@@ -175,11 +195,60 @@ def _rule_version(rules: list[CustomQuoteRule]) -> str:
             rule.project_name,
             rule.material_grade,
             rule.unit_price,
+            sorted(rule.region_codes or []),
+            rule.waste_rate_bps,
+            rule.minimum_quantity,
+            rule.installation_fee,
+            rule.shipping_fee,
+            rule.tax_rate_bps,
+            rule.data_version,
+            rule.record_version,
             str(rule.updated_at or rule.created_at),
         )
         for rule in sorted(rules, key=lambda item: item.id or 0)
     ]
     return _version_hash("rules", payload)
+
+
+def calculate_custom_quote(
+    rule: CustomQuoteRule,
+    requested_quantity: Decimal | float | int,
+    *,
+    currency_quantum: Decimal = Decimal("1"),
+) -> dict[str, Any]:
+    """按规则费用因子计算单行报价，供方案与定制家具共用。"""
+    requested = Decimal(str(requested_quantity))
+    waste_multiplier = Decimal("1") + (
+        Decimal(rule.waste_rate_bps or 0) / Decimal("10000")
+    )
+    billable = max(
+        requested * waste_multiplier,
+        Decimal(str(rule.minimum_quantity or 0)),
+    )
+    base_subtotal = (Decimal(rule.unit_price) * billable).quantize(
+        currency_quantum,
+        rounding=ROUND_HALF_UP,
+    )
+    installation_fee = int(rule.installation_fee or 0)
+    shipping_fee = int(rule.shipping_fee or 0)
+    pre_tax_subtotal = base_subtotal + installation_fee + shipping_fee
+    tax_amount = (
+        Decimal(pre_tax_subtotal)
+        * Decimal(rule.tax_rate_bps or 0)
+        / Decimal("10000")
+    ).quantize(currency_quantum, rounding=ROUND_HALF_UP)
+    return {
+        "requestedQuantity": requested.quantize(Decimal("0.001")),
+        "billableQuantity": billable.quantize(Decimal("0.001")),
+        "wasteRateBps": int(rule.waste_rate_bps or 0),
+        "minimumQuantity": float(rule.minimum_quantity or 0),
+        "baseSubtotal": base_subtotal,
+        "installationFee": installation_fee,
+        "shippingFee": shipping_fee,
+        "taxRateBps": int(rule.tax_rate_bps or 0),
+        "taxAmount": tax_amount,
+        "subtotal": pre_tax_subtotal + tax_amount,
+    }
 
 
 def build_catalog_context(
@@ -212,10 +281,12 @@ def build_catalog_context(
             f"{product.style}|{product.material}|{price}|{product.size}"
         )
     lines.extend(["", "【本店定制项目价目表】格式: 项目|材料档位|单价(元)|计价单位"])
-    for rule in _active_rules(db):
+    for rule in active_custom_quote_rules(db, region=region):
         lines.append(
             f"{rule.project_name}|{rule.material_grade}|{rule.unit_price}|"
-            f"{rule.pricing_unit}"
+            f"{rule.pricing_unit}|损耗{rule.waste_rate_bps / 100:.2f}%|"
+            f"最低{rule.minimum_quantity:g}|安装{rule.installation_fee}|"
+            f"运输{rule.shipping_fee}|税率{rule.tax_rate_bps / 100:.2f}%"
         )
     return "\n".join(lines)
 
@@ -322,7 +393,7 @@ def verify_and_enrich_plans(
         max_dimensions_mm=max_dimensions_mm,
     )
     eligible_by_sku = {product.sku: product for product in products if product.sku}
-    rules = _active_rules(db)
+    rules = active_custom_quote_rules(db, region=region)
     catalog_version = _catalog_version(products)
     rule_version = _rule_version(rules)
 
@@ -477,7 +548,20 @@ def verify_and_enrich_plans(
                 quantity = max(0.5, min(60.0, float(item.get("quantity", 1))))
             except (TypeError, ValueError):
                 quantity = 1.0
-            subtotal = round(rule.unit_price * quantity)
+            calculation = calculate_custom_quote(rule, quantity)
+            subtotal = int(calculation["subtotal"])
+            calculation_snapshot = {
+                "requestedQuantity": float(calculation["requestedQuantity"]),
+                "billableQuantity": float(calculation["billableQuantity"]),
+                "wasteRateBps": calculation["wasteRateBps"],
+                "minimumQuantity": calculation["minimumQuantity"],
+                "baseSubtotal": int(calculation["baseSubtotal"]),
+                "installationFee": calculation["installationFee"],
+                "shippingFee": calculation["shippingFee"],
+                "taxRateBps": calculation["taxRateBps"],
+                "taxAmount": int(calculation["taxAmount"]),
+                "subtotal": subtotal,
+            }
             custom_total += subtotal
             custom_items.append(
                 {
@@ -486,17 +570,23 @@ def verify_and_enrich_plans(
                     "unit": rule.pricing_unit,
                     "unitPrice": rule.unit_price,
                     "quantity": round(quantity, 1),
+                    **calculation_snapshot,
                     "subtotal": subtotal,
                     "note": item.get("note") or rule.description or "",
                     "ruleId": rule.id,
+                    "dataVersion": rule.data_version,
+                    "recordVersion": rule.record_version,
                 }
             )
             custom_lines.append(
                 {
                     "ruleId": rule.id,
-                    "quantity": round(quantity, 1),
+                    "quantity": round(quantity, 3),
+                    **calculation_snapshot,
                     "unitPrice": rule.unit_price,
                     "subtotal": subtotal,
+                    "dataVersion": rule.data_version,
+                    "recordVersion": rule.record_version,
                 }
             )
         plan["customItems"] = custom_items

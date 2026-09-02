@@ -163,6 +163,14 @@ def list_quote_rules(db: Session = Depends(get_db)):
                 "pricing_unit": r.pricing_unit,
                 "material_grade": r.material_grade,
                 "unit_price": r.unit_price,
+                "region_codes": r.region_codes or [],
+                "waste_rate_bps": r.waste_rate_bps,
+                "minimum_quantity": r.minimum_quantity,
+                "installation_fee": r.installation_fee,
+                "shipping_fee": r.shipping_fee,
+                "tax_rate_bps": r.tax_rate_bps,
+                "data_version": r.data_version,
+                "record_version": r.record_version,
                 "description": r.description,
             }
             for r in rules
@@ -386,8 +394,15 @@ class QuoteRuleCreate(BaseModel):
     project_name: str
     category: str
     pricing_unit: str
-    unit_price: int
+    unit_price: int = Field(gt=0)
     material_grade: Optional[str] = None
+    region_codes: list[str] = Field(default_factory=list, max_length=100)
+    waste_rate_bps: int = Field(default=0, ge=0, le=10000)
+    minimum_quantity: float = Field(default=0, ge=0)
+    installation_fee: int = Field(default=0, ge=0)
+    shipping_fee: int = Field(default=0, ge=0)
+    tax_rate_bps: int = Field(default=0, ge=0, le=10000)
+    data_version: str = Field(default="draft-v1", min_length=1, max_length=100)
     description: Optional[str] = None
 
 
@@ -395,9 +410,26 @@ class QuoteRuleUpdate(BaseModel):
     project_name: Optional[str] = None
     category: Optional[str] = None
     pricing_unit: Optional[str] = None
-    unit_price: Optional[int] = None
+    unit_price: Optional[int] = Field(default=None, gt=0)
     material_grade: Optional[str] = None
+    region_codes: Optional[list[str]] = Field(default=None, max_length=100)
+    waste_rate_bps: Optional[int] = Field(default=None, ge=0, le=10000)
+    minimum_quantity: Optional[float] = Field(default=None, ge=0)
+    installation_fee: Optional[int] = Field(default=None, ge=0)
+    shipping_fee: Optional[int] = Field(default=None, ge=0)
+    tax_rate_bps: Optional[int] = Field(default=None, ge=0, le=10000)
+    data_version: Optional[str] = Field(default=None, min_length=1, max_length=100)
     description: Optional[str] = None
+
+
+def _normalize_quote_rule(rule: CustomQuoteRule) -> None:
+    rule.region_codes = list(
+        dict.fromkeys(
+            str(code).strip().upper()
+            for code in (rule.region_codes or [])
+            if str(code).strip()
+        )
+    )
 
 
 @router.post("/quote-rules")
@@ -407,6 +439,7 @@ def create_quote_rule(
     db: Session = Depends(get_db),
 ):
     rule = CustomQuoteRule(**data.model_dump())
+    _normalize_quote_rule(rule)
     db.add(rule)
     db.commit()
     db.refresh(rule)
@@ -425,6 +458,8 @@ def update_quote_rule(
         raise HTTPException(status_code=404, detail="Quote rule not found")
     for k, v in data.model_dump(exclude_unset=True).items():
         setattr(rule, k, v)
+    _normalize_quote_rule(rule)
+    rule.record_version = (rule.record_version or 1) + 1
     db.commit()
     return {"id": rule.id, "status": "ok"}
 

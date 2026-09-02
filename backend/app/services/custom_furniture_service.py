@@ -7,16 +7,18 @@ from hashlib import sha256
 import json
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import CustomQuoteRule
 from app.schemas.custom_furniture import (
     CabinetSpec,
     CustomFurniturePreviewResult,
     CustomFurnitureQuotePreview,
     CustomFurnitureSpec,
     TableSpec,
+)
+from app.services.catalog_service import (
+    active_custom_quote_rules,
+    calculate_custom_quote,
 )
 from app.services.furniture_model_rules import validate_deterministic_rule
 
@@ -434,17 +436,15 @@ def _quote_quantity(spec: CustomFurnitureSpec, pricing_unit: str) -> Decimal | N
 def _build_quote_preview(
     db: Session,
     spec: CustomFurnitureSpec,
+    *,
+    region: str | None = None,
 ) -> CustomFurnitureQuotePreview:
     project_name = PURPOSE_PROJECT_NAMES[spec.purpose]
-    rules = db.scalars(
-        select(CustomQuoteRule)
-        .where(
-            CustomQuoteRule.project_name == project_name,
-            CustomQuoteRule.material_grade == spec.material,
-            CustomQuoteRule.is_active.is_(True),
-        )
-        .order_by(CustomQuoteRule.id)
-    ).all()
+    rules = [
+        rule
+        for rule in active_custom_quote_rules(db, region=region)
+        if rule.project_name == project_name and rule.material_grade == spec.material
+    ]
     if not rules:
         return CustomFurnitureQuotePreview(
             status="needs_human",
@@ -471,9 +471,10 @@ def _build_quote_preview(
             pricing_unit=rule.pricing_unit,
             description=rule.description,
         )
-    amount = (quantity * Decimal(rule.unit_price)).quantize(
-        Decimal("0.01"),
-        rounding=ROUND_HALF_UP,
+    calculation = calculate_custom_quote(
+        rule,
+        quantity,
+        currency_quantum=Decimal("0.01"),
     )
     return CustomFurnitureQuotePreview(
         status="estimated",
@@ -483,7 +484,16 @@ def _build_quote_preview(
         pricing_unit=rule.pricing_unit,
         unit_price=rule.unit_price,
         quantity=quantity,
-        estimated_amount=amount,
+        billable_quantity=calculation["billableQuantity"],
+        waste_rate_bps=int(calculation["wasteRateBps"]),
+        base_subtotal=calculation["baseSubtotal"],
+        installation_fee=int(calculation["installationFee"]),
+        shipping_fee=int(calculation["shippingFee"]),
+        tax_rate_bps=int(calculation["taxRateBps"]),
+        tax_amount=calculation["taxAmount"],
+        estimated_amount=calculation["subtotal"],
+        data_version=rule.data_version,
+        record_version=rule.record_version,
         description=rule.description,
     )
 
@@ -491,9 +501,11 @@ def _build_quote_preview(
 def build_preview(
     db: Session,
     spec: CustomFurnitureSpec,
+    *,
+    region: str | None = None,
 ) -> CustomFurniturePreviewResult:
     """只构建预览，不持久化草案，也不执行任何模型产生的代码。"""
-    quote = _build_quote_preview(db, spec)
+    quote = _build_quote_preview(db, spec, region=region)
     warnings = ["参数化结果投产前需要工程师复核结构、五金与加工余量。"]
     if quote.status == "needs_human":
         warnings.append("没有唯一可复算的启用报价规则，价格需要人工确认。")

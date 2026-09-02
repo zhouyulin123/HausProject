@@ -116,6 +116,42 @@ def test_table_without_exact_rule_is_marked_for_human_quote(db):
     assert preview.model_spec["确定性建模规则"]["生成器"] == "table_v2"
 
 
+def test_custom_preview_applies_regional_cost_factors(db):
+    db.add(
+        CustomQuoteRule(
+            project_name="定制衣柜",
+            category="柜类定制",
+            pricing_unit="㎡",
+            material_grade="E0 颗粒板",
+            unit_price=680,
+            region_codes=["CN-SH"],
+            waste_rate_bps=500,
+            minimum_quantity=3,
+            installation_fee=300,
+            shipping_fee=200,
+            tax_rate_bps=600,
+            data_version="custom-price-2026-09",
+            record_version=2,
+            is_active=True,
+        )
+    )
+    db.commit()
+    request = CustomFurniturePreviewRequest.model_validate(
+        {"spec": _cabinet_payload()}
+    )
+
+    outside_region = build_preview(db, request.spec, region="CN-BJ")
+    shanghai = build_preview(db, request.spec, region="CN-SH")
+
+    assert outside_region.quote_preview.reason_code == "quote_rule_missing"
+    assert shanghai.quote_preview.billable_quantity == Decimal("3.024")
+    assert shanghai.quote_preview.base_subtotal == Decimal("2056.32")
+    assert shanghai.quote_preview.tax_amount == Decimal("153.38")
+    assert shanghai.quote_preview.estimated_amount == Decimal("2709.70")
+    assert shanghai.quote_preview.data_version == "custom-price-2026-09"
+    assert shanghai.quote_preview.record_version == 2
+
+
 @pytest.mark.parametrize(
     "spec, expected_fragment",
     [

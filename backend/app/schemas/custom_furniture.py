@@ -199,7 +199,16 @@ class CustomFurnitureQuotePreview(StrictModel):
     pricing_unit: str | None = None
     unit_price: int | None = None
     quantity: Decimal | None = None
+    billable_quantity: Decimal | None = None
+    waste_rate_bps: int | None = None
+    base_subtotal: Decimal | None = None
+    installation_fee: int | None = None
+    shipping_fee: int | None = None
+    tax_rate_bps: int | None = None
+    tax_amount: Decimal | None = None
     estimated_amount: Decimal | None = None
+    data_version: str | None = None
+    record_version: int | None = None
     currency: Literal["CNY"] = "CNY"
     description: str | None = None
 

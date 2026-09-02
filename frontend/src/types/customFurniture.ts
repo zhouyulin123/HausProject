@@ -89,7 +89,16 @@ export interface CustomFurnitureQuotePreview {
   pricing_unit: string | null;
   unit_price: number | null;
   quantity: string | null;
+  billable_quantity?: string | null;
+  waste_rate_bps?: number | null;
+  base_subtotal?: string | null;
+  installation_fee?: number | null;
+  shipping_fee?: number | null;
+  tax_rate_bps?: number | null;
+  tax_amount?: string | null;
   estimated_amount: string | null;
+  data_version?: string | null;
+  record_version?: number | null;
   currency: "CNY";
   description: string | null;
 }
