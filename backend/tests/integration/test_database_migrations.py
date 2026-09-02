@@ -48,6 +48,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "failure_triage_imports",
             "room_fact_confirmations",
             "model_provider_circuits",
+            "evaluation_run_bindings",
         } <= tables
         room_confirmation_columns = {
             column["name"]
@@ -213,7 +214,28 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "rules_digest",
             "data_digest",
             "request_digest",
+            "input_digest",
+            "provenance_schema_version",
         } <= generation_run_columns
+        uploaded_image_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("uploaded_images")
+        }
+        assert "content_digest" in uploaded_image_columns
+        evaluation_binding_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "evaluation_run_bindings"
+            )
+        }
+        assert {
+            "generation_run_id",
+            "task_id",
+            "case_fingerprint",
+            "asset_digest",
+            "task_input_digest",
+            "created_at",
+        } <= evaluation_binding_columns
         rendered_image_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns("rendered_images")

@@ -186,3 +186,36 @@ def test_non_availability_provider_error_releases_half_open_permit(monkeypatch):
         ("before", "primary-llm"),
         ("release", permit),
     ]
+
+
+def test_generation_meta_separates_static_prompt_version_from_full_dynamic_input(
+    monkeypatch,
+):
+    required_plan = {
+        "name": "方案",
+        "style": "现代",
+        "budget": 10000,
+        "furnitureSuggestions": [{"sku": "SKU-1"}],
+        "customItems": [],
+        "colorPalette": [],
+    }
+    captured: dict[str, str] = {}
+
+    def fake_chat(system, user, **_kwargs):
+        captured.update(system=system, user=user)
+        return {"plans": [dict(required_plan), dict(required_plan)]}
+
+    monkeypatch.setattr(llm_service, "_chat_json", fake_chat)
+    tail_marker = "TAIL-MUST-BE-DIGESTED"
+    llm_service.generate_plans(
+        {"notes": "x" * 9000 + tail_marker},
+        "catalog-versioned-context",
+    )
+
+    meta = llm_service.last_generation_meta()
+    assert meta is not None
+    assert tail_marker not in meta["prompt_snapshot"]
+    assert tail_marker in meta["input_snapshot"]["user"]
+    assert meta["input_snapshot"]["user"] == captured["user"]
+    assert meta["prompt_snapshot"] != captured["system"] + "\n\n" + captured["user"]
+    assert meta["provenance_schema_version"] == 2
