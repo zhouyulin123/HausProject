@@ -20,6 +20,7 @@ from evals.trusted_evidence import (
     RunBinding,
     collect_trusted_evidence,
     dataset_fingerprint,
+    evaluation_run_idempotency_key,
 )
 
 
@@ -100,7 +101,12 @@ def _two_case_dataset(tmp_path: Path):
     return load_case_manifest(manifest)
 
 
-def _completed_system_run(db: Session, *, generator: str = "llm") -> GenerationRun:
+def _completed_system_run(
+    db: Session,
+    *,
+    generator: str = "llm",
+    idempotency_key: str | None = None,
+) -> GenerationRun:
     task = DesignTask(status="completed", progress=100)
     db.add(task)
     db.flush()
@@ -127,6 +133,7 @@ def _completed_system_run(db: Session, *, generator: str = "llm") -> GenerationR
         worker_id=None,
         attempt_count=1,
         max_attempts=3,
+        idempotency_key=idempotency_key,
         started_at=now,
         completed_at=now,
     )
@@ -284,6 +291,39 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
                 RunBinding("private-b", run.task_id, run.id),
             ),
             versions=versions,
+            signing_key=SIGNING_KEY,
+            key_id="quality-ci-1",
+        )
+
+
+def test_run_is_bound_to_dataset_case_before_execution_and_cannot_be_swapped(
+    db,
+    tmp_path,
+):
+    dataset = _two_case_dataset(tmp_path)
+    run_a = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(dataset, "private-a"),
+    )
+    run_b = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(dataset, "private-b"),
+    )
+
+    with pytest.raises(EvaluationInputError, match="执行前绑定"):
+        collect_trusted_evidence(
+            db,
+            dataset=dataset,
+            bindings=(
+                RunBinding("private-a", run_b.task_id, run_b.id),
+                RunBinding("private-b", run_a.task_id, run_a.id),
+            ),
+            versions=EvaluationVersions(
+                model="model-prod-7",
+                prompt="prompt-12",
+                rules="rules-8",
+                data=dataset.dataset_version,
+            ),
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
         )
