@@ -63,6 +63,106 @@ def test_worker_claims_and_completes_one_generation(monkeypatch):
     assert executed == [task.id]
 
 
+def test_worker_success_completes_bound_agent_checkpoint(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(status="running", progress=50)
+        db.add(task)
+        db.commit()
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key="agent-generation:1:success",
+            request_digest="sha256:" + "a" * 64,
+        )
+        task.agent_state_json = {
+            "status": "running",
+            "current_node": "generation_queued",
+            "exit_reason": "generation_queued",
+            "run_id": run.id,
+            "result": {"run_id": run.id, "generation_status": "queued"},
+        }
+        db.commit()
+        run_id = run.id
+        task_id = task.id
+
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+
+    def executor(db, *, task, on_step, on_meta, before_persist, on_success):
+        before_persist()
+        on_success("llm")
+        return type("Response", (), {"generator": "llm"})()
+
+    assert generation_worker.process_one_run(
+        worker_id="agent-worker-success",
+        executor=executor,
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task is not None
+        assert task.agent_state_json["status"] == "completed"
+        assert task.agent_state_json["current_node"] == "generation_completed"
+        assert task.agent_state_json["exit_reason"] == "goal_completed"
+        assert task.agent_state_json["run_id"] == run_id
+        assert task.agent_state_json["result"] == {
+            "run_id": run_id,
+            "generation_status": "completed",
+        }
+
+
+def test_worker_dead_letter_moves_bound_agent_checkpoint_to_needs_human(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(status="running", progress=50)
+        db.add(task)
+        db.commit()
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key="agent-generation:1:failure",
+            max_attempts=1,
+            request_digest="sha256:" + "b" * 64,
+        )
+        task.agent_state_json = {
+            "status": "running",
+            "current_node": "generation_queued",
+            "exit_reason": "generation_queued",
+            "run_id": run.id,
+            "result": {"run_id": run.id, "generation_status": "queued"},
+        }
+        db.commit()
+        run_id = run.id
+        task_id = task.id
+
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+
+    def executor(*_args, **_kwargs):
+        raise RuntimeError("provider timeout")
+
+    assert generation_worker.process_one_run(
+        worker_id="agent-worker-failure",
+        executor=executor,
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        run = db.get(type(run), run_id)
+        assert task is not None
+        assert run is not None and run.status == "dead_letter"
+        assert task.agent_state_json["status"] == "needs_human"
+        assert task.agent_state_json["current_node"] == "generation_failed"
+        assert task.agent_state_json["exit_reason"] == "generation_failed"
+        assert task.agent_state_json["result"] == {
+            "run_id": run_id,
+            "generation_status": "dead_letter",
+        }
+
+
 def test_worker_requeues_retryable_execution_failure(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

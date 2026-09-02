@@ -280,4 +280,98 @@ describe("方案结果恢复", () => {
     await expect(generateDesignsForTask(42)).rejects.toThrow(expected);
     expect(statusPolls).toBe(1);
   });
+
+  it("恢复 Agent 排队生成并在 Worker 成功后读取方案和最新状态", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({ "haus-anonymous-session-id": sessionId });
+    const checkpoint = {
+      task_id: 42,
+      state_version: 3,
+      status: "completed",
+      active_mode: "catalog_design",
+      active_room_id: null,
+      intent: "design",
+      current_node: "generation_completed",
+      facts: {},
+      fact_evidence: {},
+      pending_questions: [],
+      step_count: 5,
+      retry_count: 0,
+      max_steps: 12,
+      max_retries: 2,
+      hard_errors: [],
+      custom_furniture_spec: null,
+      approval_required: false,
+      exit_reason: "goal_completed",
+      scene_ref: null,
+      run_id: 7,
+      result: { run_id: 7, generation_status: "completed" },
+      messages: [],
+    };
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const path = String(input);
+      if (path === `/api/sessions/${sessionId}`) return jsonResponse({ session_id: sessionId });
+      if (path === "/api/design/tasks/42/generation") {
+        return jsonResponse({ run_id: 7, status: "completed", progress: 100 });
+      }
+      if (path === "/api/design/tasks/42/agent-state") return jsonResponse(checkpoint);
+      if (path === "/api/design/tasks/42/result") {
+        return jsonResponse({ plans: [{ id: "worker-plan" }], generator: "llm" });
+      }
+      throw new Error(`未处理的请求: ${path}`);
+    });
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { resumeAgentGeneration } = await import("./designApi");
+    const result = await resumeAgentGeneration(42, 7);
+
+    expect(result.checkpoint).toEqual(checkpoint);
+    expect(result.plans.map((plan) => plan.id)).toEqual(["worker-plan"]);
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/design/tasks/42/agent-turns",
+      expect.anything(),
+    );
+  });
+
+  it("Worker 终态失败后恢复 needs_human 且不读取伪方案", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({ "haus-anonymous-session-id": sessionId });
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const path = String(input);
+      if (path === `/api/sessions/${sessionId}`) return jsonResponse({ session_id: sessionId });
+      if (path === "/api/design/tasks/42/generation") {
+        return jsonResponse({
+          run_id: 7,
+          status: "provider_unavailable",
+          progress: 100,
+          error_message: "模型供应商暂时不可用",
+        });
+      }
+      if (path === "/api/design/tasks/42/agent-state") {
+        return jsonResponse({
+          task_id: 42,
+          state_version: 3,
+          status: "needs_human",
+          exit_reason: "generation_failed",
+          run_id: 7,
+          result: { run_id: 7, generation_status: "provider_unavailable" },
+          messages: [],
+        });
+      }
+      throw new Error(`未处理的请求: ${path}`);
+    });
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { resumeAgentGeneration } = await import("./designApi");
+    const result = await resumeAgentGeneration(42, 7);
+
+    expect(result.checkpoint.status).toBe("needs_human");
+    expect(result.plans).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/design/tasks/42/result",
+      expect.anything(),
+    );
+  });
 });

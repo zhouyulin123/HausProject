@@ -15,8 +15,10 @@ from app.db.models import (
     CustomQuoteRule,
     DesignAgentEvent,
     DesignAgentTurn,
+    DesignResult,
     DesignRevision,
     DesignTask,
+    GenerationRun,
     Product,
     RoomFactConfirmation,
     UploadedImage,
@@ -419,12 +421,85 @@ def test_agent_api_does_not_block_explicit_negative_construction_constraints(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "completed"
-    assert payload["exit_reason"] == "goal_completed"
+    assert payload["status"] == "running"
+    assert payload["exit_reason"] == "generation_queued"
     assert payload["approval_required"] is False
     assert not any(
         event["node"] == "safety_intent_gate" for event in payload["events"]
     )
+
+
+@pytest.mark.integration
+def test_agent_design_queues_one_worker_run_without_sync_generation_side_effects(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    sync_calls: list[str] = []
+
+    def forbidden_sync_generation(*_args, **_kwargs):
+        sync_calls.append("called")
+        raise AssertionError("Agent HTTP 请求不得同步调用模型")
+
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "generate_plans",
+        forbidden_sync_generation,
+    )
+    body = {
+        "client_turn_id": "agent-worker-queue-001",
+        "message": "开始生成家具搭配方案",
+        "active_mode": "catalog_design",
+        "answers": {
+            "budget_max": 20000,
+            "room_width_m": 4,
+            "room_depth_m": 5,
+            "delivery_region": "CN-SH",
+        },
+    }
+
+    first = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=body,
+    )
+    replay = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=body,
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.json() == first.json()
+    payload = first.json()
+    assert payload["status"] == "running"
+    assert payload["exit_reason"] == "generation_queued"
+    assert isinstance(payload["run_id"], int)
+    assert payload["state"]["run_id"] == payload["run_id"]
+    assert payload["result"] == {
+        "run_id": payload["run_id"],
+        "generation_status": "queued",
+    }
+    queued_event = next(
+        event for event in payload["events"] if event["type"] == "generation_queued"
+    )
+    assert queued_event["details"]["run_id"] == payload["run_id"]
+    assert sync_calls == []
+
+    with factory() as db:
+        runs = db.scalars(
+            select(GenerationRun).where(GenerationRun.task_id == task_id)
+        ).all()
+        assert len(runs) == 1
+        assert runs[0].id == payload["run_id"]
+        assert runs[0].idempotency_key.startswith(f"agent-generation:{task_id}:")
+        assert runs[0].request_digest
+        assert db.scalars(
+            select(DesignRevision).where(DesignRevision.task_id == task_id)
+        ).all() == []
+        assert db.scalars(
+            select(DesignResult).where(DesignResult.task_id == task_id)
+        ).all() == []
 
 
 @pytest.mark.integration
@@ -461,7 +536,8 @@ def test_agent_turn_accumulates_steps_across_pause_and_resume(
     assert first.json()["status"] == "waiting_user"
     assert first.json()["state"]["step_count"] == 2
     assert first.json()["state"]["retry_count"] == 0
-    assert second.json()["status"] == "completed"
+    assert second.json()["status"] == "running"
+    assert second.json()["exit_reason"] == "generation_queued"
     assert second.json()["state"]["step_count"] == 7
     assert second.json()["state"]["retry_count"] == 0
 
