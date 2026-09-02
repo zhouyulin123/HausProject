@@ -18,6 +18,7 @@ from evals.real_world import (
 from evals.trusted_evidence import (
     ExecutionProvenance,
     VerifiedEvaluationEvidence,
+    _case_fingerprint,
 )
 
 
@@ -67,7 +68,10 @@ def _verified_evidence(*, signature_verified: bool = True):
         ),
         executions=(
             ExecutionProvenance(
-                case_fingerprint="sha256:" + "6" * 64,
+                case_fingerprint=_case_fingerprint(
+                    "sha256:" + "4" * 64,
+                    "case-private-a",
+                ),
                 execution_ref="exec-hmac-sha256:" + "7" * 64,
                 source="generation_worker",
                 generator="llm",

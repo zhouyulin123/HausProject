@@ -1886,3 +1886,12 @@
 - 定制家具编辑草稿通过任务归属的版本化接口自动保存，复用 Agent turn 幂等审计记录，checkpoint 可跨刷新和设备恢复；本地缓存不再作为业务事实源。
 - 前端目录操作成功后才刷新服务端方案投影，不再先修改 Zustand 或单独上报采用/移除/替换反馈；同 SKU 多实例不做启发式选择。
 - 数据库迁移 head：`8c9d0e1f2a3b`。
+
+## 2026-09-02 阶段 4：可信证据隐私与失败质量闭环
+
+- 公开 trusted evidence `4.0` 不再包含数据库 `task_id/system_run_id`；改为证据部署密钥域内稳定、跨密钥域隔离的 HMAC `execution_ref`。内部受控运行绑定仍保留原始 ID 用于数据库归属校验。
+- 收集、读取和验证链路严格拒绝带原始数据库 ID 的公开 execution、非法引用和重复 `execution_ref`；已验签对象同时记录完整 evidence digest。
+- 失败分诊升级为 `2.0`，只从已验签 trusted evidence 的终态和结构化逐例计数派生，不再接受独立自报 failure 文件或自由文本分类。
+- 分诊报告及签名同步载荷绑定 dataset version、manifest digest、evidence digest 和 immutable output digests；聚类携带匿名 execution refs，不能脱离可信执行证据重填。
+- 本轮没有新增、伪造或放宽任何真实案例准入与业务指标。
+- RED `bec136d` 锁定公开主键泄漏、自报失败文件和重复执行引用；可信证据、分诊、管理员同步相关回归 55 项通过，后端全量 587 项通过，Python 编译通过。

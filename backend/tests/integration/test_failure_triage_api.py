@@ -16,10 +16,13 @@ _SIGNING_KEY = "test-report-signing-key-at-least-32-bytes"
 
 def _report():
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "report_id": "failure-triage-001",
         "taxonomy_version": "taxonomy-1",
         "data_version": "data-1",
+        "manifest_digest": "sha256:" + "1" * 64,
+        "evidence_digest": "sha256:" + "2" * 64,
+        "output_digests": ["sha256:" + "3" * 64],
         "candidate_version": "candidate-1",
         "signature_algorithm": "hmac-sha256",
         "signature_key_id": "eval-key-v1",

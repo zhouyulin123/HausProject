@@ -30,10 +30,13 @@ def db():
 
 def _report(report_id: str, candidate_version: str = "candidate-1"):
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "report_id": report_id,
         "taxonomy_version": "taxonomy-1",
         "data_version": "data-1",
+        "manifest_digest": "sha256:" + "1" * 64,
+        "evidence_digest": "sha256:" + "2" * 64,
+        "output_digests": ["sha256:" + "3" * 64],
         "candidate_version": candidate_version,
         "signature_algorithm": "hmac-sha256",
         "signature_key_id": "eval-key-v1",

@@ -84,8 +84,7 @@ def _evidence(dataset, *, model: str, results: tuple[CaseResult, ...]):
             + hashlib.sha256(
                 f"{digest}:{result.case_id}".encode("utf-8")
             ).hexdigest(),
-            task_id=index,
-            system_run_id=index,
+            execution_ref="exec-hmac-sha256:" + f"{index:064x}",
             source="generation_worker",
             generator="llm",
             status="completed",
@@ -103,6 +102,7 @@ def _evidence(dataset, *, model: str, results: tuple[CaseResult, ...]):
         schema_version="3.0",
         versions=versions,
         dataset_fingerprint=digest,
+        evidence_digest="sha256:" + "5" * 64,
         split="regression",
         results=results,
         executions=executions,

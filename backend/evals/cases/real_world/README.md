@@ -96,25 +96,23 @@ python -m evals.run_real_world_eval `
 
 评测退出码：`0` 表示全部门禁通过，`1` 表示可信证据完整但质量未达标，`2` 表示清单、证据、签名或密钥不合法。证据收集器成功返回 `0`，任何运行来源、覆盖或签名配置问题返回 `2`。当前清单没有准入案例，因此尚不能签发真实验收证据，也不能在 CI 中当作成功。
 
+公开 trusted evidence `4.0` 的 execution 不包含数据库 `task_id` 或
+`system_run_id`。收集器使用证据部署密钥和固定用途域生成
+`exec-hmac-sha256:<digest>`；同一部署密钥下引用稳定，切换密钥域后引用变化。
+带原始任务、运行主键的 `run-bindings.json` 仅是受控收集器内部输入，禁止作为
+公开证据、报告或工单附件外发。读取器严格拒绝带原始主键、非法或重复
+`execution_ref` 的公开证据。
+
 ## 人工标注最小内容
 
 每例至少保存：脱敏需求、人工确认的 RoomModel、低置信事实、允许商品范围、预算范围、确定性报价结果、布局硬约束、失败标签、标注人与标签版本。用户满意度和人工修改率单独记录，不与确定性事实指标混算。
 
 ## 失败样本分诊
 
-质量门禁的逐例结果与失败分诊证据是两个独立契约。分诊输入使用
-`failure_triage.template.json` 的 `schema_version=1.0` 和
-`taxonomy_version=1.0`，`data_version` 必须与案例清单完全一致。每条记录只接受：
-
-- 已准入案例的 `case_id`；
-- 结构化 `code`、`failure_type` 和 `severity`；
-- 结构化 `tags` 和 `metrics` 数组。
-
-`failure_type` 1.0 支持 `requirement`、`space_fact`、`catalog`、`quote`、
-`budget`、`layout`、`style`、`generation`、`security`、`orchestration`
-和 `human_feedback`；`severity` 只支持 `critical`、`high`、`medium`、
-`low`。标识符必须使用小写字母开头，后续只允许小写字母、数字、点、
-下划线和连字符。未知字段和自由文本会被拒绝，不会参与启发式分类。
+失败分诊 `2.0` 不接受独立 failure 文件、人工填写 code 或自由文本分类。CLI
+必须读取同一份已验签 trusted evidence `4.0`，并只根据可信运行终态和
+`CaseResult` 的结构化分子、分母确定性派生失败类型、严重度、code、tag 与
+metric。证据签名无效、split 不一致、案例覆盖不完整或旧公开结构都会失败关闭。
 
 先分别配置 case_id 脱敏密钥和报告签名密钥，再运行 CLI。两把密钥用途不同，不能复用；命令输出中的 `sync_payload` 可直接作为管理员同步接口的 JSON 请求体：
 
@@ -124,8 +122,9 @@ $env:EVAL_REPORT_SIGNING_KEY = "由评测管理员配置的至少32字节独立�
 $env:PYTHONPATH = "backend"
 python -m evals.run_failure_triage `
   --manifest backend/evals/cases/real_world/manifest.json `
+  --split regression `
   --asset-root . `
-  --failures backend/evals/cases/real_world/failure_triage.template.json `
+  --evidence backend/evals/reports/evidence/real_world_eval.evidence.json `
   --salt-id eval-case-key-v1 `
   --report-id weekly-2026-W36 `
   --candidate-version candidate-2026-W36 `
@@ -134,9 +133,12 @@ python -m evals.run_failure_triage `
 ```
 
 报告按失败类型、严重度、数据切分、code、tag 和 metric 聚合，并输出稳定的
-HMAC case 别名。报告不保存原始 case_id，也不保存脱敏密钥；同一数据版本需要
-保持相同密钥和 `salt-id`，才能跨次比较案例。退出码：`0` 表示输入有效且没有
-失败，`1` 表示输入有效且存在失败，`2` 表示版本、准入、结构、密钥或输出不合法。
+HMAC case 别名。报告及其签名同步载荷同时绑定 dataset version、manifest
+digest、完整 evidence digest 和涉及的 immutable output digest；聚类还保留
+匿名 `execution_ref`，不能脱离原始可信证据重新填写。报告不保存原始 case_id，
+也不保存脱敏密钥；同一数据版本需要保持相同密钥和 `salt-id`，才能跨次比较案例。
+退出码：`0` 表示输入有效且没有失败，`1` 表示输入有效且存在失败，`2` 表示版本、
+准入、验签、结构、密钥或输出不合法。
 当前清单没有准入案例，CLI 会以 `2` 拒绝生成空洞的“成功”报告。
 
 后端必须通过 `EVAL_REPORT_SIGNING_KEY` 配置同一签名密钥，未配置时同步接口返回 `503`。签名不匹配返回 `422`；同一 `report_id` 对应不同内容，或同一语义证据更换 ID 重放，返回 `409`。报告只包含匿名聚合，不包含原始案例 ID、用户文本或图片。

@@ -11,7 +11,7 @@ from evals.failure_triage import (
     FailureTriageInputError,
     build_failure_triage_report,
     build_failure_triage_sync_payload,
-    load_failure_triage_evidence,
+    load_trusted_failure_evidence,
     render_failure_triage_markdown,
 )
 from evals.real_world import DatasetValidationError, load_case_manifest
@@ -20,7 +20,12 @@ from evals.real_world import DatasetValidationError, load_case_manifest
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="生成结构化失败样本分诊报告")
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--failures", type=Path, required=True)
+    parser.add_argument(
+        "--split",
+        choices=("development", "regression", "blind"),
+        required=True,
+    )
+    parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--asset-root", type=Path)
     parser.add_argument("--report-id", required=True)
@@ -60,9 +65,21 @@ def main(argv: list[str] | None = None) -> int:
                 f"环境变量 {args.signing_key_env} 未配置"
             )
         dataset = load_case_manifest(args.manifest, asset_root=args.asset_root)
-        if not dataset.eligible_cases():
-            raise FailureTriageInputError("案例清单中没有已准入案例")
-        evidence = load_failure_triage_evidence(args.failures, dataset=dataset)
+        if not dataset.eligible_cases(args.split):
+            raise FailureTriageInputError("所选 split 中没有已准入案例")
+        evidence_key = os.environ.get("EVAL_EVIDENCE_HMAC_KEY")
+        evidence_key_id = os.environ.get("EVAL_EVIDENCE_KEY_ID")
+        if not evidence_key or not evidence_key_id:
+            raise FailureTriageInputError(
+                "缺少可信证据验签密钥 EVAL_EVIDENCE_HMAC_KEY/"
+                "EVAL_EVIDENCE_KEY_ID"
+            )
+        evidence = load_trusted_failure_evidence(
+            args.evidence,
+            dataset=dataset,
+            split=args.split,
+            verification_keys={evidence_key_id: evidence_key},
+        )
         report = build_failure_triage_report(
             dataset=dataset,
             evidence=evidence,

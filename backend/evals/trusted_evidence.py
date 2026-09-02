@@ -62,6 +62,7 @@ REQUIRED_NODE_SOURCES = {
     "validate_quality": "deterministic",
 }
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_EXECUTION_REF_PATTERN = re.compile(r"^exec-hmac-sha256:[0-9a-f]{64}$")
 TRUSTED_TERMINAL_STATUSES = frozenset(
     {
         "completed",
@@ -94,8 +95,7 @@ class RunBinding:
 @dataclass(frozen=True)
 class ExecutionProvenance:
     case_fingerprint: str
-    task_id: int
-    system_run_id: int
+    execution_ref: str
     source: str
     generator: str
     status: str
@@ -113,6 +113,7 @@ class VerifiedEvaluationEvidence:
     schema_version: str
     versions: EvaluationVersions
     dataset_fingerprint: str
+    evidence_digest: str
     split: EvaluationSplit
     results: tuple[CaseResult, ...]
     executions: tuple[ExecutionProvenance, ...]
@@ -328,6 +329,19 @@ def _signature(payload: Mapping[str, Any], signing_key: str) -> str:
         _canonical_json(payload),
         hashlib.sha256,
     ).hexdigest()
+
+
+def _execution_ref(*, task_id: int, run_id: int, deployment_key: str) -> str:
+    """生成不暴露可枚举数据库主键的部署域稳定执行引用。"""
+    message = f"trusted-evidence/execution-ref/v1\0{task_id}\0{run_id}".encode(
+        "ascii"
+    )
+    digest = hmac.new(
+        _normalized_key(deployment_key),
+        message,
+        hashlib.sha256,
+    ).hexdigest()
+    return f"exec-hmac-sha256:{digest}"
 
 
 def _validate_versions(versions: EvaluationVersions) -> None:
@@ -709,8 +723,11 @@ def collect_trusted_evidence(
         executions.append(
             {
                 "case_fingerprint": case_digest,
-                "task_id": run.task_id,
-                "system_run_id": run.id,
+                "execution_ref": _execution_ref(
+                    task_id=run.task_id,
+                    run_id=run.id,
+                    deployment_key=signing_key,
+                ),
                 "source": "generation_worker",
                 "generator": run.generator,
                 "status": run.status,
@@ -872,13 +889,12 @@ def verify_trusted_evidence(
         for case in dataset.eligible_cases(normalized_split)
     }
     seen_cases: set[str] = set()
-    seen_runs: set[int] = set()
+    seen_execution_refs: set[str] = set()
     results: list[CaseResult] = []
     provenances: list[ExecutionProvenance] = []
     allowed_execution_fields = {
         "case_fingerprint",
-        "task_id",
-        "system_run_id",
+        "execution_ref",
         "source",
         "generator",
         "status",
@@ -901,20 +917,17 @@ def verify_trusted_evidence(
         if case_digest in seen_cases:
             raise EvaluationInputError("证据包含重复案例指纹")
         seen_cases.add(case_digest)
-        run_id = execution.get("system_run_id")
-        task_id = execution.get("task_id")
+        execution_ref = execution.get("execution_ref")
         if (
-            isinstance(run_id, bool)
-            or not isinstance(run_id, int)
-            or run_id <= 0
-            or isinstance(task_id, bool)
-            or not isinstance(task_id, int)
-            or task_id <= 0
+            not isinstance(execution_ref, str)
+            or not _EXECUTION_REF_PATTERN.fullmatch(execution_ref)
         ):
-            raise EvaluationInputError(f"第 {index + 1} 条 execution 的任务或运行 ID 不合法")
-        if run_id in seen_runs:
-            raise EvaluationInputError("同一 system_run_id 不能跨案例重放")
-        seen_runs.add(run_id)
+            raise EvaluationInputError(
+                f"第 {index + 1} 条 execution_ref 不合法"
+            )
+        if execution_ref in seen_execution_refs:
+            raise EvaluationInputError("同一 execution_ref 不能跨案例重放")
+        seen_execution_refs.add(execution_ref)
         if (
             execution.get("source") != "generation_worker"
             or execution.get("generator") != TRUSTED_GENERATOR
@@ -965,8 +978,7 @@ def verify_trusted_evidence(
         provenances.append(
             ExecutionProvenance(
                 case_fingerprint=case_digest,
-                task_id=task_id,
-                system_run_id=run_id,
+                execution_ref=execution_ref,
                 source=execution["source"],
                 generator=execution["generator"],
                 status=execution["status"],
@@ -986,6 +998,7 @@ def verify_trusted_evidence(
         schema_version=EVIDENCE_SCHEMA_VERSION,
         versions=versions,
         dataset_fingerprint=expected_dataset_digest,
+        evidence_digest=_digest(payload),
         split=normalized_split,
         results=tuple(results),
         executions=tuple(provenances),

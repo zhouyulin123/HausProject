@@ -11,9 +11,16 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from evals.real_world import RealWorldDataset
+from evals.real_world import EvaluationInputError, EvaluationSplit
+from evals.trusted_evidence import (
+    EVIDENCE_SCHEMA_VERSION,
+    VerifiedEvaluationEvidence,
+    _case_fingerprint,
+    verify_trusted_evidence,
+)
 from app.services.failure_triage_signature import sign_failure_triage_payload
 
 
@@ -32,8 +39,8 @@ FailureType = Literal[
 ]
 FailureSeverity = Literal["critical", "high", "medium", "low"]
 
-FAILURE_TRIAGE_SCHEMA_VERSION = "1.0"
-FAILURE_TAXONOMY_VERSION = "1.0"
+FAILURE_TRIAGE_SCHEMA_VERSION = "2.0"
+FAILURE_TAXONOMY_VERSION = "2.0"
 
 _FAILURE_TYPES = {
     "requirement",
@@ -50,21 +57,8 @@ _FAILURE_TYPES = {
 }
 _SEVERITIES = ("critical", "high", "medium", "low")
 _SPLITS = ("development", "regression", "blind")
-_TOKEN_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
-_ROOT_FIELDS = {
-    "schema_version",
-    "taxonomy_version",
-    "data_version",
-    "failures",
-}
-_FAILURE_FIELDS = {
-    "case_id",
-    "code",
-    "failure_type",
-    "severity",
-    "tags",
-    "metrics",
-}
+_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_EXECUTION_REF_PATTERN = re.compile(r"^exec-hmac-sha256:[0-9a-f]{64}$")
 
 
 class FailureTriageInputError(ValueError):
@@ -74,6 +68,8 @@ class FailureTriageInputError(ValueError):
 @dataclass(frozen=True)
 class FailureRecord:
     case_id: str
+    execution_ref: str
+    output_digest: str | None
     code: str
     failure_type: FailureType
     severity: FailureSeverity
@@ -86,6 +82,9 @@ class FailureTriageEvidence:
     schema_version: str
     taxonomy_version: str
     data_version: str
+    manifest_digest: str
+    evidence_digest: str
+    output_digests: tuple[str, ...]
     failures: tuple[FailureRecord, ...]
 
 
@@ -93,109 +92,243 @@ def _read_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise FailureTriageInputError(f"无法读取失败分诊输入：{exc}") from exc
+        raise FailureTriageInputError(f"无法读取可信评测证据：{exc}") from exc
     if not isinstance(payload, dict):
-        raise FailureTriageInputError("失败分诊输入根节点必须是对象")
+        raise FailureTriageInputError("可信评测证据根节点必须是对象")
     return payload
 
 
-def _validate_token(value: Any, *, field: str, index: int) -> str:
-    if not isinstance(value, str) or not _TOKEN_PATTERN.fullmatch(value):
-        raise FailureTriageInputError(
-            f"第 {index + 1} 条失败记录的 {field} 必须是结构化标识符"
+_METRIC_FAILURES = (
+    (
+        "requirement_correct",
+        "requirement_total",
+        "requirement_mismatch",
+        "requirement",
+        "high",
+        "requirement_accuracy",
+    ),
+    (
+        "space_fact_correct",
+        "space_fact_total",
+        "space_fact_mismatch",
+        "space_fact",
+        "high",
+        "space_fact_accuracy",
+    ),
+    (
+        "low_confidence_confirmed",
+        "low_confidence_facts",
+        "low_confidence_unconfirmed",
+        "space_fact",
+        "high",
+        "low_confidence_confirmation_rate",
+    ),
+    (
+        "valid_skus",
+        "recommended_skus",
+        "invalid_sku",
+        "catalog",
+        "critical",
+        "valid_sku_rate",
+    ),
+    (
+        "product_match_accepted",
+        "product_match_checks",
+        "product_match_rejected",
+        "catalog",
+        "medium",
+        "product_match_acceptance_rate",
+    ),
+    (
+        "quote_consistent",
+        "quote_checks",
+        "quote_mismatch",
+        "quote",
+        "critical",
+        "quote_consistency_rate",
+    ),
+    (
+        "budget_within_limit",
+        "budget_checks",
+        "budget_exceeded",
+        "budget",
+        "high",
+        "budget_compliance_rate",
+    ),
+    (
+        "layout_hard_passes",
+        "layout_checks",
+        "layout_hard_constraint_failed",
+        "layout",
+        "critical",
+        "layout_hard_constraint_pass_rate",
+    ),
+    (
+        "style_consistent",
+        "style_checks",
+        "style_mismatch",
+        "style",
+        "medium",
+        "style_consistency_rate",
+    ),
+)
+
+
+def _derived_failures(
+    evidence: VerifiedEvaluationEvidence,
+) -> tuple[FailureRecord, ...]:
+    failures: list[FailureRecord] = []
+    if len(evidence.results) != len(evidence.executions):
+        raise FailureTriageInputError("可信评测结果与执行来源数量不一致")
+    for result, execution in zip(evidence.results, evidence.executions, strict=True):
+        common = {
+            "case_id": result.case_id,
+            "execution_ref": execution.execution_ref,
+            "output_digest": execution.output_digest,
+        }
+        if execution.status != "completed":
+            failures.append(
+                FailureRecord(
+                    **common,
+                    code=f"generation_{execution.status}",
+                    failure_type="generation",
+                    severity=(
+                        "critical" if execution.status == "dead_letter" else "high"
+                    ),
+                    tags=(f"status.{execution.status}",),
+                    metrics=("generation_success_rate",),
+                )
+            )
+            continue
+        for numerator, denominator, code, failure_type, severity, metric in _METRIC_FAILURES:
+            if getattr(result, denominator) > getattr(result, numerator):
+                failures.append(
+                    FailureRecord(
+                        **common,
+                        code=code,
+                        failure_type=failure_type,
+                        severity=severity,
+                        tags=(failure_type,),
+                        metrics=(metric,),
+                    )
+                )
+        if result.severe_cross_user_access:
+            failures.append(
+                FailureRecord(
+                    **common,
+                    code="severe_cross_user_access",
+                    failure_type="security",
+                    severity="critical",
+                    tags=("authorization",),
+                    metrics=("severe_cross_user_access",),
+                )
+            )
+        if result.unbounded_retry_detected:
+            failures.append(
+                FailureRecord(
+                    **common,
+                    code="unbounded_retry",
+                    failure_type="orchestration",
+                    severity="critical",
+                    tags=("retry",),
+                    metrics=("unbounded_retry_cases",),
+                )
+            )
+    return tuple(
+        sorted(
+            failures,
+            key=lambda item: (item.case_id, item.failure_type, item.code),
         )
-    return value
-
-
-def _validate_token_list(value: Any, *, field: str, index: int) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        raise FailureTriageInputError(f"第 {index + 1} 条失败记录的 {field} 必须是数组")
-    tokens = tuple(_validate_token(item, field=field, index=index) for item in value)
-    if len(set(tokens)) != len(tokens):
-        raise FailureTriageInputError(f"第 {index + 1} 条失败记录的 {field} 包含重复值")
-    return tuple(sorted(tokens))
-
-
-def _build_failure(raw: Any, *, index: int) -> FailureRecord:
-    if not isinstance(raw, dict):
-        raise FailureTriageInputError(f"第 {index + 1} 条失败记录必须是对象")
-    unknown = sorted(set(raw) - _FAILURE_FIELDS)
-    if unknown:
-        raise FailureTriageInputError(
-            f"第 {index + 1} 条失败记录含未知字段：{', '.join(unknown)}"
-        )
-    missing = sorted(_FAILURE_FIELDS - set(raw))
-    if missing:
-        raise FailureTriageInputError(
-            f"第 {index + 1} 条失败记录缺少字段：{', '.join(missing)}"
-        )
-
-    case_id = raw["case_id"]
-    if not isinstance(case_id, str) or not case_id.strip():
-        raise FailureTriageInputError(f"第 {index + 1} 条失败记录的 case_id 不能为空")
-    failure_type = raw["failure_type"]
-    if not isinstance(failure_type, str) or failure_type not in _FAILURE_TYPES:
-        raise FailureTriageInputError(
-            f"第 {index + 1} 条失败记录的 failure_type 不合法"
-        )
-    severity = raw["severity"]
-    if severity not in _SEVERITIES:
-        raise FailureTriageInputError(f"第 {index + 1} 条失败记录的 severity 不合法")
-    return FailureRecord(
-        case_id=case_id.strip(),
-        code=_validate_token(raw["code"], field="code", index=index),
-        failure_type=failure_type,
-        severity=severity,
-        tags=_validate_token_list(raw["tags"], field="tags", index=index),
-        metrics=_validate_token_list(raw["metrics"], field="metrics", index=index),
     )
 
 
-def load_failure_triage_evidence(
+def derive_failure_triage_evidence(
+    *,
+    evidence: VerifiedEvaluationEvidence,
+    dataset: RealWorldDataset,
+) -> FailureTriageEvidence:
+    """只从已验签可信证据中的结构化终态与指标派生失败。"""
+    if not evidence.signature_verified:
+        raise FailureTriageInputError("失败分诊只接受已验签可信评测证据")
+    if evidence.schema_version != EVIDENCE_SCHEMA_VERSION:
+        raise FailureTriageInputError("失败分诊只接受 trusted evidence v4")
+    if len(evidence.results) != len(evidence.executions):
+        raise FailureTriageInputError("可信评测结果与执行来源数量不一致")
+    eligible_ids = {case.id for case in dataset.eligible_cases(evidence.split)}
+    result_ids = {result.case_id for result in evidence.results}
+    if result_ids != eligible_ids:
+        raise FailureTriageInputError("可信证据与当前数据集准入案例不一致")
+    execution_refs = [execution.execution_ref for execution in evidence.executions]
+    if (
+        len(execution_refs) != len(set(execution_refs))
+        or any(not _EXECUTION_REF_PATTERN.fullmatch(item) for item in execution_refs)
+    ):
+        raise FailureTriageInputError("可信证据包含非法或重复 execution_ref")
+    for result, execution in zip(evidence.results, evidence.executions, strict=True):
+        expected_case = _case_fingerprint(
+            evidence.dataset_fingerprint,
+            result.case_id,
+        )
+        if execution.case_fingerprint != expected_case:
+            raise FailureTriageInputError("可信证据的案例与执行来源顺序不一致")
+        if execution.status == "completed":
+            if (
+                execution.output_digest is None
+                or not _SHA256_PATTERN.fullmatch(execution.output_digest)
+            ):
+                raise FailureTriageInputError("成功执行缺少可信 output_digest")
+        elif execution.output_digest is not None:
+            raise FailureTriageInputError("失败执行不得包含 output_digest")
+    for digest_name, digest in (
+        ("manifest_digest", evidence.dataset_fingerprint),
+        ("evidence_digest", evidence.evidence_digest),
+    ):
+        if not _SHA256_PATTERN.fullmatch(digest):
+            raise FailureTriageInputError(f"{digest_name} 不合法")
+    output_digests = tuple(
+        sorted(
+            {
+                execution.output_digest
+                for execution in evidence.executions
+                if execution.output_digest is not None
+            }
+        )
+    )
+    return FailureTriageEvidence(
+        schema_version=evidence.schema_version,
+        taxonomy_version=FAILURE_TAXONOMY_VERSION,
+        data_version=dataset.dataset_version,
+        manifest_digest=evidence.dataset_fingerprint,
+        evidence_digest=evidence.evidence_digest,
+        output_digests=output_digests,
+        failures=_derived_failures(evidence),
+    )
+
+
+def load_trusted_failure_evidence(
     input_path: Path | str,
     *,
     dataset: RealWorldDataset,
+    split: EvaluationSplit,
+    verification_keys: Mapping[str, str],
 ) -> FailureTriageEvidence:
-    """读取独立的 1.0 失败证据，且只接受已准入案例。"""
     payload = _read_json(Path(input_path).resolve())
-    unknown = sorted(set(payload) - _ROOT_FIELDS)
-    if unknown:
-        raise FailureTriageInputError(f"失败分诊输入含未知字段：{', '.join(unknown)}")
-    if payload.get("schema_version") != FAILURE_TRIAGE_SCHEMA_VERSION:
-        raise FailureTriageInputError(
-            f"不支持的 schema_version：{payload.get('schema_version')}"
+    try:
+        verified = verify_trusted_evidence(
+            payload,
+            dataset=dataset,
+            split=split,
+            verification_keys=verification_keys,
         )
-    if payload.get("taxonomy_version") != FAILURE_TAXONOMY_VERSION:
-        raise FailureTriageInputError(
-            f"不支持的 taxonomy_version：{payload.get('taxonomy_version')}"
-        )
-    data_version = payload.get("data_version")
-    if data_version != dataset.dataset_version:
-        raise FailureTriageInputError(
-            f"数据版本不一致：输入={data_version}，清单={dataset.dataset_version}"
-        )
-    raw_failures = payload.get("failures")
-    if not isinstance(raw_failures, list):
-        raise FailureTriageInputError("failures 必须是数组")
+    except EvaluationInputError as exc:
+        raise FailureTriageInputError(f"可信评测证据不合法：{exc}") from exc
+    return derive_failure_triage_evidence(evidence=verified, dataset=dataset)
 
-    failures = tuple(
-        _build_failure(raw, index=index) for index, raw in enumerate(raw_failures)
-    )
-    eligible_ids = {case.id for case in dataset.eligible_cases()}
-    invalid_ids = sorted({item.case_id for item in failures} - eligible_ids)
-    if invalid_ids:
-        raise FailureTriageInputError(
-            f"失败记录引用了未准入或不存在的案例：{', '.join(invalid_ids)}"
-        )
-    pairs = [(item.case_id, item.code) for item in failures]
-    if len(set(pairs)) != len(pairs):
-        raise FailureTriageInputError("输入包含重复失败记录（case_id + code）")
-    return FailureTriageEvidence(
-        schema_version=FAILURE_TRIAGE_SCHEMA_VERSION,
-        taxonomy_version=FAILURE_TAXONOMY_VERSION,
-        data_version=dataset.dataset_version,
-        failures=failures,
-    )
+
+def load_failure_triage_evidence(*args: Any, **kwargs: Any) -> FailureTriageEvidence:
+    """拒绝历史可独立伪造的 self-reported failure 文件。"""
+    del args, kwargs
+    raise FailureTriageInputError("失败分诊不再接受自报失败文件，请提供可信评测证据")
 
 
 def _case_alias(case_id: str, *, data_version: str, salt: str) -> str:
@@ -265,6 +398,16 @@ def _clusters(
                     key=lambda value: (_SPLITS.index(value), value),
                 ),
                 "case_ids": sorted({aliases[item.case_id] for item in records}),
+                "execution_refs": sorted(
+                    {item.execution_ref for item in records}
+                ),
+                "output_digests": sorted(
+                    {
+                        item.output_digest
+                        for item in records
+                        if item.output_digest is not None
+                    }
+                ),
                 "tag_counts": dict(sorted(tags.items())),
                 "metric_counts": dict(sorted(metrics.items())),
             }
@@ -306,6 +449,10 @@ def build_failure_triage_report(
     """生成不含原始 case_id 的可复现结构化报告。"""
     if evidence.data_version != dataset.dataset_version:
         raise FailureTriageInputError("失败证据与案例清单的数据版本不一致")
+    if evidence.schema_version != EVIDENCE_SCHEMA_VERSION:
+        raise FailureTriageInputError("失败分诊只接受 trusted evidence v4")
+    if evidence.taxonomy_version != FAILURE_TAXONOMY_VERSION:
+        raise FailureTriageInputError("失败分诊 taxonomy_version 不受支持")
     if not isinstance(anonymization_salt, str) or len(anonymization_salt) < 16:
         raise FailureTriageInputError("case_id 脱敏密钥至少需要 16 个字符")
     if not isinstance(salt_id, str) or not salt_id.strip():
@@ -350,6 +497,9 @@ def build_failure_triage_report(
             "schema_version": evidence.schema_version,
             "taxonomy_version": evidence.taxonomy_version,
             "data_version": evidence.data_version,
+            "manifest_digest": evidence.manifest_digest,
+            "evidence_digest": evidence.evidence_digest,
+            "output_digests": list(evidence.output_digests),
         },
         "anonymization": {
             "algorithm": "hmac-sha256-80",
@@ -449,6 +599,9 @@ def build_failure_triage_sync_payload(
         "report_id": report_id.strip(),
         "taxonomy_version": str(report_input.get("taxonomy_version") or "").strip(),
         "data_version": str(report_input.get("data_version") or "").strip(),
+        "manifest_digest": report_input.get("manifest_digest"),
+        "evidence_digest": report_input.get("evidence_digest"),
+        "output_digests": report_input.get("output_digests"),
         "candidate_version": candidate_version.strip(),
         "signature_algorithm": "hmac-sha256",
         "signature_key_id": signing_key_id.strip(),
@@ -473,6 +626,21 @@ def build_failure_triage_sync_payload(
     ):
         if not payload[field_name]:
             raise FailureTriageInputError(f"{field_name} 不能为空")
+    for field_name in ("manifest_digest", "evidence_digest"):
+        if not isinstance(payload[field_name], str) or not _SHA256_PATTERN.fullmatch(
+            payload[field_name]
+        ):
+            raise FailureTriageInputError(f"{field_name} 不合法")
+    output_digests = payload["output_digests"]
+    if (
+        not isinstance(output_digests, list)
+        or output_digests != sorted(set(output_digests))
+        or any(
+            not isinstance(item, str) or not _SHA256_PATTERN.fullmatch(item)
+            for item in output_digests
+        )
+    ):
+        raise FailureTriageInputError("output_digests 不合法")
     try:
         payload["signature"] = sign_failure_triage_payload(
             payload,

@@ -1,6 +1,7 @@
 """管理员失败簇闭环的匿名、严格数据契约。"""
 
 from datetime import datetime
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -29,10 +30,13 @@ class FailureTriageItem(BaseModel):
 class FailureTriageReportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.0"]
+    schema_version: Literal["2.0"]
     report_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")
     taxonomy_version: str = Field(min_length=1, max_length=100)
     data_version: str = Field(min_length=1, max_length=100)
+    manifest_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    evidence_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    output_digests: list[str] = Field(max_length=500)
     candidate_version: str = Field(min_length=1, max_length=100)
     signature_algorithm: Literal["hmac-sha256"]
     signature_key_id: str = Field(
@@ -51,6 +55,16 @@ class FailureTriageReportRequest(BaseModel):
         if not normalized:
             raise ValueError("版本不能为空")
         return normalized
+
+    @field_validator("output_digests")
+    @classmethod
+    def validate_output_digests(cls, value: list[str]) -> list[str]:
+        pattern = r"^sha256:[0-9a-f]{64}$"
+        if any(re.fullmatch(pattern, item) is None for item in value):
+            raise ValueError("output_digests 包含非法摘要")
+        if value != sorted(set(value)):
+            raise ValueError("output_digests 必须去重并排序")
+        return value
 
     @model_validator(mode="after")
     def reject_duplicate_clusters(self) -> "FailureTriageReportRequest":
