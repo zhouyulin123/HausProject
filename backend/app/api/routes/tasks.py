@@ -46,6 +46,7 @@ from app.schemas.tasks import (
 )
 from app.services import (
     anonymous_session_service,
+    aggregate_lock_service,
     catalog_service,
     design_version_service,
     generation_provenance,
@@ -72,12 +73,18 @@ def mutate_plan(
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    task = require_owned_design_task(
-        db,
-        session_id=x_session_id,
-        task_id=task_id,
-    )
     try:
+        require_active_session(db, x_session_id)
+        task = aggregate_lock_service.lock_owned_task(
+            db,
+            session_id=x_session_id,
+            task_id=task_id,
+        )
+        if task is None:
+            raise HTTPException(
+                status_code=404,
+                detail="设计任务不存在或不属于当前会话",
+            )
         revision, plan, scene, version, feedback = plan_mutation_service.mutate_plan(
             db,
             task=task,
@@ -93,6 +100,12 @@ def mutate_plan(
         raise HTTPException(
             status_code=409,
             detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except aggregate_lock_service.AggregateLockBusy as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "aggregate_busy", "message": str(exc)},
         ) from exc
     except plan_mutation_service.PlacementNotFound as exc:
         db.rollback()

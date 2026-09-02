@@ -39,6 +39,7 @@ from app.schemas.room_model import RoomModel
 from app.schemas.scene_agent import SceneOperationBatch
 from app.schemas.scenes import SceneDocument
 from app.services import (
+    aggregate_lock_service,
     catalog_service,
     custom_furniture_service,
     generation_request_service,
@@ -774,24 +775,7 @@ def _turn_lease_expired(turn: DesignAgentTurn, *, now: datetime) -> bool:
 
 
 def _lock_task_for_turn(db: Session, task_id: int) -> DesignTask:
-    """锁定聚合根；SQLite 以 RESERVED 写锁提供可解释的串行语义。"""
-    bind = db.get_bind()
-    if bind.dialect.name == "sqlite":
-        # 所有权校验已开启读事务；结束它后才能显式获取 SQLite 写锁。
-        db.commit()
-        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
-        task = db.scalar(
-            select(DesignTask)
-            .where(DesignTask.id == task_id)
-            .execution_options(populate_existing=True)
-        )
-    else:
-        task = db.scalar(
-            select(DesignTask)
-            .where(DesignTask.id == task_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
+    task = aggregate_lock_service.lock_task(db, task_id)
     if task is None:
         raise ValueError("DesignTask 不存在")
     return task

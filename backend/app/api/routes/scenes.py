@@ -42,6 +42,7 @@ from app.schemas.scene_agent import (
 from app.schemas.feedback import DesignFeedbackEventRequest
 from app.services import (
     blender_job_service,
+    aggregate_lock_service,
     design_version_service,
     design_agent_service,
     feedback_service,
@@ -326,16 +327,15 @@ def update_scene(
     db: Session = Depends(get_db),
 ):
     require_active_session(db, x_session_id)
-    scene = scene_service.get_owned_scene(
-        db,
-        session_id=x_session_id,
-        scene_id=scene_id,
-        for_update=True,
-    )
-    if scene is None:
-        raise _not_found("3D 场景")
-
     try:
+        locked = aggregate_lock_service.lock_owned_scene(
+            db,
+            session_id=x_session_id,
+            scene_id=scene_id,
+        )
+        if locked is None:
+            raise _not_found("3D 场景")
+        _, scene = locked
         if payload.client_mutation_id:
             version, created = scene_service.update_scene_idempotent(
                 db,
@@ -402,6 +402,12 @@ def update_scene(
     ) as error:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except aggregate_lock_service.AggregateLockBusy as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "aggregate_busy", "message": str(error)},
+        ) from error
     return _scene_response(scene, version)
 
 
