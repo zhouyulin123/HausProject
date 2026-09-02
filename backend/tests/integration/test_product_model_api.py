@@ -211,3 +211,41 @@ def test_product_api_rejects_invalid_lifecycle_ranges(product_api):
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.integration
+def test_quote_rule_cost_factors_round_trip_and_increment_version(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products/quote-rules",
+        json={
+            "project_name": "定制衣柜",
+            "category": "柜类定制",
+            "pricing_unit": "㎡",
+            "material_grade": "E0 颗粒板",
+            "unit_price": 680,
+            "region_codes": ["cn-sh", "CN-SH"],
+            "waste_rate_bps": 500,
+            "minimum_quantity": 3,
+            "installation_fee": 300,
+            "shipping_fee": 200,
+            "tax_rate_bps": 600,
+            "data_version": "custom-price-2026-09",
+        },
+    )
+    assert created.status_code == 200
+    rule_id = created.json()["id"]
+
+    updated = client.patch(
+        f"/api/products/quote-rules/{rule_id}",
+        json={"installation_fee": 360},
+    )
+    assert updated.status_code == 200
+
+    rules = client.get("/api/products/quote-rules").json()["rules"]
+    rule = next(item for item in rules if item["id"] == rule_id)
+    assert rule["region_codes"] == ["CN-SH"]
+    assert rule["waste_rate_bps"] == 500
+    assert rule["installation_fee"] == 360
+    assert rule["data_version"] == "custom-price-2026-09"
+    assert rule["record_version"] == 2

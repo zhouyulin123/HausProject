@@ -478,6 +478,14 @@ export interface QuoteRule {
   pricing_unit: string;
   material_grade: string | null;
   unit_price: number;
+  region_codes: string[];
+  waste_rate_bps: number;
+  minimum_quantity: number;
+  installation_fee: number;
+  shipping_fee: number;
+  tax_rate_bps: number;
+  data_version: string;
+  record_version: number;
   description: string | null;
 }
 

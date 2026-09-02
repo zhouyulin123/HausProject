@@ -268,13 +268,34 @@ function QuoteRulesPanel({
     pricing_unit: "㎡",
     material_grade: "",
     unit_price: 0,
+    region_codes: [] as string[],
+    region_codes_input: "",
+    waste_rate_bps: 0,
+    minimum_quantity: 0,
+    installation_fee: 0,
+    shipping_fee: 0,
+    tax_rate_bps: 0,
+    data_version: "draft-v1",
     description: "",
   });
 
   const add = async () => {
     if (!draft.project_name.trim() || !draft.unit_price) return;
-    await saveQuoteRule(draft);
-    setDraft({ ...draft, project_name: "", material_grade: "", unit_price: 0, description: "" });
+    const { region_codes_input: _, ...payload } = draft;
+    await saveQuoteRule({
+      ...payload,
+      region_codes: draft.region_codes_input
+        .split(",")
+        .map((code) => code.trim().toUpperCase())
+        .filter(Boolean),
+    });
+    setDraft({
+      ...draft,
+      project_name: "",
+      material_grade: "",
+      unit_price: 0,
+      description: "",
+    });
     void onChanged();
   };
 
@@ -284,7 +305,7 @@ function QuoteRulesPanel({
   return (
     <div className="mt-6">
       {/* 新增行 */}
-      <div className="grid gap-2 rounded-2xl border border-cream-200 bg-white/80 p-4 sm:grid-cols-[1.4fr_1.2fr_0.8fr_0.9fr_auto]">
+      <div className="grid gap-2 rounded-2xl border border-cream-200 bg-white/80 p-4 sm:grid-cols-2 lg:grid-cols-5">
         <input
           className={inputClass}
           placeholder="项目名（定制衣柜）"
@@ -317,16 +338,76 @@ function QuoteRulesPanel({
           <Plus className="h-4 w-4" />
           添加
         </Button>
+        <input
+          className={inputClass}
+          placeholder="地区代码，逗号分隔；留空为全国"
+          value={draft.region_codes_input}
+          onChange={(e) => setDraft((d) => ({ ...d, region_codes_input: e.target.value }))}
+        />
+        <input
+          type="number"
+          min="0"
+          max="100"
+          step="0.01"
+          className={inputClass}
+          placeholder="损耗率 %"
+          value={draft.waste_rate_bps / 100 || ""}
+          onChange={(e) => setDraft((d) => ({ ...d, waste_rate_bps: Math.round(Number(e.target.value) * 100) }))}
+        />
+        <input
+          type="number"
+          min="0"
+          step="0.1"
+          className={inputClass}
+          placeholder="最低计价量"
+          value={draft.minimum_quantity || ""}
+          onChange={(e) => setDraft((d) => ({ ...d, minimum_quantity: Number(e.target.value) }))}
+        />
+        <input
+          type="number"
+          min="0"
+          className={inputClass}
+          placeholder="安装费"
+          value={draft.installation_fee || ""}
+          onChange={(e) => setDraft((d) => ({ ...d, installation_fee: Number(e.target.value) }))}
+        />
+        <input
+          type="number"
+          min="0"
+          className={inputClass}
+          placeholder="运输费"
+          value={draft.shipping_fee || ""}
+          onChange={(e) => setDraft((d) => ({ ...d, shipping_fee: Number(e.target.value) }))}
+        />
+        <input
+          type="number"
+          min="0"
+          max="100"
+          step="0.01"
+          className={inputClass}
+          placeholder="税率 %"
+          value={draft.tax_rate_bps / 100 || ""}
+          onChange={(e) => setDraft((d) => ({ ...d, tax_rate_bps: Math.round(Number(e.target.value) * 100) }))}
+        />
+        <input
+          className={inputClass}
+          placeholder="数据版本"
+          value={draft.data_version}
+          onChange={(e) => setDraft((d) => ({ ...d, data_version: e.target.value }))}
+        />
       </div>
 
-      <div className="mt-4 overflow-hidden rounded-2xl border border-cream-200">
-        <table className="w-full text-sm">
+      <div className="mt-4 overflow-x-auto rounded-2xl border border-cream-200">
+        <table className="min-w-[960px] w-full text-sm">
           <thead className="bg-cream-100 text-left text-xs text-stone-500">
             <tr>
               <th className="px-4 py-2.5 font-medium">项目</th>
               <th className="px-4 py-2.5 font-medium">材料档位</th>
               <th className="px-4 py-2.5 text-right font-medium">单价</th>
               <th className="px-4 py-2.5 font-medium">单位</th>
+              <th className="px-4 py-2.5 font-medium">地区</th>
+              <th className="px-4 py-2.5 font-medium">附加费用</th>
+              <th className="px-4 py-2.5 font-medium">版本</th>
               <th className="px-4 py-2.5"></th>
             </tr>
           </thead>
@@ -339,6 +420,15 @@ function QuoteRulesPanel({
                   ¥{r.unit_price.toLocaleString()}
                 </td>
                 <td className="px-4 py-2.5 text-stone-500">/{r.pricing_unit}</td>
+                <td className="px-4 py-2.5 text-stone-500">
+                  {r.region_codes.length ? r.region_codes.join(", ") : "全国"}
+                </td>
+                <td className="px-4 py-2.5 text-xs text-stone-500">
+                  损耗 {r.waste_rate_bps / 100}% · 最低 {r.minimum_quantity} · 安装 ¥{r.installation_fee} · 运输 ¥{r.shipping_fee} · 税 {r.tax_rate_bps / 100}%
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-stone-500">
+                  {r.data_version} / r{r.record_version}
+                </td>
                 <td className="px-4 py-2.5 text-right">
                   <button
                     type="button"
