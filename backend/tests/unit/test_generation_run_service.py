@@ -472,6 +472,84 @@ def test_generation_run_records_model_prompt_usage_and_cost(db):
 
 
 @pytest.mark.unit
+def test_model_cost_reservation_accumulates_and_rejects_over_task_limit(db):
+    task = DesignTask(status="confirmed", progress=50)
+    db.add(task)
+    db.commit()
+    generation_run_service.create_run(db, task=task, max_attempts=3)
+    run = generation_run_service.claim_next_run(
+        db,
+        worker_id="worker-a",
+        lease_seconds=60,
+    )
+    assert run is not None
+
+    assert generation_run_service.reserve_model_cost(
+        db,
+        run_id=run.id,
+        worker_id="worker-a",
+        worker_attempt=1,
+        estimated_cost_cny=0.4,
+        cost_limit_cny=1.0,
+    ) == pytest.approx(0.4)
+    assert generation_run_service.reserve_model_cost(
+        db,
+        run_id=run.id,
+        worker_id="worker-a",
+        worker_attempt=1,
+        estimated_cost_cny=0.5,
+        cost_limit_cny=1.0,
+    ) == pytest.approx(0.9)
+
+    with pytest.raises(
+        generation_run_service.GenerationCostLimitExceeded,
+        match="成本上限",
+    ):
+        generation_run_service.reserve_model_cost(
+            db,
+            run_id=run.id,
+            worker_id="worker-a",
+            worker_attempt=1,
+            estimated_cost_cny=0.2,
+            cost_limit_cny=1.0,
+        )
+
+    db.refresh(run)
+    assert run.cost_reserved_cny == pytest.approx(0.9)
+    assert run.cost_limit_cny == pytest.approx(1.0)
+
+
+@pytest.mark.unit
+def test_missing_cost_estimate_fails_closed_without_reservation(db):
+    task = DesignTask(status="confirmed", progress=50)
+    db.add(task)
+    db.commit()
+    generation_run_service.create_run(db, task=task, max_attempts=3)
+    run = generation_run_service.claim_next_run(
+        db,
+        worker_id="worker-a",
+        lease_seconds=60,
+    )
+    assert run is not None
+
+    with pytest.raises(
+        generation_run_service.GenerationCostConfigurationError,
+        match="单价",
+    ):
+        generation_run_service.reserve_model_cost(
+            db,
+            run_id=run.id,
+            worker_id="worker-a",
+            worker_attempt=1,
+            estimated_cost_cny=None,
+            cost_limit_cny=1.0,
+        )
+
+    db.refresh(run)
+    assert run.cost_reserved_cny == pytest.approx(0.0)
+
+
+@pytest.mark.unit
 def test_layout_scores_for_task_aggregates_runs(db):
     task = DesignTask(status="completed", progress=100)
     db.add(task)

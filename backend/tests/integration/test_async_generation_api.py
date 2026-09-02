@@ -93,6 +93,9 @@ def test_owner_can_queue_and_query_persistent_generation(
         "next_retry_at": None,
         "execution_deadline_at": None,
         "dead_lettered_at": None,
+        "cost_cny": None,
+        "cost_reserved_cny": 0.0,
+        "cost_limit_cny": None,
         "events": [],
     }
 
@@ -229,3 +232,42 @@ def test_dead_letter_status_and_deadline_are_visible_to_owner(
         "run_id": queued.json()["run_id"],
         "status": "dead_letter",
     }
+
+
+@pytest.mark.integration
+def test_cost_limit_status_and_ledger_are_visible_to_owner(
+    async_generation_context,
+):
+    client, owner_id, _, task_id, _, factory = async_generation_context
+    headers = {
+        "X-Session-ID": owner_id,
+        "Idempotency-Key": "cost-blocked-design-001",
+    }
+    queued = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers=headers,
+    )
+    with factory() as db:
+        run = db.get(GenerationRun, queued.json()["run_id"])
+        assert run is not None
+        run.status = "cost_limit_exceeded"
+        run.current_node = "cost_guard"
+        run.cost_reserved_cny = 0.75
+        run.cost_limit_cny = 1.0
+        db.commit()
+
+    response = client.get(
+        f"/api/design/tasks/{task_id}/generation",
+        headers={"X-Session-ID": owner_id},
+    )
+    duplicate = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cost_limit_exceeded"
+    assert response.json()["cost_reserved_cny"] == pytest.approx(0.75)
+    assert response.json()["cost_limit_cny"] == pytest.approx(1.0)
+    assert duplicate.status_code == 202
+    assert duplicate.json()["status"] == "cost_limit_exceeded"

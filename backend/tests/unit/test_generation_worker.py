@@ -1,11 +1,13 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
 from app.db.models import DesignResult, DesignTask
-from app.services import generation_run_service
+from app.services import generation_run_service, llm_service
 from app.workers import generation_worker
 
 
@@ -156,3 +158,120 @@ def test_worker_rolls_back_result_and_cost_when_deadline_expires(monkeypatch):
         assert expired.output_snapshot is None
         assert db.scalar(select(DesignResult)) is None
         assert task.status == "failed"
+
+
+def test_worker_reserves_model_cost_before_provider_call(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(status="confirmed", progress=50)
+        db.add(task)
+        db.commit()
+        run = generation_run_service.create_run(db, task=task, max_attempts=3)
+        run_id = run.id
+
+    provider_calls = 0
+
+    class Completions:
+        def create(self, **kwargs):
+            nonlocal provider_calls
+            provider_calls += 1
+            message = type("Message", (), {"content": "{}"})()
+            choice = type("Choice", (), {"message": message})()
+            usage = type(
+                "Usage",
+                (),
+                {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            )()
+            return type("Response", (), {"choices": [choice], "usage": usage})()
+
+    client = type(
+        "Client",
+        (),
+        {"chat": type("Chat", (), {"completions": Completions()})()},
+    )()
+    worker_settings = SimpleNamespace(**generation_worker.settings.model_dump())
+    worker_settings.generation_task_cost_limit_cny = 1.0
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+    monkeypatch.setattr(generation_worker, "settings", worker_settings)
+    monkeypatch.setattr(llm_service, "get_client", lambda: client)
+    monkeypatch.setattr(llm_service.settings, "llm_input_price_per_mtok", 2.0)
+    monkeypatch.setattr(llm_service.settings, "llm_output_price_per_mtok", 8.0)
+
+    def executor(db, *, task, on_step, on_meta, before_persist, on_success):
+        llm_service._chat_json("system", "user", max_tokens=100)
+        return type("Response", (), {"generator": "template"})()
+
+    assert generation_worker.process_one_run(
+        worker_id="worker-a",
+        executor=executor,
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        completed = db.get(type(run), run_id)
+        assert completed is not None
+        assert completed.status == "completed"
+        assert completed.cost_reserved_cny > 0
+        assert completed.cost_limit_cny == pytest.approx(1.0)
+    assert provider_calls == 1
+
+
+def test_worker_cost_limit_blocks_provider_without_retry_or_fake_success(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(status="confirmed", progress=50)
+        db.add(task)
+        db.commit()
+        run = generation_run_service.create_run(db, task=task, max_attempts=3)
+        run_id = run.id
+        task_id = task.id
+
+    provider_calls = 0
+
+    class Completions:
+        def create(self, **kwargs):
+            nonlocal provider_calls
+            provider_calls += 1
+            raise AssertionError("超过成本上限后不能调用供应商")
+
+    client = type(
+        "Client",
+        (),
+        {"chat": type("Chat", (), {"completions": Completions()})()},
+    )()
+    worker_settings = SimpleNamespace(**generation_worker.settings.model_dump())
+    worker_settings.generation_task_cost_limit_cny = 0.000001
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+    monkeypatch.setattr(generation_worker, "settings", worker_settings)
+    monkeypatch.setattr(llm_service, "get_client", lambda: client)
+    monkeypatch.setattr(llm_service.settings, "llm_input_price_per_mtok", 100.0)
+    monkeypatch.setattr(llm_service.settings, "llm_output_price_per_mtok", 100.0)
+
+    def executor(db, *, task, on_step, on_meta, before_persist, on_success):
+        llm_service._chat_json("system", "user", max_tokens=100)
+
+    assert generation_worker.process_one_run(
+        worker_id="worker-a",
+        executor=executor,
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        blocked = db.get(type(run), run_id)
+        task = db.get(DesignTask, task_id)
+        assert blocked is not None
+        assert task is not None
+        assert blocked.status == "cost_limit_exceeded"
+        assert blocked.attempt_count == 1
+        assert blocked.next_retry_at is None
+        assert blocked.cost_reserved_cny == pytest.approx(0.0)
+        assert task.status == "needs_human"
+        assert len(blocked.events) == 1
+        assert blocked.events[0].node == "cost_guard"
+    assert provider_calls == 0

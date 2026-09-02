@@ -70,6 +70,27 @@ def test_generation_worker_execution_timeout_must_be_positive_and_bounded():
         )
 
 
+def test_generation_task_cost_limit_must_be_positive_and_bounded():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, generation_task_cost_limit_cny=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, generation_task_cost_limit_cny=1001)
+
+
+def test_production_llm_requires_positive_pricing_for_cost_guard():
+    with pytest.raises(ValidationError, match="单价"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            database_url=(
+                "mysql+pymysql://haus_app:a-strong-database-password@db:3306/houseproject_db"
+            ),
+            jwt_secret_key="a-production-jwt-secret-with-at-least-32-characters",
+            cors_origins="https://app.example.com",
+            llm_api_key="paid-provider-key",
+        )
+
+
 @pytest.mark.parametrize(
     ("database_url", "jwt_secret_key"),
     [

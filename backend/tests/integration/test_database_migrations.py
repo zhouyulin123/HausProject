@@ -187,6 +187,8 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "idempotency_key",
             "execution_deadline_at",
             "dead_lettered_at",
+            "cost_reserved_cny",
+            "cost_limit_cny",
         } <= generation_run_columns
         rendered_image_columns = {
             column["name"]
