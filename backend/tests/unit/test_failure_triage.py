@@ -164,6 +164,25 @@ def test_triage_aggregates_structured_failures_deterministically_and_anonymizes_
         "regression",
         "blind",
     ]
+    assert [item["code"] for item in first["by_code"]] == [
+        "budget_exceeded",
+        "invalid_sku",
+        "layout_collision",
+    ]
+    assert (
+        next(item for item in first["by_tag"] if item["tag"] == "collision")[
+            "failure_count"
+        ]
+        == 2
+    )
+    assert (
+        next(
+            item
+            for item in first["by_metric"]
+            if item["metric"] == "layout_hard_constraint_pass_rate"
+        )["affected_case_count"]
+        == 2
+    )
     assert first["clusters"][0]["code"] == "invalid_sku"
     layout_cluster = next(
         item for item in first["clusters"] if item["code"] == "layout_collision"
@@ -183,9 +202,7 @@ def test_triage_aggregates_structured_failures_deterministically_and_anonymizes_
         for raw_id in ("case-a", "case-b", "case-c", "case-pending")
     )
     aliases = {
-        case_id
-        for cluster in first["clusters"]
-        for case_id in cluster["case_ids"]
+        case_id for cluster in first["clusters"] for case_id in cluster["case_ids"]
     }
     assert len(aliases) == 3
     assert all(alias.startswith("case-") and len(alias) == 21 for alias in aliases)
@@ -257,6 +274,11 @@ def test_triage_rejects_incompatible_versions_and_noneligible_cases(
         (
             _failure("case-a", "invalid_sku", "catalog", "urgent"),
             "severity",
+        ),
+        (
+            _failure("case-a", "invalid_sku", "catalog", "critical")
+            | {"failure_type": ["catalog"]},
+            "failure_type",
         ),
     ],
 )
@@ -356,13 +378,11 @@ def test_failure_triage_cli_exit_codes_and_outputs(tmp_path, monkeypatch):
     assert empty_code == 0
     assert failed_code == 1
     report = json.loads(
-        (tmp_path / "failed-report" / "failure_triage.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "failed-report" / "failure_triage.json").read_text(encoding="utf-8")
     )
-    markdown = (
-        tmp_path / "failed-report" / "failure_triage.md"
-    ).read_text(encoding="utf-8")
+    markdown = (tmp_path / "failed-report" / "failure_triage.md").read_text(
+        encoding="utf-8"
+    )
     assert report["summary"]["failure_count"] == 1
     assert "invalid_sku" in markdown
     assert "case-a" not in markdown
