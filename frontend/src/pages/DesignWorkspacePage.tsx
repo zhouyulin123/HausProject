@@ -24,6 +24,7 @@ import { parseCustomFurniturePreview } from "@/lib/customFurnitureWorkspace";
 import { useFeedbackDelivery } from "@/hooks/useFeedbackDelivery";
 import {
   buildFinalSelectFeedbackEvent,
+  buildGlbLoadFailureFeedbackEvent,
   buildMoveFeedbackEvent,
   createFeedbackClientEventId,
 } from "@/lib/workspaceFeedback";
@@ -236,6 +237,21 @@ export default function DesignWorkspacePage() {
     if (event) feedback.submit(event, "家具位置调整");
   }, [feedback.submit, project?.activeRoomId, projectId]);
 
+  const reportGlbLoadFailure = useCallback((failure: {
+    planVersionId: number;
+    sceneId: number;
+    sceneVersion: number;
+    instanceId: string;
+    sku: string;
+  }) => {
+    if (!projectId) return;
+    const event = buildGlbLoadFailureFeedbackEvent({
+      taskId: projectId,
+      ...failure,
+    });
+    if (event) feedback.submit(event, "GLB 加载失败");
+  }, [feedback.submit, projectId]);
+
   if (!project || !plan || !entry) {
     return (
       <div className="flex min-h-[70vh] items-center justify-center bg-[#111713] px-5 text-center text-[#e5e8e1]">
@@ -382,6 +398,7 @@ export default function DesignWorkspacePage() {
                 roomType={roomType}
                 roomModel={project.roomModel}
                 onMovePersisted={reportPersistedMove}
+                onGlbLoadFailed={reportGlbLoadFailure}
               />
             )}
           </main>

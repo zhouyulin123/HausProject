@@ -20,6 +20,7 @@ from app.db.models import (
 
 
 _FEEDBACK_ACTIONS = ("adopt", "remove", "replace", "move", "final_select")
+_ASSET_FAILURE_ACTION = "glb_load_failed"
 _MODIFICATION_ACTIONS = ("remove", "replace", "move")
 
 
@@ -106,7 +107,9 @@ def build_quality_summary(
         )
         .where(
             DesignFeedbackEvent.created_at >= cutoff,
-            DesignFeedbackEvent.action_type.in_(_FEEDBACK_ACTIONS),
+            DesignFeedbackEvent.action_type.in_(
+                (*_FEEDBACK_ACTIONS, _ASSET_FAILURE_ACTION)
+            ),
         )
         .group_by(DesignFeedbackEvent.action_type)
     ).all()
@@ -137,7 +140,11 @@ def build_quality_summary(
     feedback_action_counts = dict.fromkeys(_FEEDBACK_ACTIONS, 0)
     satisfaction_count = 0
     satisfaction_total = 0
+    glb_load_failure_total = 0
     for action_type, event_count, score_count, score_total in feedback_rows:
+        if action_type == _ASSET_FAILURE_ACTION:
+            glb_load_failure_total = int(event_count)
+            continue
         feedback_action_counts[action_type] = int(event_count)
         satisfaction_count += int(score_count)
         satisfaction_total += int(score_total or 0)
@@ -145,6 +152,13 @@ def build_quality_summary(
     modification_total = sum(
         feedback_action_counts[action] for action in _MODIFICATION_ACTIONS
     )
+
+    failure_codes = _failure_codes(validation_events)
+    if glb_load_failure_total:
+        failure_codes[_ASSET_FAILURE_ACTION] = (
+            failure_codes.get(_ASSET_FAILURE_ACTION, 0)
+            + glb_load_failure_total
+        )
 
     return {
         "generated_at": current.isoformat(),
@@ -198,6 +212,7 @@ def build_quality_summary(
                 if satisfaction_count
                 else None
             ),
+            "glb_load_failure_total": glb_load_failure_total,
         },
-        "failure_codes": _failure_codes(validation_events),
+        "failure_codes": failure_codes,
     }

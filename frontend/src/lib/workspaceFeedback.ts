@@ -3,6 +3,7 @@ import type {
   FeedbackAction,
   FeedbackDelivery,
   FinalSelectFeedbackEvent,
+  GlbLoadFailureFeedbackEvent,
   MoveFeedbackEvent,
 } from "@/types/feedback";
 
@@ -13,6 +14,55 @@ function positiveInteger(value: number | null | undefined): value is number {
 function cleanIdentifier(value: string | null | undefined): string | null {
   const cleaned = value?.trim();
   return cleaned ? cleaned : null;
+}
+
+function stableFeedbackHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (const character of value) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+export function buildGlbLoadFailureFeedbackEvent(input: {
+  taskId: number;
+  planVersionId: number | null | undefined;
+  sceneId: number | null | undefined;
+  sceneVersion: number | null | undefined;
+  instanceId: string | null | undefined;
+  sku: string | null | undefined;
+}): GlbLoadFailureFeedbackEvent | null {
+  const instanceId = cleanIdentifier(input.instanceId);
+  const sku = cleanIdentifier(input.sku)?.toUpperCase() ?? null;
+  if (
+    !positiveInteger(input.taskId)
+    || !positiveInteger(input.planVersionId)
+    || !positiveInteger(input.sceneId)
+    || !positiveInteger(input.sceneVersion)
+    || !instanceId
+    || !sku
+  ) {
+    return null;
+  }
+  const signature = [
+    input.taskId,
+    input.planVersionId,
+    input.sceneId,
+    input.sceneVersion,
+    instanceId,
+    sku,
+  ].join(":");
+  return {
+    client_event_id:
+      `feedback-${input.taskId}-glb_load_failed-${stableFeedbackHash(signature)}`,
+    action_type: "glb_load_failed",
+    plan_version_id: input.planVersionId,
+    scene_id: input.sceneId,
+    scene_version: input.sceneVersion,
+    instance_id: instanceId,
+    source_sku: sku,
+  };
 }
 
 export function createFeedbackClientEventId(

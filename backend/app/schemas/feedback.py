@@ -6,7 +6,14 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-FeedbackAction = Literal["adopt", "remove", "replace", "move", "final_select"]
+FeedbackAction = Literal[
+    "adopt",
+    "remove",
+    "replace",
+    "move",
+    "final_select",
+    "glb_load_failed",
+]
 
 
 class DesignFeedbackEventRequest(BaseModel):
@@ -66,6 +73,17 @@ class DesignFeedbackEventRequest(BaseModel):
                 or self.instance_id is None
             ):
                 raise ValueError("移动事件必须提供场景、场景版本和实例 ID")
+        elif self.action_type == "glb_load_failed":
+            if (
+                self.plan_version_id is None
+                or self.scene_id is None
+                or self.scene_version is None
+                or self.instance_id is None
+                or self.source_sku is None
+            ):
+                raise ValueError(
+                    "GLB 加载失败事件必须提供方案、场景版本、实例和 SKU"
+                )
         elif self.action_type == "final_select" and self.plan_version_id is None:
             raise ValueError("最终选择事件必须提供方案版本")
         if self.action_type != "final_select" and self.satisfaction_score is not None:

@@ -22,7 +22,9 @@ export function hasQualitySamples(summary: QualitySummary): boolean {
   return (
     summary.generation.total > 0 ||
     summary.agent.turn_total > 0 ||
-    summary.layout.total > 0
+    summary.layout.total > 0 ||
+    summary.feedback.total > 0 ||
+    summary.feedback.glb_load_failure_total > 0
   );
 }
 

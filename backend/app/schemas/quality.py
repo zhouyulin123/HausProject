@@ -50,6 +50,7 @@ class FeedbackQualityMetrics(BaseModel):
     final_select_total: int = Field(ge=0)
     satisfaction_count: int = Field(ge=0)
     satisfaction_mean: float | None = Field(default=None, ge=1, le=5)
+    glb_load_failure_total: int = Field(ge=0)
 
 
 class QualitySummaryResponse(BaseModel):

@@ -295,6 +295,7 @@ export default function RoomView3D({
   roomType,
   roomModel,
   onMovePersisted,
+  onGlbLoadFailed,
 }: {
   plan: DesignPlan;
   roomType: string;
@@ -304,18 +305,27 @@ export default function RoomView3D({
     sceneVersion: number;
     instanceId: string;
   }) => void;
+  onGlbLoadFailed?: (failure: {
+    planVersionId: number;
+    sceneId: number;
+    sceneVersion: number;
+    instanceId: string;
+    sku: string;
+  }) => void;
 }) {
   const editor = useSceneEditor(plan, roomType, roomModel, onMovePersisted);
   const [agentInstruction, setAgentInstruction] = useState("");
   const [runtimeAssetOverrides, setRuntimeAssetOverrides] = useState<
     Record<string, ProductAssetPresentation>
   >({});
+  const reportedAssetFailures = useRef(new Set<string>());
   const [cameraPreset, setCameraPreset] =
     useState<RoomCameraPreset>("perspective");
   const scene = editor.history.present;
 
   useEffect(() => {
     setRuntimeAssetOverrides({});
+    reportedAssetFailures.current.clear();
   }, [plan.planVersionId]);
   const roomFacts = useMemo(
     () => buildRoomFactSummary(scene, roomModel),
@@ -392,6 +402,39 @@ export default function RoomView3D({
       return markInstanceGlbLoadFailed(seeded, instanceId);
     });
   };
+
+  useEffect(() => {
+    if (!plan.planVersionId || !editor.sceneReference) return;
+    for (const [instanceId, asset] of Object.entries(runtimeAssetOverrides)) {
+      if (asset.fallbackReason !== "glb_load_failed") continue;
+      const failedItem = scene.items.find(
+        (item) => item.instanceId === instanceId,
+      );
+      if (!failedItem) continue;
+      const evidenceKey = [
+        plan.planVersionId,
+        editor.sceneReference.id,
+        editor.sceneReference.version,
+        instanceId,
+        failedItem.sku,
+      ].join(":");
+      if (reportedAssetFailures.current.has(evidenceKey)) continue;
+      reportedAssetFailures.current.add(evidenceKey);
+      onGlbLoadFailed?.({
+        planVersionId: plan.planVersionId,
+        sceneId: editor.sceneReference.id,
+        sceneVersion: editor.sceneReference.version,
+        instanceId,
+        sku: failedItem.sku,
+      });
+    }
+  }, [
+    editor.sceneReference,
+    onGlbLoadFailed,
+    plan.planVersionId,
+    runtimeAssetOverrides,
+    scene.items,
+  ]);
 
   useEffect(() => {
     const timer = window.setTimeout(

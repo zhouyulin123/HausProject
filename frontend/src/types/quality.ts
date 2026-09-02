@@ -29,12 +29,30 @@ export interface QualityLayoutMetrics {
   issue_codes: Record<string, number>;
 }
 
+export interface QualityFeedbackMetrics {
+  total: number;
+  action_counts: {
+    adopt: number;
+    remove: number;
+    replace: number;
+    move: number;
+    final_select: number;
+  };
+  modification_total: number;
+  modification_rate: number | null;
+  final_select_total: number;
+  satisfaction_count: number;
+  satisfaction_mean: number | null;
+  glb_load_failure_total: number;
+}
+
 export interface QualitySummary {
   generated_at: string;
   window_days: number;
   generation: QualityGenerationMetrics;
   agent: QualityAgentMetrics;
   layout: QualityLayoutMetrics;
+  feedback: QualityFeedbackMetrics;
   failure_codes: Record<string, number>;
 }
 

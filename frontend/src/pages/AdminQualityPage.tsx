@@ -369,6 +369,14 @@ export function QualitySummaryContent({ summary }: { summary: QualitySummary }) 
           detail={`${summary.generation.cancelled} 已取消 / ${summary.generation.total} 总任务`}
           icon={Activity}
         />
+        <MetricTile
+          label="GLB 加载失败"
+          value={integerFormatter.format(
+            summary.feedback.glb_load_failure_total,
+          )}
+          detail="匿名逐实例事件，不含 URL、用户文本或错误堆栈"
+          icon={AlertTriangle}
+        />
       </section>
 
       <div className="mt-9 grid gap-8 lg:grid-cols-2">

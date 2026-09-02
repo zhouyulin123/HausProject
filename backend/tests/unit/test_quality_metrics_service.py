@@ -201,6 +201,7 @@ def test_quality_summary_returns_none_rates_without_evidence(db):
         "final_select_total": 0,
         "satisfaction_count": 0,
         "satisfaction_mean": None,
+        "glb_load_failure_total": 0,
     }
 
 

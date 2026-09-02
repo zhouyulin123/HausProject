@@ -35,12 +35,22 @@ export interface FinalSelectFeedbackEvent extends FeedbackEventBase {
   satisfaction_score?: 1 | 2 | 3 | 4 | 5;
 }
 
+export interface GlbLoadFailureFeedbackEvent extends FeedbackEventBase {
+  action_type: "glb_load_failed";
+  plan_version_id: number;
+  scene_id: number;
+  scene_version: number;
+  instance_id: string;
+  source_sku: string;
+}
+
 export type DesignFeedbackEventRequest =
   | AdoptFeedbackEvent
   | RemoveFeedbackEvent
   | ReplaceFeedbackEvent
   | MoveFeedbackEvent
-  | FinalSelectFeedbackEvent;
+  | FinalSelectFeedbackEvent
+  | GlbLoadFailureFeedbackEvent;
 
 export type FeedbackAction = DesignFeedbackEventRequest["action_type"];
 

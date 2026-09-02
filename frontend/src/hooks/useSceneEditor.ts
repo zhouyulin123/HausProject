@@ -57,6 +57,7 @@ interface UseSceneEditorResult {
   blenderRenderJob: BlenderRenderJob | null;
   blenderRenderMessage: string;
   blenderRenderPending: boolean;
+  sceneReference: { id: number; version: number } | null;
   selectItem: (instanceId: string | null) => void;
   setTransformMode: (mode: TransformMode) => void;
   commitTransform: (
@@ -550,6 +551,10 @@ export function useSceneEditor(
     blenderRenderJob,
     blenderRenderMessage,
     blenderRenderPending,
+    sceneReference:
+      sceneIdRef.current && serverVersionRef.current
+        ? { id: sceneIdRef.current, version: serverVersionRef.current }
+        : null,
     selectItem: setSelectedItemId,
     setTransformMode,
     commitTransform,

@@ -57,6 +57,9 @@ def _require_scene(
     task_id: int,
     scene_id: int,
     scene_version: int,
+    plan_version_id: int | None = None,
+    instance_id: str | None = None,
+    source_sku: str | None = None,
 ) -> None:
     scene = db.scalar(
         select(DesignScene)
@@ -69,14 +72,36 @@ def _require_scene(
     )
     if scene is None:
         raise FeedbackResourceNotFound("场景不存在或不属于当前任务")
-    version_id = db.scalar(
-        select(DesignSceneVersion.id).where(
+    if (
+        plan_version_id is not None
+        and scene.plan_version_id != plan_version_id
+    ):
+        raise FeedbackResourceNotFound("场景不属于指定方案版本")
+    version = db.scalar(
+        select(DesignSceneVersion).where(
             DesignSceneVersion.scene_id == scene.id,
             DesignSceneVersion.version == scene_version,
         )
     )
-    if version_id is None:
+    if version is None:
         raise FeedbackResourceNotFound("场景版本不存在或不属于当前场景")
+    if instance_id is None:
+        return
+    scene_json = version.scene_json
+    items = scene_json.get("items") if isinstance(scene_json, dict) else None
+    item = next(
+        (
+            candidate
+            for candidate in items or []
+            if isinstance(candidate, dict)
+            and candidate.get("instanceId") == instance_id
+        ),
+        None,
+    )
+    if item is None:
+        raise FeedbackResourceNotFound("实例不存在于指定场景版本")
+    if source_sku is not None and item.get("sku") != source_sku:
+        raise FeedbackResourceNotFound("实例 SKU 与指定场景版本不一致")
 
 
 def _require_skus(db: Session, skus: set[str]) -> None:
@@ -120,6 +145,21 @@ def create_feedback_event(
             task_id=task_id,
             scene_id=payload.scene_id,
             scene_version=payload.scene_version,
+            plan_version_id=(
+                payload.plan_version_id
+                if payload.action_type == "glb_load_failed"
+                else None
+            ),
+            instance_id=(
+                payload.instance_id
+                if payload.action_type == "glb_load_failed"
+                else None
+            ),
+            source_sku=(
+                payload.source_sku
+                if payload.action_type == "glb_load_failed"
+                else None
+            ),
         )
     _require_skus(
         db,

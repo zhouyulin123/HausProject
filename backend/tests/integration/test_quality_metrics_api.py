@@ -91,6 +91,7 @@ def test_quality_summary_requires_admin_and_validates_window():
                 "final_select_total": 0,
                 "satisfaction_count": 0,
                 "satisfaction_mean": None,
+                "glb_load_failure_total": 0,
             }
             assert "message" not in str(body).lower()
             assert "phone" not in str(body).lower()
