@@ -102,6 +102,31 @@ def test_manifest_rejects_duplicate_ids_and_paths_outside_dataset(tmp_path):
     assert "数据集目录之外" in message
 
 
+def test_manifest_rejects_same_physical_asset_under_different_case_ids(tmp_path):
+    asset_dir = tmp_path / "assets"
+    asset_dir.mkdir()
+    (asset_dir / "development.png").write_bytes(b"same-room-evidence")
+    (asset_dir / "blind-copy.png").write_bytes(b"same-room-evidence")
+    path = _write_manifest(
+        tmp_path,
+        [
+            _case(
+                id="development-copy",
+                split="development",
+                asset_path="assets/development.png",
+            ),
+            _case(
+                id="blind-copy",
+                split="blind",
+                asset_path="assets/blind-copy.png",
+            ),
+        ],
+    )
+
+    with pytest.raises(DatasetValidationError, match="重复物理资产"):
+        load_case_manifest(path)
+
+
 def test_quality_metrics_and_gates_match_phase_four_acceptance_lines():
     versions = EvaluationVersions(
         model="model-a",
