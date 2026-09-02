@@ -253,7 +253,9 @@ class CaseResult:
     human_rating_count: int = 0
     human_rating_sum: int = 0
     generation_succeeded: bool = False
+    cross_user_access_checks: int = 0
     severe_cross_user_access: int = 0
+    retry_bound_checks: int = 0
     unbounded_retry_detected: bool = False
 
     def __post_init__(self) -> None:
@@ -278,7 +280,9 @@ class CaseResult:
             self.style_consistent,
             self.human_rating_count,
             self.human_rating_sum,
+            self.cross_user_access_checks,
             self.severe_cross_user_access,
+            self.retry_bound_checks,
         )
         if any(value < 0 for value in counters):
             raise ValueError("评测计数不能为负数")
@@ -300,6 +304,10 @@ class CaseResult:
             <= self.human_rating_count * 5
         ):
             raise ValueError("人工满意度总分必须落在 1 到 5 分量表范围内")
+        if self.severe_cross_user_access > self.cross_user_access_checks:
+            raise ValueError("跨用户访问问题缺少对应检查证据")
+        if self.unbounded_retry_detected and self.retry_bound_checks == 0:
+            raise ValueError("无限重试问题缺少对应检查证据")
 
 
 @dataclass(frozen=True)
@@ -345,6 +353,10 @@ def aggregate_quality_metrics(
         "style_checks": sum(r.style_checks for r in results),
         "human_rating_sum": sum(r.human_rating_sum for r in results),
         "human_rating_count": sum(r.human_rating_count for r in results),
+        "cross_user_access_checks": sum(
+            r.cross_user_access_checks for r in results
+        ),
+        "retry_bound_checks": sum(r.retry_bound_checks for r in results),
     }
     metrics: dict[str, float | int | None] = {
         "requirement_accuracy": _rate(
@@ -379,11 +391,17 @@ def aggregate_quality_metrics(
         "generation_success_rate": _rate(
             sum(1 for r in results if r.generation_succeeded), len(results)
         ),
-        "severe_cross_user_access": sum(
-            r.severe_cross_user_access for r in results
+        "cross_user_access_checks": totals["cross_user_access_checks"],
+        "severe_cross_user_access": (
+            sum(r.severe_cross_user_access for r in results)
+            if totals["cross_user_access_checks"]
+            else None
         ),
-        "unbounded_retry_cases": sum(
-            1 for r in results if r.unbounded_retry_detected
+        "retry_bound_checks": totals["retry_bound_checks"],
+        "unbounded_retry_cases": (
+            sum(1 for r in results if r.unbounded_retry_detected)
+            if totals["retry_bound_checks"]
+            else None
         ),
     }
     return QualityReport(
