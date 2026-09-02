@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import DesignTask, RenderedImage, UploadedImage
 from app.schemas.tasks import RenderRequest, RenderResponse
-from app.services import sd_service
+from app.services import scene_service, sd_service
 from app.services.sd_service import SDUnavailable
 
 logger = logging.getLogger(__name__)
@@ -74,36 +74,44 @@ def render_effect(
     db: Session = Depends(get_db),
 ):
     require_active_session(db, x_session_id)
-    if req.task_id is not None:
-        require_owned_design_task(
-            db,
-            session_id=x_session_id,
-            task_id=req.task_id,
-        )
+    require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=req.task_id,
+    )
+    plan_version = scene_service.get_owned_plan_version(
+        db,
+        session_id=x_session_id,
+        plan_version_id=req.plan_version_id,
+    )
+    if (
+        plan_version is None
+        or plan_version.revision.task_id != req.task_id
+    ):
+        raise HTTPException(status_code=404, detail="方案版本不存在")
 
     if not sd_service.is_available():
         raise HTTPException(status_code=503, detail="效果图生成服务未启用")
 
-    room_type = req.room_type
+    room_type = None
     room_bytes = None
 
-    if req.task_id:
-        task = db.get(DesignTask, req.task_id)
-        if task:
-            if not room_type:
-                room_type = _room_type_from_task(task)
-            # 取该任务下第一张有落地文件的房间图作为结构参考
-            for img in db.scalars(
-                select(UploadedImage).where(UploadedImage.task_id == req.task_id)
-            ):
-                if not img.file_url:
-                    continue
-                fpath = Path(settings.upload_dir) / Path(img.file_url).name
-                if fpath.exists():
-                    room_bytes = fpath.read_bytes()
-                    break
+    task = db.get(DesignTask, req.task_id)
+    if task:
+        room_type = _room_type_from_task(task)
+        # 取该任务下第一张有落地文件的房间图作为结构参考
+        for img in db.scalars(
+            select(UploadedImage).where(UploadedImage.task_id == req.task_id)
+        ):
+            if not img.file_url:
+                continue
+            fpath = Path(settings.upload_dir) / Path(img.file_url).name
+            if fpath.exists():
+                room_bytes = fpath.read_bytes()
+                break
 
-    prompt = _build_prompt(req.style, room_type or "客厅")
+    plan = plan_version.plan_json or {}
+    prompt = _build_prompt(str(plan.get("style") or ""), room_type or "客厅")
 
     try:
         png_bytes, mode = sd_service.render_effect_image(prompt, room_bytes)
@@ -114,14 +122,15 @@ def render_effect(
     # 落地保存 + 静态访问
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
-    fname = f"render_{req.task_id or 0}_{req.plan_id}_{int(time.time())}.png"
+    fname = f"render_{req.task_id}_{req.plan_version_id}_{int(time.time())}.png"
     (upload_dir / fname).write_bytes(png_bytes)
     image_url = f"/uploads/{fname}"
 
     db.add(
         RenderedImage(
             task_id=req.task_id,
-            plan_id=req.plan_id,
+            plan_version_id=req.plan_version_id,
+            plan_id=plan_version.plan_key,
             prompt=prompt,
             image_url=image_url,
             mode=mode,

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TaskCreate(BaseModel):
@@ -130,10 +130,10 @@ class ChatResponse(BaseModel):
 
 
 class RenderRequest(BaseModel):
-    plan_id: str
-    style: str
-    task_id: Optional[int] = None
-    room_type: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: int = Field(ge=1)
+    plan_version_id: int = Field(ge=1)
 
 
 class RenderResponse(BaseModel):

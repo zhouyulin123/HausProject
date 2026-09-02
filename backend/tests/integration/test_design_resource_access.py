@@ -83,11 +83,11 @@ def design_access_context(monkeypatch):
         ),
         (
             "/api/design/render",
-            {"plan_id": "plan-a", "style": "奶油风", "task_id": 1},
+            {"plan_version_id": 1, "task_id": 1},
         ),
         (
             "/api/design/proposal-pdf",
-            {"plan_id": "plan-a", "task_id": 1},
+            {"plan_version_id": 1, "task_id": 1},
         ),
     ],
 )
@@ -219,11 +219,6 @@ def test_proposal_uses_server_plan_snapshot(monkeypatch):
             json={
                 "task_id": task_id,
                 "plan_version_id": first_plan_version_id,
-                "plan": {
-                    "id": "plan-a",
-                    "name": "浏览器伪造方案",
-                    "shopQuote": {"total": 1},
-                },
             },
         )
 
@@ -313,11 +308,10 @@ def test_render_and_proposal_require_exact_plan_version(monkeypatch):
         rendered = client.post(
             "/api/design/render",
             headers={"X-Session-ID": owner_id},
-            json={
-                "task_id": task_id,
-                "plan_version_id": plan_version_id,
-                "style": "原木风",
-            },
+                json={
+                    "task_id": task_id,
+                    "plan_version_id": plan_version_id,
+                },
         )
 
     assert missing_render.status_code == 422

@@ -630,19 +630,15 @@ export interface RenderedEffect {
 
 /** 按需生成方案效果图（后端本地 SD，约 10-15 秒）。失败时抛错，由页面提示。 */
 export async function renderEffectImage(
-  planId: string,
-  style: string,
-  roomType?: string,
+  planVersionId: number,
 ): Promise<RenderedEffect> {
   const data = await request<{ image_url: string; mode: string }>(
     "/api/design/render",
     {
       method: "POST",
       body: JSON.stringify({
-        plan_id: planId,
-        style,
         task_id: currentTaskId,
-        room_type: roomType,
+        plan_version_id: planVersionId,
       }),
     },
   );
@@ -656,9 +652,15 @@ export async function exportProposalPdf(plan: DesignPlan): Promise<string> {
   if (!currentTaskId) {
     throw new Error("当前没有可导出的设计任务");
   }
+  if (!plan.planVersionId) {
+    throw new Error("当前方案没有可追溯的服务端版本，无法导出");
+  }
   const data = await request<{ pdf_url: string }>("/api/design/proposal-pdf", {
     method: "POST",
-    body: JSON.stringify({ plan_id: plan.id, task_id: currentTaskId }),
+    body: JSON.stringify({
+      plan_version_id: plan.planVersionId,
+      task_id: currentTaskId,
+    }),
   });
   return data.pdf_url;
 }

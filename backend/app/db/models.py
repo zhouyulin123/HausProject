@@ -458,6 +458,12 @@ class RenderedImage(Base):
     __tablename__ = "rendered_images"
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(Integer, ForeignKey("design_tasks.id"), nullable=True, index=True)
+    plan_version_id = Column(
+        Integer,
+        ForeignKey("design_plan_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     plan_id = Column(String(20), index=True)  # plan-a / plan-b / plan-c
     prompt = Column(Text)
     image_url = Column(String(255))

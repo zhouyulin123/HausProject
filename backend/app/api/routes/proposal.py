@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,15 +18,17 @@ from app.api.dependencies import (
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import RenderedImage
-from app.services import design_version_service, pdf_service, shop_service
+from app.services import pdf_service, scene_service, shop_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 class ProposalRequest(BaseModel):
-    task_id: int
-    plan_id: str
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: int = Field(ge=1)
+    plan_version_id: int = Field(ge=1)
 
 
 @router.post("/proposal-pdf")
@@ -42,13 +44,16 @@ def export_proposal_pdf(
         task_id=req.task_id,
     )
 
-    plan_version = design_version_service.get_latest_plan(
+    plan_version = scene_service.get_owned_plan_version(
         db,
-        task_id=req.task_id,
-        plan_key=req.plan_id,
+        session_id=x_session_id,
+        plan_version_id=req.plan_version_id,
     )
-    if plan_version is None:
-        raise HTTPException(status_code=404, detail="方案不存在")
+    if (
+        plan_version is None
+        or plan_version.revision.task_id != req.task_id
+    ):
+        raise HTTPException(status_code=404, detail="方案版本不存在")
 
     plan = plan_version.plan_json
     if not plan.get("name"):
@@ -56,19 +61,18 @@ def export_proposal_pdf(
 
     # 找该任务 + 方案最近一次生成的效果图作为提案封面
     effect_path: Optional[str] = None
-    if plan.get("id"):
-        rendered = db.scalars(
-            select(RenderedImage)
-            .where(
-                RenderedImage.task_id == req.task_id,
-                RenderedImage.plan_id == req.plan_id,
-            )
-            .order_by(RenderedImage.id.desc())
-        ).first()
-        if rendered and rendered.image_url:
-            candidate = Path(settings.upload_dir) / Path(rendered.image_url).name
-            if candidate.exists():
-                effect_path = str(candidate)
+    rendered = db.scalars(
+        select(RenderedImage)
+        .where(
+            RenderedImage.task_id == req.task_id,
+            RenderedImage.plan_version_id == req.plan_version_id,
+        )
+        .order_by(RenderedImage.id.desc())
+    ).first()
+    if rendered and rendered.image_url:
+        candidate = Path(settings.upload_dir) / Path(rendered.image_url).name
+        if candidate.exists():
+            effect_path = str(candidate)
 
     # 店铺信息（含 logo 本地路径解析）
     shop = shop_service.to_dict(shop_service.get_or_create(db))

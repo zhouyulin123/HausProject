@@ -27,7 +27,10 @@ export default function EffectImage({ plan }: { plan: DesignPlan }) {
       2500,
     );
     try {
-      const result = await renderEffectImage(plan.id, plan.style);
+      if (!plan.planVersionId) {
+        throw new Error("当前方案没有可追溯的服务端版本");
+      }
+      const result = await renderEffectImage(plan.planVersionId);
       setImageUrl(result.imageUrl);
       setMode(result.mode);
       setStatus("done");
