@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.custom_furniture import CustomFurnitureSpecPatch
+
 
 ActiveMode = Literal[
     "catalog_design",
@@ -42,6 +44,7 @@ class AgentTurnRequest(BaseModel):
     base_scene_version: int | None = Field(default=None, ge=1)
     selected_instance_id: str | None = Field(default=None, max_length=100)
     answers: AgentFactsPatch | None = None
+    custom_furniture_spec: CustomFurnitureSpecPatch | None = None
 
     @model_validator(mode="after")
     def validate_scene_context(self) -> "AgentTurnRequest":
@@ -89,6 +92,8 @@ class AgentStateResponse(BaseModel):
     max_retries: int = 2
     pending_questions: list[AgentPendingQuestion] = Field(default_factory=list)
     hard_errors: list[str] = Field(default_factory=list)
+    custom_furniture_spec: dict[str, Any] | None = None
+    approval_required: bool = False
     exit_reason: str
 
 
@@ -104,6 +109,7 @@ class AgentTurnResponse(BaseModel):
     state: AgentStateResponse
     pending_questions: list[AgentPendingQuestion] = Field(default_factory=list)
     events: list[AgentToolEventResponse] = Field(default_factory=list)
+    approval_required: bool = False
     exit_reason: str
     scene_ref: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
@@ -124,6 +130,8 @@ class AgentCheckpointResponse(BaseModel):
     max_steps: int = 12
     max_retries: int = 2
     hard_errors: list[str] = Field(default_factory=list)
+    custom_furniture_spec: dict[str, Any] | None = None
+    approval_required: bool = False
     exit_reason: str
     scene_ref: dict[str, Any] | None = None
     result: dict[str, Any] | None = None

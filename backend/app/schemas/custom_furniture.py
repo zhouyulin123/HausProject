@@ -15,6 +15,16 @@ TableMaterial = Literal[
     "岩板 + 金属",
     "多层实木 + 岩板台面",
 ]
+CustomFurniturePurpose = Literal[
+    "wardrobe",
+    "entryway_cabinet",
+    "bookcase",
+    "balcony_storage",
+    "dining_table",
+    "desk",
+    "kitchen_island",
+]
+CustomFurnitureMaterial = CabinetMaterial | TableMaterial
 
 
 class StrictModel(BaseModel):
@@ -131,6 +141,39 @@ class TableSpec(StrictModel):
         if self.structure.top_thickness_mm >= self.dimensions.height_mm:
             raise ValueError("台面厚度必须小于家具高度")
         return self
+
+
+class CustomFurnitureDimensionsPatch(StrictModel):
+    width_mm: int | None = Field(default=None, ge=1, le=5000)
+    height_mm: int | None = Field(default=None, ge=1, le=3000)
+    depth_mm: int | None = Field(default=None, ge=1, le=1600)
+
+
+class CustomFurnitureStructurePatch(StrictModel):
+    door_style: Literal["hinged", "sliding", "open"] | None = None
+    door_count: int | None = Field(default=None, ge=0, le=10)
+    compartment_count: int | None = Field(default=None, ge=1, le=12)
+    shelf_count: int | None = Field(default=None, ge=0, le=24)
+    drawer_count: int | None = Field(default=None, ge=0, le=12)
+    panel_thickness_mm: int | None = Field(default=None, ge=16, le=25)
+    leg_height_mm: int | None = Field(default=None, ge=0, le=250)
+    top_shape: Literal["rectangle", "round"] | None = None
+    base_style: Literal["four_leg", "pedestal", "trestle"] | None = None
+    support_count: int | None = Field(default=None, ge=1, le=4)
+    seat_count: int | None = Field(default=None, ge=1, le=12)
+    top_thickness_mm: int | None = Field(default=None, ge=18, le=80)
+    edge_radius_mm: int | None = Field(default=None, ge=0, le=80)
+
+
+class CustomFurnitureSpecPatch(StrictModel):
+    """允许分轮提交，但每个已提供字段仍执行严格类型和枚举校验。"""
+
+    family: Literal["cabinet", "table"] | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    purpose: CustomFurniturePurpose | None = None
+    material: CustomFurnitureMaterial | None = None
+    dimensions: CustomFurnitureDimensionsPatch | None = None
+    structure: CustomFurnitureStructurePatch | None = None
 
 
 CustomFurnitureSpec = Annotated[

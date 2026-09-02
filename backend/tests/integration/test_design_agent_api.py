@@ -593,8 +593,28 @@ def test_custom_furniture_agent_collects_partial_spec_across_turns(
             },
         },
     )
+    third = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "custom-complete-structure-003",
+            "message": "补充柜体结构",
+            "active_mode": "custom_furniture",
+            "custom_furniture_spec": {
+                "structure": {
+                    "door_style": "hinged",
+                    "door_count": 3,
+                    "compartment_count": 3,
+                    "shelf_count": 4,
+                    "drawer_count": 2,
+                    "panel_thickness_mm": 18,
+                    "leg_height_mm": 80,
+                },
+            },
+        },
+    )
 
-    assert first.status_code == second.status_code == 200
+    assert first.status_code == second.status_code == third.status_code == 200
     assert first.json()["intent"] == "custom_furniture"
     assert [question["field"] for question in first.json()["pending_questions"]] == [
         "custom_furniture_spec.family"
@@ -603,12 +623,23 @@ def test_custom_furniture_agent_collects_partial_spec_across_turns(
         "custom_furniture_spec.structure"
     ]
     assert second.json()["state"]["custom_furniture_spec"]["family"] == "cabinet"
+    assert third.json()["status"] == "completed"
+    assert third.json()["result"]["quote_preview"]["status"] == "estimated"
     with factory() as db:
         task = db.get(DesignTask, task_id)
         assert task.agent_state_json["custom_furniture_spec"]["dimensions"] == {
             "width_mm": 1200,
             "height_mm": 2400,
             "depth_mm": 600,
+        }
+        assert task.agent_state_json["custom_furniture_spec"]["structure"] == {
+            "door_style": "hinged",
+            "door_count": 3,
+            "compartment_count": 3,
+            "shelf_count": 4,
+            "drawer_count": 2,
+            "panel_thickness_mm": 18,
+            "leg_height_mm": 80,
         }
 
 
@@ -638,6 +669,18 @@ def test_custom_furniture_agent_completes_unique_quote_preview(
     assert payload["result"]["quote_preview"]["estimated_amount"] == "1958.40"
     assert payload["result"]["model_spec"]["确定性建模规则"]["生成器"] == "cabinet_v2"
     assert next(event for event in payload["events"] if event["node"] == "custom_furniture_preview")
+    checkpoint = client.get(
+        f"/api/design/tasks/{task_id}/agent-state",
+        headers={"X-Session-ID": owner_id},
+    )
+    assert checkpoint.status_code == 200
+    recovered = checkpoint.json()
+    assert recovered["custom_furniture_spec"] == _custom_cabinet_spec()
+    assert recovered["result"] == payload["result"]
+    assert [message["role"] for message in recovered["messages"]] == [
+        "user",
+        "ai",
+    ]
     with factory() as db:
         task = db.get(DesignTask, task_id)
         assert task.agent_state_json["custom_furniture_spec"] == _custom_cabinet_spec()

@@ -1,5 +1,18 @@
 # 项目开发状态记录
 
+## 2026-09-02 自定义家具接入统一 Design Agent
+
+- `custom_furniture` 现在是统一 Agent 的明确意图，新增批准工具 `custom_furniture_preview`；工具只调用既有参数化预览服务，不复制几何或报价逻辑。
+- `POST /api/design/tasks/{task_id}/agent-turns` 新增可选 `custom_furniture_spec`，只接收结构化字段；允许按轮提交并与任务 checkpoint 深合并，不从自由文本猜测参数。
+- 缺少家具族时只追问家具族；家具族确定后按领域契约返回缺失或错误字段的结构化问题。非法规格进入 `waiting_user`，不产生 500，也不进入无效重试。
+- 完整规格且存在唯一可复算报价时进入 `completed`；报价规则缺失、重复或非法时保留几何预览，进入 `needs_human`，设置 `approval_required=true` 和 `exit_reason=approval_required`，不盲目重试。
+- 规范化规格、预览结果、审批状态、工具事件和任务消息均绑定 `DesignTask` 持久化；`client_turn_id` 复取直接返回原响应，不重复调用预览工具。
+
+### 验证
+
+- 定制家具 Agent、参数化服务和 API 定向测试 36 项通过，覆盖多轮补充、缺字段、完整成功、缺报价转人工、非法结构、幂等复取、checkpoint 与消息恢复。
+- 既有成品家具设计和场景路径保持原接口及路由逻辑；本阶段未修改 Product、GenerationRun 或数据库迁移。
+
 ## 2026-09-01 自定义家具参数化预览基础
 
 - 新增任务绑定接口 `POST /api/design/tasks/{task_id}/custom-furniture-previews`，沿用匿名会话的任务所有权校验；本阶段只生成即时草案预览，不新增持久化表。

@@ -7,6 +7,9 @@ from copy import deepcopy
 from typing import Annotated, Any, Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from pydantic import TypeAdapter, ValidationError
+
+from app.schemas.custom_furniture import CustomFurnitureSpec
 
 
 AgentTool = Callable[[dict[str, Any]], dict[str, Any]]
@@ -15,7 +18,12 @@ AgentTool = Callable[[dict[str, Any]], dict[str, Any]]
 class DesignAgentToolRegistry:
     """固定名称的最小权限工具注册表。"""
 
-    _ALLOWED = {"catalog_search", "design_generation", "scene_edit"}
+    _ALLOWED = {
+        "catalog_search",
+        "design_generation",
+        "scene_edit",
+        "custom_furniture_preview",
+    }
 
     def __init__(self) -> None:
         self._tools: dict[str, AgentTool] = {}
@@ -48,6 +56,8 @@ class DesignAgentState(TypedDict, total=False):
     message: str
     facts: dict[str, Any]
     scene_context: dict[str, Any]
+    custom_furniture_spec: dict[str, Any]
+    custom_spec_invalid: bool
     status: str
     current_node: str
     pending_questions: list[dict[str, str]]
@@ -55,6 +65,7 @@ class DesignAgentState(TypedDict, total=False):
     result: dict[str, Any] | None
     hard_errors: list[str]
     quality_outcome: str
+    approval_required: bool
     rejection_message: str
     step_count: int
     retry_count: int
@@ -84,7 +95,84 @@ _QUESTIONS = {
         "prompt": "请先打开需要修改的 3D 场景。",
         "reason": "场景修改必须绑定场景及其当前版本",
     },
+    "custom_furniture_spec.family": {
+        "field": "custom_furniture_spec.family",
+        "prompt": "需要定制柜体还是桌类家具？",
+        "reason": "家具族决定尺寸、材料和结构参数契约",
+    },
+    "custom_furniture_spec.name": {
+        "field": "custom_furniture_spec.name",
+        "prompt": "请给这件定制家具一个名称。",
+        "reason": "名称用于区分本任务中的定制草案",
+    },
+    "custom_furniture_spec.purpose": {
+        "field": "custom_furniture_spec.purpose",
+        "prompt": "请确认家具的具体用途。",
+        "reason": "用途决定适用的结构约束和报价项目",
+    },
+    "custom_furniture_spec.material": {
+        "field": "custom_furniture_spec.material",
+        "prompt": "请从当前支持的材料档位中选择一种。",
+        "reason": "材料必须匹配参数化外观与报价规则",
+    },
+    "custom_furniture_spec.dimensions": {
+        "field": "custom_furniture_spec.dimensions",
+        "prompt": "请提供宽、高、深三个毫米尺寸。",
+        "reason": "完整毫米尺寸是几何生成和报价复算的必要输入",
+    },
+    "custom_furniture_spec.structure": {
+        "field": "custom_furniture_spec.structure",
+        "prompt": "请补充或修正该家具族要求的结构参数。",
+        "reason": "结构参数必须通过对应家具族的确定性制造约束",
+    },
 }
+
+
+_CUSTOM_SPEC_ADAPTER = TypeAdapter(CustomFurnitureSpec)
+_CUSTOM_FIELD_ORDER = (
+    "family",
+    "name",
+    "purpose",
+    "material",
+    "dimensions",
+    "structure",
+)
+
+
+def _custom_spec_check(
+    raw_spec: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, str]], bool]:
+    """返回规范化规格、最少必要追问和是否存在已提交字段错误。"""
+    if not raw_spec.get("family"):
+        key = "custom_furniture_spec.family"
+        return raw_spec, [deepcopy(_QUESTIONS[key])], False
+
+    missing = [field for field in _CUSTOM_FIELD_ORDER[1:] if not raw_spec.get(field)]
+    if missing:
+        questions = [
+            deepcopy(_QUESTIONS[f"custom_furniture_spec.{field}"])
+            for field in missing
+        ]
+        return raw_spec, questions, False
+
+    try:
+        normalized = _CUSTOM_SPEC_ADAPTER.validate_python(raw_spec)
+    except ValidationError as exc:
+        invalid_fields: list[str] = []
+        for error in exc.errors():
+            location = [str(item) for item in error.get("loc", ())]
+            field = next(
+                (item for item in location if item in _CUSTOM_FIELD_ORDER),
+                "structure",
+            )
+            if field not in invalid_fields:
+                invalid_fields.append(field)
+        questions = [
+            deepcopy(_QUESTIONS[f"custom_furniture_spec.{field}"])
+            for field in invalid_fields
+        ]
+        return raw_spec, questions, True
+    return normalized.model_dump(mode="json"), [], False
 
 
 def _next_step(state: DesignAgentState, node: str) -> dict[str, Any]:
@@ -110,12 +198,14 @@ class DesignAgentWorkflow:
         retrieve_catalog: AgentTool,
         execute_design: AgentTool,
         execute_scene: AgentTool,
+        execute_custom: AgentTool | None = None,
         max_steps: int = 12,
         max_retries: int = 2,
     ) -> None:
         self._retrieve_catalog = retrieve_catalog
         self._execute_design = execute_design
         self._execute_scene = execute_scene
+        self._execute_custom = execute_custom
         self._max_steps = max_steps
         self._max_retries = max_retries
         self._graph = self._build_graph()
@@ -129,6 +219,7 @@ class DesignAgentWorkflow:
         graph.add_node("verify_result", self._verify)
         graph.add_node("replan", self._replan)
         graph.add_node("finalize", self._finalize)
+        graph.add_node("request_approval", self._request_approval)
         graph.add_node("escalate", self._escalate)
         graph.add_edge(START, "validate_facts")
         graph.add_conditional_edges(
@@ -157,12 +248,14 @@ class DesignAgentWorkflow:
             {
                 "finalize": "finalize",
                 "replan": "replan",
+                "approval": "request_approval",
                 "escalate": "escalate",
             },
         )
         graph.add_edge("replan", "execute_tool")
         graph.add_edge("request_clarification", END)
         graph.add_edge("finalize", END)
+        graph.add_edge("request_approval", END)
         graph.add_edge("escalate", END)
         return graph.compile()
 
@@ -184,6 +277,14 @@ class DesignAgentWorkflow:
             "scene_context"
         ):
             missing.append("scene_context")
+        elif state["intent"] == "custom_furniture":
+            normalized, questions, invalid = _custom_spec_check(
+                state.get("custom_furniture_spec", {})
+            )
+            update["custom_furniture_spec"] = normalized
+            update["pending_questions"] = questions
+            update["custom_spec_invalid"] = invalid
+            return update
         update["pending_questions"] = [deepcopy(_QUESTIONS[key]) for key in missing]
         return update
 
@@ -200,8 +301,12 @@ class DesignAgentWorkflow:
     def _request_clarification(self, state: DesignAgentState) -> dict[str, Any]:
         return {
             **_next_step(state, "request_clarification"),
-                "status": "waiting_user",
-                "exit_reason": "missing_facts",
+            "status": "waiting_user",
+            "exit_reason": (
+                "invalid_facts"
+                if state.get("custom_spec_invalid")
+                else "missing_facts"
+            ),
         }
 
     def _retrieve(self, state: DesignAgentState) -> dict[str, Any]:
@@ -233,15 +338,21 @@ class DesignAgentWorkflow:
         update = _next_step(state, "execute_tool")
         if update.get("exit_reason"):
             return update
-        tool_name = (
-            "scene_edit" if state["intent"] == "scene_edit" else "design_generation"
-        )
-        callback = (
-            self._execute_scene
-            if state["intent"] == "scene_edit"
-            else self._execute_design
-        )
+        if state["intent"] == "scene_edit":
+            tool_name = "scene_edit"
+            callback = self._execute_scene
+        elif state["intent"] == "custom_furniture":
+            tool_name = "custom_furniture_preview"
+            callback = self._execute_custom
+        else:
+            tool_name = "design_generation"
+            callback = self._execute_design
         try:
+            if callback is None:
+                raise AgentToolRejected(
+                    "定制家具预览工具尚未注册",
+                    codes=["tool_not_available"],
+                )
             result = callback(state)
             return {
                 **update,
@@ -305,10 +416,28 @@ class DesignAgentWorkflow:
                 and min(quotes) > budget_max
             ):
                 errors.append("budget_exceeded")
+        elif state["intent"] == "custom_furniture":
+            quote = result.get("quote_preview") if isinstance(result, dict) else None
+            if result and result.get("status") == "needs_human":
+                return {
+                    **update,
+                    "hard_errors": [],
+                    "quality_outcome": "approval",
+                    "approval_required": True,
+                }
+            if (
+                not isinstance(result, dict)
+                or result.get("status") != "preview_ready"
+                or not isinstance(quote, dict)
+                or quote.get("status") != "estimated"
+            ):
+                errors.append("invalid_custom_furniture_preview")
 
         errors = list(dict.fromkeys(errors))
         if not errors:
             outcome = "passed"
+        elif state["intent"] == "custom_furniture":
+            outcome = "escalate"
         elif state.get("retry_count", 0) < state.get("max_retries", 2):
             outcome = "retry"
         else:
@@ -320,6 +449,7 @@ class DesignAgentWorkflow:
         return {
             "passed": "finalize",
             "retry": "replan",
+            "approval": "approval",
         }.get(state.get("quality_outcome", "escalate"), "escalate")
 
     def _replan(self, state: DesignAgentState) -> dict[str, Any]:
@@ -342,6 +472,16 @@ class DesignAgentWorkflow:
             "status": "completed",
             "exit_reason": "goal_completed",
             "pending_questions": [],
+            "approval_required": False,
+        }
+
+    def _request_approval(self, state: DesignAgentState) -> dict[str, Any]:
+        return {
+            **_next_step(state, "request_approval"),
+            "status": "needs_human",
+            "exit_reason": "approval_required",
+            "pending_questions": [],
+            "approval_required": True,
         }
 
     def _escalate(self, state: DesignAgentState) -> dict[str, Any]:
@@ -376,6 +516,7 @@ class DesignAgentWorkflow:
         message: str,
         facts: dict[str, Any],
         scene_context: dict[str, Any] | None = None,
+        custom_furniture_spec: dict[str, Any] | None = None,
     ) -> DesignAgentState:
         effective_intent = (
             "scene_edit" if intent == "auto" and scene_context else intent
@@ -391,6 +532,8 @@ class DesignAgentWorkflow:
                 "message": message,
                 "facts": deepcopy(facts),
                 "scene_context": deepcopy(scene_context or {}),
+                "custom_furniture_spec": deepcopy(custom_furniture_spec or {}),
+                "custom_spec_invalid": False,
                 "status": "running",
                 "current_node": "start",
                 "pending_questions": [],
@@ -398,6 +541,7 @@ class DesignAgentWorkflow:
                 "result": None,
                 "hard_errors": [],
                 "quality_outcome": "",
+                "approval_required": False,
                 "rejection_message": "",
                 "step_count": 0,
                 "retry_count": 0,

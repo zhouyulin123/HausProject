@@ -32,11 +32,13 @@ from app.db.models import (
     UploadedImage,
 )
 from app.schemas.design_agent import AgentTurnRequest
+from app.schemas.custom_furniture import CustomFurniturePreviewRequest
 from app.schemas.room_model import RoomModel
 from app.schemas.scene_agent import SceneOperationBatch
 from app.schemas.scenes import SceneDocument
 from app.services import (
     catalog_service,
+    custom_furniture_service,
     design_version_service,
     llm_service,
     scene_service,
@@ -180,6 +182,38 @@ def _facts_for_turn(
     return facts
 
 
+def _merge_nested_dict(
+    base: dict[str, Any],
+    patch: dict[str, Any],
+) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_nested_dict(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _custom_spec_for_turn(
+    task: DesignTask,
+    payload: AgentTurnRequest,
+) -> dict[str, Any]:
+    checkpoint = task.agent_state_json or {}
+    prior = checkpoint.get("custom_furniture_spec")
+    current = deepcopy(prior) if isinstance(prior, dict) else {}
+    if payload.custom_furniture_spec is None:
+        return current
+    patch = payload.custom_furniture_spec.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+    incoming_family = patch.get("family")
+    if incoming_family and current.get("family") not in (None, incoming_family):
+        current = {}
+    return _merge_nested_dict(current, patch)
+
+
 def _catalog_tool(db: Session):
     def execute(state: dict[str, Any]) -> dict[str, Any]:
         facts = state.get("facts", {})
@@ -300,6 +334,25 @@ def _design_tool(db: Session, task: DesignTask):
     return execute
 
 
+def _custom_furniture_tool(db: Session):
+    def execute(state: dict[str, Any]) -> dict[str, Any]:
+        try:
+            request = CustomFurniturePreviewRequest.model_validate(
+                {"spec": state.get("custom_furniture_spec")}
+            )
+        except ValueError as exc:
+            raise AgentToolRejected(
+                "定制家具规格未通过领域校验",
+                codes=["invalid_custom_furniture_spec"],
+            ) from exc
+        return custom_furniture_service.build_preview(
+            db,
+            request.spec,
+        ).model_dump(mode="json")
+
+    return execute
+
+
 def _load_task_scene(
     db: Session,
     *,
@@ -407,12 +460,16 @@ def _reply(state: dict[str, Any]) -> str:
             item["prompt"] for item in state["pending_questions"]
         )
     if state["status"] == "needs_human":
+        if state.get("approval_required"):
+            return "参数化预览已生成，但当前没有唯一可复算报价，需要人工确认价格。"
         return "本轮未通过确定性质量门禁，已停止自动执行并建议人工确认。"
     result = state.get("result") or {}
     if state["intent"] == "catalog_search":
         return f"已找到 {result.get('candidate_count', 0)} 件符合当前硬约束的商品。"
     if state["intent"] == "scene_edit":
         return str(result.get("message") or "已完成场景修改。")
+    if state["intent"] == "custom_furniture":
+        return "已生成通过参数校验且报价可复算的定制家具预览。"
     contains_drafts = any(
         event.get("payload", {}).get("contains_unverified_drafts")
         for event in state.get("tool_events", [])
@@ -457,7 +514,14 @@ def _events_from_state(
                 event_type="tool_completed" if completed else "validation_failed",
                 node=raw["tool"],
                 status=raw["status"],
-                source="deterministic" if raw["tool"] == "catalog_search" else "agent",
+                source=(
+                    "deterministic"
+                    if raw["tool"] in {
+                        "catalog_search",
+                        "custom_furniture_preview",
+                    }
+                    else "agent"
+                ),
                 summary=(
                     f"工具 {raw['tool']} 执行完成"
                     if completed
@@ -481,7 +545,10 @@ def _events_from_state(
             status=state["status"],
             source="orchestrator",
             summary=f"本轮退出原因：{state['exit_reason']}",
-            details_json={"hard_errors": state.get("hard_errors", [])},
+            details_json={
+                "hard_errors": state.get("hard_errors", []),
+                "approval_required": state.get("approval_required", False),
+            },
         )
     )
     return events
@@ -559,12 +626,15 @@ def _run_turn(
     registry.register("catalog_search", _catalog_tool(db))
     registry.register("design_generation", _design_tool(db, task))
     registry.register("scene_edit", _scene_tool(db, task, payload))
+    registry.register("custom_furniture_preview", _custom_furniture_tool(db))
     workflow = DesignAgentWorkflow(
         retrieve_catalog=registry.get("catalog_search"),
         execute_design=registry.get("design_generation"),
         execute_scene=registry.get("scene_edit"),
+        execute_custom=registry.get("custom_furniture_preview"),
     )
     facts = _facts_for_turn(db, task, payload)
+    custom_furniture_spec = _custom_spec_for_turn(task, payload)
     scene_context = (
         {
             "scene_id": payload.scene_id,
@@ -583,6 +653,7 @@ def _run_turn(
         message=payload.message,
         facts=facts,
         scene_context=scene_context,
+        custom_furniture_spec=custom_furniture_spec,
     )
 
     if state["status"] == "completed" and intent == "design":
@@ -630,6 +701,10 @@ def _run_turn(
         "max_steps": state["max_steps"],
         "max_retries": state["max_retries"],
         "hard_errors": state.get("hard_errors", []),
+        "custom_furniture_spec": (
+            state.get("custom_furniture_spec") or None
+        ),
+        "approval_required": state.get("approval_required", False),
         "exit_reason": state["exit_reason"],
         "scene_ref": scene_ref,
         "result": public_result,
@@ -652,6 +727,7 @@ def _run_turn(
         "state": checkpoint,
         "pending_questions": state.get("pending_questions", []),
         "events": [_event_payload(event) for event in events],
+        "approval_required": state.get("approval_required", False),
         "scene_ref": scene_ref,
         "exit_reason": state["exit_reason"],
         "result": public_result,
@@ -702,6 +778,10 @@ def _persist_failed_turn(
         "max_steps": 12,
         "max_retries": 2,
         "hard_errors": ["internal_error"],
+        "custom_furniture_spec": deepcopy(
+            (task.agent_state_json or {}).get("custom_furniture_spec")
+        ),
+        "approval_required": False,
         "exit_reason": "tool_failed",
         "scene_ref": None,
         "result": None,
@@ -733,6 +813,7 @@ def _persist_failed_turn(
         "state": checkpoint,
         "pending_questions": [],
         "events": [_event_payload(event)],
+        "approval_required": False,
         "scene_ref": None,
         "exit_reason": "tool_failed",
         "result": None,
@@ -792,6 +873,8 @@ def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
             "max_steps": 12,
             "max_retries": 2,
             "hard_errors": [],
+            "custom_furniture_spec": None,
+            "approval_required": False,
             "exit_reason": "missing_facts",
             "scene_ref": None,
             "result": None,
