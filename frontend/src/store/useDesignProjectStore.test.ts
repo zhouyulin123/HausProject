@@ -101,6 +101,35 @@ describe("useDesignProjectStore", () => {
     ).toBe("客厅实际宽度是多少？");
   });
 
+  it("场景加载 v1 后保存 v2，工作台与对话始终读取最新场景引用", () => {
+    useDesignProjectStore.getState().registerProject(42, "catalog_design", {
+      requirement: emptyRequirement,
+      roomModel: null,
+    });
+
+    useDesignProjectStore.getState().setSceneReference(42, {
+      scene_id: 9,
+      version: 1,
+    });
+    useDesignProjectStore.getState().setSceneReference(42, {
+      scene_id: 9,
+      version: 2,
+    });
+    useDesignProjectStore.getState().applyAgentState(42, {
+      stateVersion: 3,
+      status: "completed",
+      activeMode: "catalog_design",
+      pendingQuestions: [],
+      sceneRef: { scene_id: 9, version: 1 },
+      exitReason: "goal_completed",
+    });
+
+    expect(useDesignProjectStore.getState().projects[42]?.sceneRef).toEqual({
+      scene_id: 9,
+      version: 2,
+    });
+  });
+
   it("从 checkpoint 恢复自定义家具规格、预览与审批状态", () => {
     useDesignProjectStore.getState().registerProject(43, "custom_furniture", {
       requirement: emptyRequirement,

@@ -588,6 +588,38 @@ def test_agent_scene_edit_rejects_stale_base_version(
 
 
 @pytest.mark.integration
+def test_explicit_scene_edit_without_scene_reference_never_runs_design(
+    agent_api_context,
+    monkeypatch,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+    design_calls: list[str] = []
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "generate_plans",
+        lambda *_: design_calls.append("design") or [],
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "missing-scene-context-001",
+            "message": "把当前场景里的沙发向左移动 30 厘米",
+            "active_mode": "catalog_design",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["intent"] == "scene_edit"
+    assert response.json()["status"] == "waiting_user"
+    assert [
+        question["field"] for question in response.json()["pending_questions"]
+    ] == ["scene_context"]
+    assert design_calls == []
+
+
+@pytest.mark.integration
 def test_agent_turn_rejects_client_turn_id_already_in_progress(
     agent_api_context,
 ):
