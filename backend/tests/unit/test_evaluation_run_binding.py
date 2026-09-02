@@ -17,7 +17,7 @@ from evals.trusted_evidence import (
 )
 
 
-def _dataset(tmp_path: Path):
+def _dataset(tmp_path: Path, *, image_context: list[str] | None = None):
     (tmp_path / "room.png").write_bytes(b"authorized-test-room")
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
@@ -44,6 +44,7 @@ def _dataset(tmp_path: Path):
                             "style": "现代",
                             "budget_min": 10000,
                             "budget_max": 20000,
+                            "image_context": image_context or [],
                         },
                     }
                 ],
@@ -130,6 +131,31 @@ def test_binding_rejects_wrong_requirement_and_wrong_uploaded_asset(db, tmp_path
         )
 
 
+def test_binding_rejects_correct_asset_mixed_with_unverifiable_legacy_upload(
+    db,
+    tmp_path,
+):
+    dataset = _dataset(tmp_path)
+    case = dataset.eligible_cases()[0]
+    task = _task(db, asset_digest=f"sha256:{case.asset_sha256}")
+    db.add(
+        UploadedImage(
+            task_id=task.id,
+            file_url="/uploads/legacy-without-digest.png",
+            content_digest=None,
+        )
+    )
+    db.commit()
+
+    with pytest.raises(EvaluationInputError, match="案例资产"):
+        bind_evaluation_run(
+            db,
+            dataset=dataset,
+            case_id=case.id,
+            task=task,
+        )
+
+
 def test_eval_idempotency_key_alone_cannot_create_a_run(db, tmp_path):
     dataset = _dataset(tmp_path)
     case = dataset.eligible_cases()[0]
@@ -153,6 +179,30 @@ def test_worker_claim_revalidates_persisted_binding_and_rejects_task_mutation(
     run = bind_evaluation_run(db, dataset=dataset, case_id=case.id, task=task)
 
     task.confirmed_requirement_json = {"style": "篡改后的风格"}
+    db.commit()
+    claimed = generation_run_service.claim_next_run(
+        db,
+        worker_id="eval-worker",
+        lease_seconds=30,
+        run_id=run.id,
+    )
+
+    assert claimed is None
+    db.refresh(run)
+    assert run.status == "dead_letter"
+    assert run.current_node == "evaluation_binding_invalid"
+
+
+def test_worker_claim_rejects_image_analysis_mutated_after_binding(db, tmp_path):
+    dataset = _dataset(tmp_path, image_context=["绑定时的空间事实"])
+    case = dataset.eligible_cases()[0]
+    task = _task(db, asset_digest=f"sha256:{case.asset_sha256}")
+    image = db.query(UploadedImage).filter_by(task_id=task.id).one()
+    image.analysis_json = {"findings": ["绑定时的空间事实"]}
+    db.commit()
+    run = bind_evaluation_run(db, dataset=dataset, case_id=case.id, task=task)
+
+    image.analysis_json = {"findings": ["执行前被替换的空间事实"]}
     db.commit()
     claimed = generation_run_service.claim_next_run(
         db,

@@ -26,6 +26,7 @@ _TASK_INPUT_FIELDS = frozenset(
         "style",
         "budget_min",
         "budget_max",
+        "image_context",
     }
 )
 
@@ -88,10 +89,29 @@ def normalize_task_input(value: Mapping[str, Any]) -> dict[str, Any]:
         and normalized["budget_min"] > normalized["budget_max"]
     ):
         raise EvaluationBindingError("budget_min 不能大于 budget_max")
+    image_context = value.get("image_context", [])
+    if not isinstance(image_context, list) or any(
+        not isinstance(item, str) or not item.strip() for item in image_context
+    ):
+        raise EvaluationBindingError("image_context 必须是非空字符串数组")
+    normalized["image_context"] = [item.strip() for item in image_context]
     return normalized
 
 
-def task_input_payload(task: DesignTask) -> dict[str, Any]:
+def task_input_payload(db: Session, task: DesignTask) -> dict[str, Any]:
+    images = db.scalars(
+        select(UploadedImage)
+        .where(UploadedImage.task_id == task.id)
+        .order_by(UploadedImage.id)
+    ).all()
+    image_context: list[str] = []
+    for image in images:
+        analysis = image.analysis_json if isinstance(image.analysis_json, dict) else {}
+        findings = analysis.get("findings")
+        if isinstance(findings, list):
+            image_context.extend(
+                str(item).strip() for item in findings if str(item).strip()
+            )
     return normalize_task_input(
         {
             "raw_user_input": task.raw_user_input,
@@ -100,29 +120,27 @@ def task_input_payload(task: DesignTask) -> dict[str, Any]:
             "style": task.style,
             "budget_min": task.budget_min,
             "budget_max": task.budget_max,
+            "image_context": image_context,
         }
     )
 
 
-def task_input_digest(task: DesignTask) -> str:
-    return canonical_digest(task_input_payload(task))
+def task_input_digest(db: Session, task: DesignTask) -> str:
+    return canonical_digest(task_input_payload(db, task))
 
 
 def expected_task_input_digest(value: Mapping[str, Any]) -> str:
     return canonical_digest(normalize_task_input(value))
 
 
-def task_asset_digests(db: Session, *, task_id: int) -> set[str]:
-    return {
-        digest
-        for digest in db.scalars(
-            select(UploadedImage.content_digest).where(
-                UploadedImage.task_id == task_id,
-                UploadedImage.content_digest.is_not(None),
-            )
+def task_asset_digests(db: Session, *, task_id: int) -> list[str | None]:
+    return list(
+        db.scalars(
+            select(UploadedImage.content_digest)
+            .where(UploadedImage.task_id == task_id)
+            .order_by(UploadedImage.id)
         ).all()
-        if isinstance(digest, str) and digest
-    }
+    )
 
 
 def validate_spec_for_task(
@@ -131,10 +149,12 @@ def validate_spec_for_task(
     task: DesignTask,
     spec: EvaluationBindingSpec,
 ) -> None:
-    if task_input_digest(task) != spec.task_input_digest:
+    if task.user_id is not None:
+        raise EvaluationBindingError("评测任务不能依赖可变的用户画像")
+    if task_input_digest(db, task) != spec.task_input_digest:
         raise EvaluationBindingError("当前任务输入与评测案例不一致")
     asset_digests = task_asset_digests(db, task_id=task.id)
-    if asset_digests != {spec.asset_digest}:
+    if len(asset_digests) != 1 or asset_digests[0] != spec.asset_digest:
         raise EvaluationBindingError("当前任务绑定的案例资产不唯一或不一致")
 
 

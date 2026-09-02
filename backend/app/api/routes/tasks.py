@@ -244,7 +244,9 @@ def _execute_generation(
         # 若有上传图片的 VL 分析结果，作为空间上下文一并喂给方案生成
         image_context = []
         for img in db.scalars(
-            select(UploadedImage).where(UploadedImage.task_id == task.id)
+            select(UploadedImage)
+            .where(UploadedImage.task_id == task.id)
+            .order_by(UploadedImage.id)
         ):
             analysis = img.analysis_json or {}
             if analysis.get("findings"):

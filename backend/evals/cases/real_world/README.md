@@ -11,7 +11,7 @@
 - `allowed_purposes` 包含 `offline_evaluation`；
 - `split` 已分配为 `development`、`regression` 或 `blind`；
 - 资产存在且没有越过指定的资产根目录；
-- 填写严格结构化的 `task_input`，且正式任务的需求字段与该输入完全一致；
+- 填写严格结构化的 `task_input`，且正式任务的需求字段和图片分析 `image_context` 与该输入完全一致；
 - `blind` 不允许使用 `synthetic` 案例。
 
 仓库现有四张户型图目前全部处于 `pending`。在确认来源、用途授权和人工标注前，它们不会被评测程序使用，也不能作为“真实案例质量达标”的证据。
@@ -39,7 +39,7 @@
 - 同一证据包内每个已准入案例恰好一个运行，同一 run 不得跨案例复用。
 
 创建 GenerationRun 时，评测队列器必须调用
-`evals.trusted_evidence.bind_evaluation_run(db, dataset=..., case_id=..., task=...)`，在同一事务中写入运行及持久化案例绑定。只把 `evaluation_run_idempotency_key(...)` 返回值传给现有 `generate-async` 不构成可信绑定，服务会失败关闭。Worker 领取与证据收集都会复核任务需求和任务所绑定图片的实际字节摘要；错误图片、混合图片、需求变化、缺少 `task_input` 或历史图片没有摘要时均拒绝执行或签发。
+`evals.trusted_evidence.bind_evaluation_run(db, dataset=..., case_id=..., task=...)`，在同一事务中写入运行及持久化案例绑定。只把 `evaluation_run_idempotency_key(...)` 返回值传给现有 `generate-async` 不构成可信绑定，服务会失败关闭。Worker 领取与证据收集都会复核任务需求、按上传顺序冻结的图片分析事实和唯一原始资产摘要；错误图片、额外图片、分析变化、需求变化、可变用户画像、缺少 `task_input` 或历史图片没有摘要时均拒绝执行或签发。
 
 收集器不会接收 CaseResult。当前可从运行事实确定性推导生成成功、有效 SKU 和报价一致性；需求、空间、布局和人工满意度在接入可追溯标注执行器前保持无证据，因此质量门禁会失败，不会用模拟值或手工值补齐。
 

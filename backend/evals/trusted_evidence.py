@@ -192,6 +192,7 @@ def bind_evaluation_run(
             ),
             max_attempts=max_attempts,
             request_id=request_id,
+            request_digest=spec.task_input_digest,
             evaluation_binding=spec,
         )
     except evaluation_binding_service.EvaluationBindingError as exc:
