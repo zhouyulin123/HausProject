@@ -817,6 +817,7 @@ class GenerationRun(Base):
     max_attempts = Column(Integer, nullable=False, default=3)
     cancel_requested_at = Column(DateTime(timezone=True), nullable=True)
     idempotency_key = Column(String(100), nullable=True)
+    request_digest = Column(String(71), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -71,6 +71,7 @@ def test_owner_can_queue_and_query_persistent_generation(
         headers={
             "X-Session-ID": owner_id,
             "X-Request-ID": "design-request-001",
+            "Idempotency-Key": "owner-generation-001",
         },
     )
     status = client.get(
@@ -169,7 +170,10 @@ def test_foreign_session_cannot_queue_generation(async_generation_context):
 
     response = client.post(
         f"/api/design/tasks/{task_id}/generate-async",
-        headers={"X-Session-ID": stranger_id},
+        headers={
+            "X-Session-ID": stranger_id,
+            "Idempotency-Key": "foreign-generation-001",
+        },
     )
 
     assert response.status_code == 404
@@ -186,7 +190,10 @@ def test_explicit_development_inline_fallback_schedules_run(
 
     response = client.post(
         f"/api/design/tasks/{task_id}/generate-async",
-        headers={"X-Session-ID": owner_id},
+        headers={
+            "X-Session-ID": owner_id,
+            "Idempotency-Key": "inline-generation-001",
+        },
     )
 
     assert response.status_code == 202
@@ -227,7 +234,10 @@ def test_foreign_session_cannot_cancel_generation(async_generation_context):
     client, owner_id, stranger_id, task_id, _, _ = async_generation_context
     client.post(
         f"/api/design/tasks/{task_id}/generate-async",
-        headers={"X-Session-ID": owner_id},
+        headers={
+            "X-Session-ID": owner_id,
+            "Idempotency-Key": "cancel-generation-001",
+        },
     )
 
     response = client.post(

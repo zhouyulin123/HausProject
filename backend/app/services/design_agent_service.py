@@ -65,6 +65,10 @@ class AgentTurnInProgress(ValueError):
     """相同幂等键已由另一请求占用且尚未产生最终响应。"""
 
 
+class AgentIdempotencyConflict(ValueError):
+    """相同 client_turn_id 被用于语义不同的请求。"""
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -741,6 +745,24 @@ def _event_payload(event: DesignAgentEvent) -> dict[str, Any]:
     }
 
 
+def _assert_same_turn_request(
+    turn: DesignAgentTurn,
+    payload: AgentTurnRequest,
+) -> None:
+    try:
+        persisted_request = AgentTurnRequest.model_validate(
+            turn.request_json
+        ).model_dump(mode="json")
+    except ValueError as exc:
+        raise AgentIdempotencyConflict(
+            "client_turn_id 对应的历史请求无法验证"
+        ) from exc
+    if persisted_request != payload.model_dump(mode="json"):
+        raise AgentIdempotencyConflict(
+            "client_turn_id 已用于不同的 Agent 请求"
+        )
+
+
 def _run_turn(
     db: Session,
     *,
@@ -753,9 +775,10 @@ def _run_turn(
             DesignAgentTurn.client_turn_id == payload.client_turn_id,
         )
     ).first()
-    if existing is not None and existing.response_json is not None:
-        return deepcopy(existing.response_json)
     if existing is not None:
+        _assert_same_turn_request(existing, payload)
+        if existing.response_json is not None:
+            return deepcopy(existing.response_json)
         raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中")
 
     intent = _intent_for(payload)
@@ -792,8 +815,10 @@ def _run_turn(
                 DesignAgentTurn.client_turn_id == payload.client_turn_id,
             )
         ).first()
-        if existing is not None and existing.response_json is not None:
-            return deepcopy(existing.response_json)
+        if existing is not None:
+            _assert_same_turn_request(existing, payload)
+            if existing.response_json is not None:
+                return deepcopy(existing.response_json)
         raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中") from exc
 
     checkpoint = (
@@ -995,8 +1020,39 @@ def _persist_failed_turn(
     task.agent_state_version = (task.agent_state_version or 0) + 1
     task.active_mode = payload.active_mode
     task.status = "failed"
-    prior_facts = (task.agent_state_json or {}).get("facts") or {}
-    prior_fact_evidence = (task.agent_state_json or {}).get("fact_evidence") or {}
+    prior_checkpoint = (
+        task.agent_state_json if isinstance(task.agent_state_json, dict) else {}
+    )
+    prior_facts = prior_checkpoint.get("facts") or {}
+    prior_fact_evidence = prior_checkpoint.get("fact_evidence") or {}
+    step_count = prior_checkpoint.get("step_count", 0)
+    if (
+        not isinstance(step_count, int)
+        or isinstance(step_count, bool)
+        or step_count < 0
+    ):
+        step_count = 0
+    retry_count = prior_checkpoint.get("retry_count", 0)
+    if (
+        not isinstance(retry_count, int)
+        or isinstance(retry_count, bool)
+        or retry_count < 0
+    ):
+        retry_count = 0
+    max_steps = prior_checkpoint.get("max_steps", 12)
+    if (
+        not isinstance(max_steps, int)
+        or isinstance(max_steps, bool)
+        or max_steps < 1
+    ):
+        max_steps = 12
+    max_retries = prior_checkpoint.get("max_retries", 2)
+    if (
+        not isinstance(max_retries, int)
+        or isinstance(max_retries, bool)
+        or max_retries < 0
+    ):
+        max_retries = 2
     checkpoint = {
         "status": "failed",
         "active_mode": payload.active_mode,
@@ -1006,11 +1062,15 @@ def _persist_failed_turn(
         "facts": deepcopy(prior_facts),
         "fact_evidence": deepcopy(prior_fact_evidence),
         "pending_questions": [],
-        "step_count": 0,
-        "retry_count": 0,
-        "max_steps": 12,
-        "max_retries": 2,
-        "hard_errors": ["internal_error"],
+        "step_count": step_count,
+        "retry_count": retry_count,
+        "max_steps": max_steps,
+        "max_retries": max_retries,
+        "hard_errors": list(
+            dict.fromkeys(
+                [*(prior_checkpoint.get("hard_errors") or []), "internal_error"]
+            )
+        ),
         "custom_furniture_spec": deepcopy(
             (task.agent_state_json or {}).get("custom_furniture_spec")
         ),
@@ -1071,6 +1131,7 @@ def run_turn(
     except (
         AgentSceneNotFound,
         AgentSceneVersionConflict,
+        AgentIdempotencyConflict,
         AgentTurnInProgress,
     ):
         raise

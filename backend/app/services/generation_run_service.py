@@ -32,6 +32,10 @@ class GenerationRunOwnershipError(RuntimeError):
     """Worker 已失去租约或任务被取消，当前执行不得继续提交。"""
 
 
+class GenerationIdempotencyConflict(RuntimeError):
+    """同一幂等键被用于不同的生成输入。"""
+
+
 class GenerationCostGuardError(GenerationRunOwnershipError):
     """模型调用被任务成本策略中止。"""
 
@@ -138,6 +142,7 @@ def create_run(
     idempotency_key: str | None = None,
     max_attempts: int = 3,
     request_id: str | None = None,
+    request_digest: str | None = None,
 ) -> GenerationRun:
     """创建持久化运行；同一幂等键在终态后也返回原记录。"""
     normalized_key = (idempotency_key or "").strip() or None
@@ -149,6 +154,10 @@ def create_run(
             )
         )
         if existing is not None:
+            if existing.request_digest != request_digest:
+                raise GenerationIdempotencyConflict(
+                    "Idempotency-Key 已用于不同的任务输入或版本"
+                )
             return existing
 
     active = db.scalars(
@@ -174,6 +183,7 @@ def create_run(
         progress=0,
         current_node="queued",
         idempotency_key=normalized_key,
+        request_digest=request_digest,
         request_id=request_id,
         max_attempts=max(1, max_attempts),
     )
@@ -192,6 +202,10 @@ def create_run(
                 )
             )
             if existing is not None:
+                if existing.request_digest != request_digest:
+                    raise GenerationIdempotencyConflict(
+                        "Idempotency-Key 已用于不同的任务输入或版本"
+                    )
                 return existing
         active = db.scalars(
             select(GenerationRun)

@@ -1037,7 +1037,11 @@ export async function generateDesignsForTask(taskId: number): Promise<DesignPlan
   if (browserStorage) writeTaskId(browserStorage, currentTaskId);
   await request<{ run_id: number; status: string }>(
     `/api/design/tasks/${taskId}/generate-async`,
-    { method: "POST", body: JSON.stringify({}) },
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": `design-generation-task-${taskId}-v1` },
+      body: JSON.stringify({}),
+    },
   );
   await waitForGeneration(taskId);
   return fetchDesignTaskPlans(taskId);

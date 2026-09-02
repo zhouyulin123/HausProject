@@ -357,6 +357,42 @@ def _execute_generation(
         raise HTTPException(status_code=500, detail="方案生成失败，请稍后重试") from exc
 
 
+def _generation_request_digest(db: Session, task: DesignTask) -> str:
+    """摘要覆盖生成读取的任务事实、用户画像、图片分析和商品上下文。"""
+    requirement = task.confirmed_requirement_json or task_service.parse_requirement(
+        task.raw_user_input or ""
+    )
+    profile_context = None
+    if task.user_id:
+        profile = profile_service.get_or_create_profile(db, user_id=task.user_id)
+        profile_context = profile_service.build_profile_context(profile) or None
+    images = db.scalars(
+        select(UploadedImage)
+        .where(UploadedImage.task_id == task.id)
+        .order_by(UploadedImage.id)
+    ).all()
+    return generation_provenance.canonical_digest(
+        {
+            "schema_version": 1,
+            "task_id": task.id,
+            "agent_state_version": task.agent_state_version or 0,
+            "active_mode": task.active_mode,
+            "requirement": requirement,
+            "profile_context": profile_context,
+            "images": [
+                {
+                    "id": image.id,
+                    "image_type": image.image_type,
+                    "file_url": image.file_url,
+                    "analysis": image.analysis_json,
+                }
+                for image in images
+            ],
+            "catalog_context": catalog_service.build_catalog_context(db),
+        }
+    )
+
+
 @router.post(
     "/{task_id}/generate",
     response_model=GenerateResponse,
@@ -393,30 +429,38 @@ def queue_design_generation(
     background_tasks: BackgroundTasks,
     request: Request,
     x_session_id: SessionIdHeader,
-    db: Session = Depends(get_db),
     idempotency_key: Annotated[
-        str | None,
+        str,
         Header(
             alias="Idempotency-Key",
             min_length=8,
             max_length=100,
             pattern=r"^[A-Za-z0-9._:-]+$",
         ),
-    ] = None,
+    ],
+    db: Session = Depends(get_db),
 ):
     task = require_owned_design_task(
         db,
         session_id=x_session_id,
         task_id=task_id,
     )
-    run = generation_run_service.create_run(
-        db,
-        task=task,
-        idempotency_key=idempotency_key,
-        max_attempts=settings.generation_worker_max_attempts,
-        request_id=getattr(request.state, "request_id", None)
-        or normalize_request_id(request.headers.get("X-Request-ID")),
-    )
+    try:
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key=idempotency_key,
+            max_attempts=settings.generation_worker_max_attempts,
+            request_id=getattr(request.state, "request_id", None)
+            or normalize_request_id(request.headers.get("X-Request-ID")),
+            request_digest=_generation_request_digest(db, task),
+        )
+    except generation_run_service.GenerationIdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "idempotency_conflict", "message": str(exc)},
+        ) from exc
     if run.status == "queued":
         task.status = "queued"
         task.progress = 50

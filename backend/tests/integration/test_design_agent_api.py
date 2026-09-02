@@ -604,6 +604,7 @@ def test_agent_turn_idempotency_key_rejects_different_request(
         headers={"X-Session-ID": owner_id},
         json=body,
     )
+    calls_after_first = list(tool_calls)
     conflict = client.post(
         f"/api/design/tasks/{task_id}/agent-turns",
         headers={"X-Session-ID": owner_id},
@@ -613,7 +614,7 @@ def test_agent_turn_idempotency_key_rejects_different_request(
     assert first.status_code == 200
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["code"] == "idempotency_conflict"
-    assert tool_calls == ["catalog_search"]
+    assert tool_calls == calls_after_first
     with factory() as db:
         assert len(
             db.scalars(
@@ -704,7 +705,17 @@ def test_agent_turn_rejects_client_turn_id_already_in_progress(
                 active_mode="catalog_design",
                 intent="design",
                 status="running",
-                request_json={"message": "第一次请求"},
+                request_json={
+                    "client_turn_id": "concurrent-turn-001",
+                    "message": "重复请求",
+                    "active_mode": "catalog_design",
+                    "active_room_id": None,
+                    "scene_id": None,
+                    "base_scene_version": None,
+                    "selected_instance_id": None,
+                    "answers": None,
+                    "custom_furniture_spec": None,
+                },
             )
         )
         db.commit()

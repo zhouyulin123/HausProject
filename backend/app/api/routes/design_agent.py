@@ -34,6 +34,12 @@ def run_agent_turn(
     except design_agent_service.AgentSceneVersionConflict as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except design_agent_service.AgentIdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "idempotency_conflict", "message": str(exc)},
+        ) from exc
     except design_agent_service.AgentTurnInProgress as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
