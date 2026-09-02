@@ -7,7 +7,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.database import Base
+from app.core.config import settings
 from app.db.models import DesignTask, EvaluationRunBinding, GenerationRunEvent, UploadedImage
+from app.services import generation_run_service
 from evals.real_world import EvaluationInputError, load_case_manifest
 from evals.run_real_world_eval import build_evaluation_report, compare_evaluation_reports
 from evals.trusted_evidence import (
@@ -140,6 +142,17 @@ def _finish_failure(db: Session, run, task: DesignTask) -> None:
     db.commit()
 
 
+def _finish_cancelled(db: Session, run, task: DesignTask) -> None:
+    now = datetime.now(timezone.utc)
+    run.status = "cancelled"
+    run.current_node = "cancelled"
+    run.attempt_count = 1
+    run.started_at = now
+    run.completed_at = now
+    task.status = "cancelled"
+    db.commit()
+
+
 def test_binding_freezes_split_and_versions_before_worker_execution(db, tmp_path):
     dataset = _dataset(tmp_path, ("regression",))
     case = dataset.eligible_cases("regression")[0]
@@ -215,6 +228,102 @@ def test_trusted_terminal_failure_is_in_generation_success_denominator(db, tmp_p
     assert report["metrics"]["generation_success_rate"] == 0.5
 
 
+def test_cancelled_eval_run_is_counted_as_generation_failure(db, tmp_path):
+    dataset = _dataset(tmp_path, ("regression", "regression"))
+    cases = dataset.eligible_cases("regression")
+    tasks = [_task(db, case) for case in cases]
+    runs = [
+        bind_evaluation_run(
+            db,
+            dataset=dataset,
+            split="regression",
+            case_id=case.id,
+            task=task,
+        )
+        for case, task in zip(cases, tasks)
+    ]
+    _finish_success(db, runs[0], tasks[0])
+    _finish_cancelled(db, runs[1], tasks[1])
+
+    bundle = collect_trusted_evidence(
+        db,
+        dataset=dataset,
+        split="regression",
+        bindings=tuple(
+            RunBinding(case.id, run.task_id, run.id)
+            for case, run in zip(cases, runs)
+        ),
+        signing_key=SIGNING_KEY,
+        key_id="quality-ci",
+    )
+    evidence = verify_trusted_evidence(
+        bundle,
+        dataset=dataset,
+        split="regression",
+        verification_keys={"quality-ci": SIGNING_KEY},
+    )
+    report = build_evaluation_report(
+        dataset=dataset,
+        split="regression",
+        evidence=evidence,
+    )
+
+    assert report["metrics"]["generation_success_rate"] == 0.5
+    assert bundle["executions"][1]["status"] == "cancelled"
+
+
+@pytest.mark.parametrize(
+    ("run_status", "task_status"),
+    [
+        ("completed", "failed"),
+        ("failed", "needs_human"),
+        ("dead_letter", "completed"),
+        ("cost_limit_exceeded", "failed"),
+        ("provider_unavailable", "cancelled"),
+        ("cancelled", "needs_human"),
+    ],
+)
+def test_collector_rejects_run_and_task_terminal_mismatch(
+    db,
+    tmp_path,
+    run_status,
+    task_status,
+):
+    dataset = _dataset(tmp_path, ("regression",))
+    case = dataset.eligible_cases("regression")[0]
+    task = _task(db, case)
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
+    now = datetime.now(timezone.utc)
+    run.status = run_status
+    run.current_node = run_status
+    run.attempt_count = 1
+    run.started_at = now
+    run.completed_at = now
+    task.status = task_status
+    if run_status == "completed":
+        run.output_snapshot = {
+            "plan_count": 1,
+            "plans": [{"furniture_count": 1}],
+        }
+    db.commit()
+
+    with pytest.raises(EvaluationInputError, match="终态不一致"):
+        collect_trusted_evidence(
+            db,
+            dataset=dataset,
+            split="regression",
+            bindings=(RunBinding(case.id, task.id, run.id),),
+            signing_key=SIGNING_KEY,
+            key_id="quality-ci",
+        )
+
+
 def test_split_is_required_and_cannot_be_mixed_or_compared(db, tmp_path):
     dataset = _dataset(tmp_path, ("regression", "blind"))
     regression_case = dataset.eligible_cases("regression")[0]
@@ -253,3 +362,65 @@ def test_split_is_required_and_cannot_be_mixed_or_compared(db, tmp_path):
 
     with pytest.raises(EvaluationInputError, match="split"):
         compare_evaluation_reports(candidate, baseline)
+
+
+def test_changed_model_version_creates_a_distinct_eval_run(
+    db,
+    tmp_path,
+    monkeypatch,
+):
+    dataset = _dataset(tmp_path, ("regression",))
+    case = dataset.eligible_cases("regression")[0]
+    task = _task(db, case)
+    first = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
+    first.status = "failed"
+    db.commit()
+
+    monkeypatch.setattr(settings, "llm_model", settings.llm_model + "-candidate")
+    second = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
+
+    assert second.id != first.id
+    assert second.idempotency_key != first.idempotency_key
+    assert second.request_digest != first.request_digest
+
+
+def test_worker_claim_rejects_generation_artifact_changed_after_binding(
+    db,
+    tmp_path,
+    monkeypatch,
+):
+    dataset = _dataset(tmp_path, ("regression",))
+    case = dataset.eligible_cases("regression")[0]
+    task = _task(db, case)
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
+
+    monkeypatch.setattr(settings, "llm_model", settings.llm_model + "-changed")
+    claimed = generation_run_service.claim_next_run(
+        db,
+        worker_id="eval-worker",
+        lease_seconds=30,
+        run_id=run.id,
+    )
+
+    assert claimed is None
+    db.refresh(run)
+    assert run.status == "dead_letter"
+    assert run.current_node == "evaluation_binding_invalid"
