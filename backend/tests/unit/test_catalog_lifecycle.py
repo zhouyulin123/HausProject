@@ -214,6 +214,73 @@ def test_enrichment_replaces_unavailable_sku_and_records_versioned_quote(db):
     assert quote["priceVersion"]
 
 
+def test_enrichment_replaces_item_to_fit_remaining_total_budget(db):
+    first = _product("SOFA-FIRST", price=6000)
+    second = _product(
+        "SOFA-SECOND",
+        price=5000,
+        alternative_skus=["SOFA-BUDGET"],
+    )
+    budget_alternative = _product("SOFA-BUDGET", price=1900)
+    db.add_all([first, second, budget_alternative])
+    db.commit()
+    plans = [{
+        "id": "plan-a",
+        "furnitureSuggestions": [
+            {"sku": "SOFA-FIRST", "quantity": 1},
+            {"sku": "SOFA-SECOND", "quantity": 2},
+        ],
+        "customItems": [],
+    }]
+
+    verify_and_enrich_plans(
+        db,
+        plans,
+        at=NOW,
+        region="CN-SH",
+        budget_max=10000,
+    )
+
+    items = plans[0]["furnitureSuggestions"]
+    assert [item["sku"] for item in items] == ["SOFA-FIRST", "SOFA-BUDGET"]
+    assert items[1]["replacedSku"] == "SOFA-SECOND"
+    assert "budget_fit" in items[1]["replacementReasonCodes"]
+    assert plans[0]["catalogValidation"]["hardErrors"] == []
+    assert plans[0]["shopQuote"]["furnitureTotal"] == 9800
+
+
+def test_enrichment_blocks_quote_when_total_budget_has_no_legal_alternative(db):
+    first = _product("SOFA-FIRST", price=6000)
+    second = _product("SOFA-SECOND", price=5000)
+    db.add_all([first, second])
+    db.commit()
+    plans = [{
+        "id": "plan-a",
+        "furnitureSuggestions": [
+            {"sku": "SOFA-FIRST", "quantity": 1},
+            {"sku": "SOFA-SECOND", "quantity": 1},
+        ],
+        "customItems": [],
+    }]
+
+    verify_and_enrich_plans(
+        db,
+        plans,
+        at=NOW,
+        region="CN-SH",
+        budget_max=10000,
+    )
+
+    validation = plans[0]["catalogValidation"]
+    assert validation["quoteStatus"] == "blocked"
+    assert "budget_exceeded" in validation["hardErrors"]
+    assert validation["rejected"] == [{
+        "sku": "SOFA-SECOND",
+        "reason_codes": ["budget_exceeded"],
+    }]
+    assert "shopQuote" not in plans[0]
+
+
 def test_enrichment_rejects_plan_without_sku_instead_of_style_fallback(db):
     db.add(_product("SOFA-AVAILABLE"))
     db.commit()
