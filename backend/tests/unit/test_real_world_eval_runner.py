@@ -78,7 +78,7 @@ def _evidence(dataset, *, model: str, results: tuple[CaseResult, ...]):
         rules=f"rules-{model}",
         data=dataset.dataset_version,
     )
-    digest = dataset_fingerprint(dataset)
+    digest = dataset_fingerprint(dataset, split="regression")
     executions = tuple(
         ExecutionProvenance(
             case_fingerprint="sha256:"
@@ -89,6 +89,7 @@ def _evidence(dataset, *, model: str, results: tuple[CaseResult, ...]):
             system_run_id=index,
             source="generation_worker",
             generator="llm",
+            status="completed",
             model=model,
             prompt_digest="sha256:" + "1" * 64,
             rules_digest="sha256:" + "2" * 64,
@@ -100,9 +101,10 @@ def _evidence(dataset, *, model: str, results: tuple[CaseResult, ...]):
         for index, result in enumerate(results, start=1)
     )
     return VerifiedEvaluationEvidence(
-        schema_version="2.0",
+        schema_version="3.0",
         versions=versions,
         dataset_fingerprint=digest,
+        split="regression",
         results=results,
         executions=executions,
         key_id="test-key",
@@ -117,14 +119,18 @@ def test_report_serializes_versioned_metrics_and_verified_evidence(tmp_path):
         results=(_result("case-a"), _result("case-b")),
     )
 
-    report = build_evaluation_report(dataset=dataset, evidence=evidence)
+    report = build_evaluation_report(
+        dataset=dataset,
+        split="regression",
+        evidence=evidence,
+    )
     markdown = render_markdown(report)
 
-    assert report["schema_version"] == "2.0"
+    assert report["schema_version"] == "3.0"
     assert report["gate_passed"] is True
     assert report["dataset"]["eligible_case_count"] == 2
     assert report["evidence"]["signature_verified"] is True
-    assert report["evidence"]["schema_version"] == "2.0"
+    assert report["evidence"]["schema_version"] == "3.0"
     assert report["versions"] == {
         "model": "m1",
         "prompt": "prompt-m1",
@@ -159,25 +165,15 @@ def test_manifest_with_no_eligible_cases_cannot_produce_passing_report(tmp_path)
         },
     )
     dataset = load_case_manifest(manifest_path)
-    evidence = _evidence(dataset, model="m1", results=())
-
-    report = build_evaluation_report(dataset=dataset, evidence=evidence)
-
-    assert report["gate_passed"] is False
-    assert report["dataset"]["eligible_case_count"] == 0
-    assert report["dataset"]["ineligible_case_count"] == 1
-    assert report["dataset"]["ineligible_reason_counts"] == {
-        "consent_not_granted": 1,
-        "annotation_not_ready": 1,
-        "purpose_not_allowed": 1,
-        "split_not_assigned": 1,
-    }
+    with pytest.raises(EvaluationInputError, match="没有可评测案例"):
+        dataset_fingerprint(dataset, split="regression")
 
 
 def test_regression_comparison_fails_when_quality_drops_on_same_cases(tmp_path):
     dataset = _manifest(tmp_path)
     baseline = build_evaluation_report(
         dataset=dataset,
+        split="regression",
         evidence=_evidence(
             dataset,
             model="m1",
@@ -190,6 +186,7 @@ def test_regression_comparison_fails_when_quality_drops_on_same_cases(tmp_path):
     )
     candidate = build_evaluation_report(
         dataset=dataset,
+        split="regression",
         evidence=_evidence(
             dataset,
             model="m2",
@@ -211,6 +208,7 @@ def test_regression_comparison_rejects_different_dataset_or_case_set(tmp_path):
     dataset = _manifest(tmp_path)
     report = build_evaluation_report(
         dataset=dataset,
+        split="regression",
         evidence=_evidence(
             dataset,
             model="m1",

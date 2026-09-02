@@ -15,6 +15,7 @@ from app.services.evaluation_binding_service import (
 
 
 CaseSplit = Literal["development", "regression", "blind", "unassigned"]
+EvaluationSplit = Literal["development", "regression", "blind"]
 CaseOrigin = Literal["private_real", "public_reference", "synthetic"]
 ConsentStatus = Literal["granted", "not_required", "pending", "denied"]
 AnnotationStatus = Literal["ready", "pending", "rejected"]
@@ -26,6 +27,14 @@ class DatasetValidationError(ValueError):
 
 class EvaluationInputError(ValueError):
     """评测证据不可信或与已冻结案例集不一致。"""
+
+
+def validate_evaluation_split(value: str) -> EvaluationSplit:
+    if value not in {"development", "regression", "blind"}:
+        raise EvaluationInputError(
+            "split 必须显式指定为 development、regression 或 blind"
+        )
+    return value  # type: ignore[return-value]
 
 
 @dataclass(frozen=True)

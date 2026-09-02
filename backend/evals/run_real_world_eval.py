@@ -15,12 +15,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from evals.real_world import (
+    EvaluationSplit,
     EvaluationInputError,
     QualityThresholds,
     RealWorldDataset,
     aggregate_quality_metrics,
     evaluate_quality_gates,
     load_case_manifest,
+    validate_evaluation_split,
 )
 from evals.trusted_evidence import (
     VerifiedEvaluationEvidence,
@@ -64,12 +66,14 @@ def load_case_results(
     result_path: Path | str,
     *,
     dataset: RealWorldDataset,
+    split: EvaluationSplit,
     verification_keys: Mapping[str, str] | None = None,
 ) -> EvaluationEvidence:
     payload = _read_json(Path(result_path).resolve())
     return verify_trusted_evidence(
         payload,
         dataset=dataset,
+        split=split,
         verification_keys=verification_keys or {},
     )
 
@@ -77,9 +81,13 @@ def load_case_results(
 def build_evaluation_report(
     *,
     dataset: RealWorldDataset,
+    split: EvaluationSplit,
     evidence: EvaluationEvidence,
     thresholds: QualityThresholds | None = None,
 ) -> dict[str, Any]:
+    normalized_split = validate_evaluation_split(split)
+    if evidence.split != normalized_split:
+        raise EvaluationInputError("已验签证据 split 与报告 split 不一致")
     quality_report = aggregate_quality_metrics(
         list(evidence.results),
         versions=evidence.versions,
@@ -90,17 +98,26 @@ def build_evaluation_report(
     )
     split_counts: dict[str, int] = {}
     origin_counts: dict[str, int] = {}
-    for case in dataset.eligible_cases():
+    for case in dataset.eligible_cases(normalized_split):
         split_counts[case.split] = split_counts.get(case.split, 0) + 1
         origin_counts[case.origin] = origin_counts.get(case.origin, 0) + 1
     ineligible_reason_counts: dict[str, int] = {}
-    for reasons in dataset.ineligible_reasons.values():
+    selected_case_ids = {
+        case.id for case in dataset.cases if case.split == normalized_split
+    }
+    selected_ineligible = {
+        case_id: reasons
+        for case_id, reasons in dataset.ineligible_reasons.items()
+        if case_id in selected_case_ids
+    }
+    for reasons in selected_ineligible.values():
         for reason in reasons:
             ineligible_reason_counts[reason] = (
                 ineligible_reason_counts.get(reason, 0) + 1
             )
     return {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
+        "split": normalized_split,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "versions": asdict(evidence.versions),
         "evidence": {
@@ -117,12 +134,14 @@ def build_evaluation_report(
         "dataset": {
             "schema_version": dataset.schema_version,
             "dataset_version": dataset.dataset_version,
-            "fingerprint": dataset.fingerprint,
-            "case_count": len(dataset.cases),
-            "eligible_case_count": len(dataset.eligible_cases()),
+            "fingerprint": evidence.dataset_fingerprint,
+            "case_count": len(
+                [case for case in dataset.cases if case.split == normalized_split]
+            ),
+            "eligible_case_count": len(dataset.eligible_cases(normalized_split)),
             "split_counts": split_counts,
             "origin_counts": origin_counts,
-            "ineligible_case_count": len(dataset.ineligible_reasons),
+            "ineligible_case_count": len(selected_ineligible),
             "ineligible_reason_counts": ineligible_reason_counts,
         },
         "metrics": quality_report.metrics,
@@ -135,8 +154,8 @@ def _report_comparison_identity(
     report: dict[str, Any],
     *,
     label: str,
-) -> tuple[str, str, tuple[str, ...]]:
-    if report.get("schema_version") != "2.0":
+) -> tuple[str, str, str, tuple[str, ...]]:
+    if report.get("schema_version") != "3.0":
         raise EvaluationInputError(f"{label}报告 schema_version 不受支持")
     versions = report.get("versions")
     dataset = report.get("dataset")
@@ -153,8 +172,11 @@ def _report_comparison_identity(
     ):
         raise EvaluationInputError(f"{label}报告没有通过系统执行证据验证")
     data_version = versions.get("data")
+    split = report.get("split")
     dataset_digest = evidence.get("dataset_fingerprint")
     case_ids = evidence.get("case_fingerprints")
+    if split not in {"development", "regression", "blind"}:
+        raise EvaluationInputError(f"{label}报告缺少合法 split")
     if not isinstance(data_version, str) or not data_version.strip():
         raise EvaluationInputError(f"{label}报告缺少数据版本")
     if not isinstance(dataset_digest, str) or not dataset_digest.startswith("sha256:"):
@@ -167,7 +189,7 @@ def _report_comparison_identity(
     normalized_ids = tuple(sorted(case_id.strip() for case_id in case_ids))
     if len(set(normalized_ids)) != len(normalized_ids):
         raise EvaluationInputError(f"{label}报告的案例集合包含重复 ID")
-    return data_version.strip(), dataset_digest, normalized_ids
+    return split, data_version.strip(), dataset_digest, normalized_ids
 
 
 def _metric_value(
@@ -189,14 +211,22 @@ def compare_evaluation_reports(
     baseline: dict[str, Any],
 ) -> dict[str, Any]:
     """只在相同数据版本和案例集合上比较候选与基线。"""
-    candidate_data, candidate_dataset, candidate_cases = _report_comparison_identity(
-        candidate,
-        label="候选",
+    candidate_split, candidate_data, candidate_dataset, candidate_cases = (
+        _report_comparison_identity(
+            candidate,
+            label="候选",
+        )
     )
-    baseline_data, baseline_dataset, baseline_cases = _report_comparison_identity(
-        baseline,
-        label="基线",
+    baseline_split, baseline_data, baseline_dataset, baseline_cases = (
+        _report_comparison_identity(
+            baseline,
+            label="基线",
+        )
     )
+    if candidate_split != baseline_split:
+        raise EvaluationInputError(
+            f"基线与候选 split 不一致：{baseline_split} != {candidate_split}"
+        )
     if candidate_data != baseline_data:
         raise EvaluationInputError(
             f"基线与候选数据版本不一致：{baseline_data} != {candidate_data}"
@@ -253,6 +283,7 @@ def compare_evaluation_reports(
         "baseline_versions": baseline["versions"],
         "candidate_versions": candidate["versions"],
         "data_version": candidate_data,
+        "split": candidate_split,
         "dataset_fingerprint": candidate_dataset,
         "case_fingerprints": list(candidate_cases),
         "items": items,
@@ -281,6 +312,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"| Prompt 版本 | {versions['prompt']} |",
         f"| 规则版本 | {versions['rules']} |",
         f"| 数据版本 | {versions['data']} |",
+        f"| 评测分组 | {report['split']} |",
         f"| 证据验证 | {'PASS' if report['evidence']['signature_verified'] else 'FAIL'} |",
         f"| 证据格式 | {report['evidence']['schema_version']} |",
         f"| 可评测案例 | {dataset['eligible_case_count']} / {dataset['case_count']} |",
@@ -327,6 +359,11 @@ def render_markdown(report: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="运行真实案例离线质量门禁")
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument(
+        "--split",
+        choices=("development", "regression", "blind"),
+        required=True,
+    )
     parser.add_argument("--results", type=Path, required=True)
     baseline_group = parser.add_mutually_exclusive_group()
     baseline_group.add_argument(
@@ -353,10 +390,15 @@ def main(argv: list[str] | None = None) -> int:
         evidence = load_case_results(
             args.results,
             dataset=dataset,
+            split=args.split,
             verification_keys={key_id: signing_key},
         )
-        report = build_evaluation_report(dataset=dataset, evidence=evidence)
-        if dataset.eligible_cases() and (
+        report = build_evaluation_report(
+            dataset=dataset,
+            split=args.split,
+            evidence=evidence,
+        )
+        if dataset.eligible_cases(args.split) and (
             args.baseline_results is None and not args.establish_baseline
         ):
             raise EvaluationInputError(
@@ -368,10 +410,12 @@ def main(argv: list[str] | None = None) -> int:
             baseline_evidence = load_case_results(
                 args.baseline_results,
                 dataset=dataset,
+                split=args.split,
                 verification_keys={key_id: signing_key},
             )
             baseline_report = build_evaluation_report(
                 dataset=dataset,
+                split=args.split,
                 evidence=baseline_evidence,
             )
             comparison = compare_evaluation_reports(report, baseline_report)

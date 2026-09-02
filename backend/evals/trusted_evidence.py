@@ -16,23 +16,32 @@ from typing import Any, Mapping
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.models import DesignTask, GenerationRun
-from app.services import evaluation_binding_service, generation_run_service
+from app.services import (
+    catalog_service,
+    evaluation_binding_service,
+    generation_run_service,
+    llm_service,
+)
 from app.services.evaluation_binding_service import EvaluationBindingSpec
 from app.services.generation_provenance import (
     GENERATION_PROVENANCE_SCHEMA_VERSION,
+    build_generation_provenance,
     canonical_digest,
 )
 from evals.real_world import (
     CaseResult,
     EvaluationInputError,
+    EvaluationSplit,
     EvaluationVersions,
     RealWorldCase,
     RealWorldDataset,
+    validate_evaluation_split,
 )
 
 
-EVIDENCE_SCHEMA_VERSION = "2.0"
+EVIDENCE_SCHEMA_VERSION = "3.0"
 EVIDENCE_TYPE = "system_execution"
 ATTESTATION_ALGORITHM = "HMAC-SHA256"
 TRUSTED_GENERATOR = "llm"
@@ -45,6 +54,24 @@ REQUIRED_NODE_SOURCES = {
     "validate_quality": "deterministic",
 }
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+TRUSTED_TERMINAL_STATUSES = frozenset(
+    {
+        "completed",
+        "failed",
+        "dead_letter",
+        "cost_limit_exceeded",
+        "provider_unavailable",
+        "cancelled",
+    }
+)
+TRUSTED_TASK_STATUS_BY_RUN = {
+    "completed": "completed",
+    "failed": "failed",
+    "dead_letter": "failed",
+    "cost_limit_exceeded": "needs_human",
+    "provider_unavailable": "needs_human",
+    "cancelled": "cancelled",
+}
 
 
 @dataclass(frozen=True)
@@ -61,6 +88,7 @@ class ExecutionProvenance:
     system_run_id: int
     source: str
     generator: str
+    status: str
     model: str
     prompt_digest: str
     rules_digest: str
@@ -75,6 +103,7 @@ class VerifiedEvaluationEvidence:
     schema_version: str
     versions: EvaluationVersions
     dataset_fingerprint: str
+    split: EvaluationSplit
     results: tuple[CaseResult, ...]
     executions: tuple[ExecutionProvenance, ...]
     key_id: str
@@ -110,8 +139,16 @@ def _file_digest(case: RealWorldCase) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-def dataset_fingerprint(dataset: RealWorldDataset) -> str:
+def dataset_fingerprint(
+    dataset: RealWorldDataset,
+    *,
+    split: EvaluationSplit,
+) -> str:
     """绑定准入治理元数据和资产字节，不把路径或名称写入证据。"""
+    normalized_split = validate_evaluation_split(split)
+    eligible = dataset.eligible_cases(normalized_split)
+    if not eligible:
+        raise EvaluationInputError(f"split={normalized_split} 没有可评测案例")
     cases = [
         {
             "id": case.id,
@@ -131,12 +168,13 @@ def dataset_fingerprint(dataset: RealWorldDataset) -> str:
                 else None
             ),
         }
-        for case in sorted(dataset.cases, key=lambda item: item.id)
+        for case in sorted(eligible, key=lambda item: item.id)
     ]
     return _digest(
         {
             "schema_version": dataset.schema_version,
             "dataset_version": dataset.dataset_version,
+            "split": normalized_split,
             "cases": cases,
         }
     )
@@ -146,53 +184,111 @@ def _case_fingerprint(dataset_digest: str, case_id: str) -> str:
     return _digest({"dataset_fingerprint": dataset_digest, "case_id": case_id})
 
 
-def evaluation_run_idempotency_key(
+def _evaluation_binding_spec(
+    db: Session,
+    *,
     dataset: RealWorldDataset,
+    split: EvaluationSplit,
     case_id: str,
+    task: DesignTask,
+) -> EvaluationBindingSpec:
+    normalized_split = validate_evaluation_split(split)
+    eligible = {
+        case.id: case for case in dataset.eligible_cases(normalized_split)
+    }
+    case = eligible.get(case_id)
+    if case is None:
+        raise EvaluationInputError("只能绑定指定 split 的已准入真实评测案例")
+    if case.task_input is None:
+        raise EvaluationInputError("评测案例缺少规范化 task_input")
+    dataset_digest = dataset_fingerprint(dataset, split=normalized_split)
+    case_digest = _case_fingerprint(dataset_digest, case.id)
+    task_payload = evaluation_binding_service.task_input_payload(db, task)
+    requirement = task_payload.get("confirmed_requirement")
+    if not isinstance(requirement, dict) or not requirement:
+        raise EvaluationInputError("正式评测必须在绑定前冻结 confirmed_requirement")
+    requirement_for_llm = dict(requirement)
+    image_context = task_payload.get("image_context") or []
+    if image_context:
+        requirement_for_llm["image_analysis"] = list(image_context)
+    catalog_context = catalog_service.build_catalog_context(db)
+    prompt_snapshot = llm_service.generation_prompt_snapshot()
+    input_snapshot = llm_service.generation_input_snapshot(
+        requirement_for_llm,
+        catalog_context,
+    )
+    provenance = build_generation_provenance(
+        prompt_snapshot=prompt_snapshot,
+        input_snapshot=input_snapshot,
+        catalog_context=catalog_context,
+    )
+    return EvaluationBindingSpec(
+        case_fingerprint=case_digest,
+        asset_digest=_file_digest(case),
+        task_input_digest=(
+            evaluation_binding_service.expected_task_input_digest(case.task_input)
+        ),
+        dataset_split=normalized_split,
+        model=settings.llm_model,
+        prompt_snapshot=prompt_snapshot,
+        prompt_digest=provenance["prompt_digest"],
+        rules_digest=provenance["rules_digest"],
+        data_digest=provenance["data_digest"],
+        input_snapshot=input_snapshot,
+        input_digest=provenance["input_digest"],
+        provenance_schema_version=GENERATION_PROVENANCE_SCHEMA_VERSION,
+    )
+
+
+def evaluation_run_idempotency_key(
+    db: Session,
+    *,
+    dataset: RealWorldDataset,
+    split: EvaluationSplit,
+    case_id: str,
+    task: DesignTask,
 ) -> str:
-    """生成执行前绑定键，供创建 GenerationRun 时作为 Idempotency-Key。"""
-    eligible_ids = {case.id for case in dataset.eligible_cases()}
-    if case_id not in eligible_ids:
-        raise EvaluationInputError("只能为已准入案例生成评测运行绑定键")
-    case_digest = _case_fingerprint(dataset_fingerprint(dataset), case_id)
-    return f"eval-v1:{case_digest.removeprefix('sha256:')}"
+    """复算案例、split 和执行前版本共同绑定的幂等键。"""
+    spec = _evaluation_binding_spec(
+        db,
+        dataset=dataset,
+        split=split,
+        case_id=case_id,
+        task=task,
+    )
+    return evaluation_binding_service.evaluation_idempotency_key(spec)
 
 
 def bind_evaluation_run(
     db: Session,
     *,
     dataset: RealWorldDataset,
+    split: EvaluationSplit,
     case_id: str,
     task: DesignTask,
     max_attempts: int = 3,
     request_id: str | None = None,
 ) -> GenerationRun:
     """在正式 Worker 可领取前，原子创建运行和冻结案例输入绑定。"""
-    eligible = {case.id: case for case in dataset.eligible_cases()}
-    case = eligible.get(case_id)
-    if case is None:
-        raise EvaluationInputError("只能绑定已准入的真实评测案例")
-    if case.task_input is None:
-        raise EvaluationInputError("评测案例缺少规范化 task_input")
-    dataset_digest = dataset_fingerprint(dataset)
-    case_digest = _case_fingerprint(dataset_digest, case.id)
-    spec = EvaluationBindingSpec(
-        case_fingerprint=case_digest,
-        asset_digest=_file_digest(case),
-        task_input_digest=(
-            evaluation_binding_service.expected_task_input_digest(case.task_input)
-        ),
+    spec = _evaluation_binding_spec(
+        db,
+        dataset=dataset,
+        split=split,
+        case_id=case_id,
+        task=task,
     )
     try:
         return generation_run_service.create_run(
             db,
             task=task,
-            idempotency_key=(
-                f"eval-v1:{case_digest.removeprefix('sha256:')}"
+            idempotency_key=evaluation_binding_service.evaluation_idempotency_key(
+                spec
             ),
             max_attempts=max_attempts,
             request_id=request_id,
-            request_digest=spec.task_input_digest,
+            request_digest=evaluation_binding_service.evaluation_execution_digest(
+                spec
+            ),
             evaluation_binding=spec,
         )
     except evaluation_binding_service.EvaluationBindingError as exc:
@@ -224,6 +320,7 @@ def _validate_binding_sets(
     *,
     bindings: tuple[RunBinding, ...],
     dataset: RealWorldDataset,
+    split: EvaluationSplit,
 ) -> dict[str, RealWorldCase]:
     run_ids = [binding.system_run_id for binding in bindings]
     if len(run_ids) != len(set(run_ids)):
@@ -231,7 +328,9 @@ def _validate_binding_sets(
     case_ids = [binding.case_id for binding in bindings]
     if len(case_ids) != len(set(case_ids)):
         raise EvaluationInputError("同一案例包含重复绑定")
-    eligible = {case.id: case for case in dataset.eligible_cases()}
+    eligible = {case.id: case for case in dataset.eligible_cases(split)}
+    if not eligible:
+        raise EvaluationInputError(f"split={split} 没有可评测案例")
     provided = set(case_ids)
     missing = sorted(set(eligible) - provided)
     unknown = sorted(provided - set(eligible))
@@ -250,6 +349,7 @@ def _validate_system_run(
     *,
     binding: RunBinding,
     expected_case_fingerprint: str,
+    expected_split: EvaluationSplit,
 ) -> GenerationRun:
     run = db.get(GenerationRun, binding.system_run_id)
     if run is None:
@@ -257,11 +357,6 @@ def _validate_system_run(
     if run.task_id != binding.task_id:
         raise EvaluationInputError(
             f"系统运行 {run.id} 不属于任务 {binding.task_id}"
-        )
-    expected_run_key = f"eval-v1:{expected_case_fingerprint.removeprefix('sha256:')}"
-    if run.idempotency_key != expected_run_key:
-        raise EvaluationInputError(
-            f"系统运行 {run.id} 没有在执行前绑定当前数据集案例"
         )
     try:
         persisted_binding = evaluation_binding_service.validate_persisted_binding(
@@ -275,24 +370,35 @@ def _validate_system_run(
         raise EvaluationInputError(
             f"系统运行 {run.id} 的持久化评测绑定不属于当前案例"
         )
+    if persisted_binding.dataset_split != expected_split:
+        raise EvaluationInputError(
+            f"系统运行 {run.id} 的持久化评测绑定属于其他 split"
+        )
     task = db.get(DesignTask, binding.task_id)
     if task is None:
         raise EvaluationInputError(f"设计任务不存在：{binding.task_id}")
-    if run.status != "completed" or task.status != "completed":
-        raise EvaluationInputError(f"系统运行 {run.id} 未完成")
+    if run.status not in TRUSTED_TERMINAL_STATUSES:
+        raise EvaluationInputError(f"系统运行 {run.id} 不是可信终态")
+    expected_task_status = TRUSTED_TASK_STATUS_BY_RUN[run.status]
+    if task.status != expected_task_status:
+        raise EvaluationInputError(
+            f"系统运行 {run.id} 与任务终态不一致："
+            f"{run.status} 要求 task={expected_task_status}"
+        )
     if run.generator != TRUSTED_GENERATOR:
         raise EvaluationInputError(
             f"系统运行 {run.id} 使用不可信的执行来源：{run.generator or 'unknown'}"
         )
     if (
-        run.attempt_count < 1
-        or run.started_at is None
-        or run.completed_at is None
+        run.completed_at is None
+        or (
+            run.status != "cancelled"
+            and (run.attempt_count < 1 or run.started_at is None)
+        )
         or not run.prompt_snapshot
         or run.input_snapshot is None
         or run.input_digest is None
         or run.provenance_schema_version != GENERATION_PROVENANCE_SCHEMA_VERSION
-        or run.output_snapshot is None
     ):
         raise EvaluationInputError(f"系统运行 {run.id} 缺少完整执行快照")
     version_values = (
@@ -315,6 +421,10 @@ def _validate_system_run(
         raise EvaluationInputError(f"系统运行 {run.id} 的 Prompt 摘要与快照不一致")
     if run.input_digest != canonical_digest(run.input_snapshot):
         raise EvaluationInputError(f"系统运行 {run.id} 的输入摘要与快照不一致")
+    if run.status != "completed":
+        return run
+    if run.output_snapshot is None:
+        raise EvaluationInputError(f"系统运行 {run.id} 缺少完成输出快照")
     completed_nodes = {
         event.node for event in run.events if event.status == "completed"
     }
@@ -338,6 +448,8 @@ def _validate_system_run(
 
 def _runtime_result(case_id: str, run: GenerationRun) -> CaseResult:
     """只从运行事实生成指标；尚无确定性证据的指标保持无分母。"""
+    if run.status != "completed":
+        return CaseResult(case_id=case_id, generation_succeeded=False)
     snapshot = run.output_snapshot
     if not isinstance(snapshot, dict):
         raise EvaluationInputError(f"系统运行 {run.id} 的输出摘要不合法")
@@ -372,6 +484,7 @@ def collect_trusted_evidence(
     db: Session,
     *,
     dataset: RealWorldDataset,
+    split: EvaluationSplit,
     bindings: tuple[RunBinding, ...],
     signing_key: str,
     key_id: str,
@@ -380,8 +493,13 @@ def collect_trusted_evidence(
     _normalized_key(signing_key)
     if not isinstance(key_id, str) or not key_id.strip():
         raise EvaluationInputError("评测证据 key_id 不能为空")
-    eligible = _validate_binding_sets(bindings=bindings, dataset=dataset)
-    dataset_digest = dataset_fingerprint(dataset)
+    normalized_split = validate_evaluation_split(split)
+    eligible = _validate_binding_sets(
+        bindings=bindings,
+        dataset=dataset,
+        split=normalized_split,
+    )
+    dataset_digest = dataset_fingerprint(dataset, split=normalized_split)
     executions: list[dict[str, Any]] = []
     version_candidates: set[tuple[str, str, str, str]] = set()
     for binding in bindings:
@@ -391,6 +509,7 @@ def collect_trusted_evidence(
             db,
             binding=binding,
             expected_case_fingerprint=case_digest,
+            expected_split=normalized_split,
         )
         version_candidates.add(
             (
@@ -438,6 +557,7 @@ def collect_trusted_evidence(
         "evidence_type": EVIDENCE_TYPE,
         "issued_at": datetime.now(timezone.utc).isoformat(),
         "dataset_fingerprint": dataset_digest,
+        "split": normalized_split,
         "versions": asdict(versions),
         "executions": sorted(
             executions,
@@ -495,6 +615,7 @@ def verify_trusted_evidence(
     payload: dict[str, Any],
     *,
     dataset: RealWorldDataset,
+    split: EvaluationSplit,
     verification_keys: Mapping[str, str],
 ) -> VerifiedEvaluationEvidence:
     if payload.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
@@ -503,11 +624,13 @@ def verify_trusted_evidence(
         raise EvaluationInputError(
             f"不支持的结果 schema_version：{payload.get('schema_version')}"
         )
+    normalized_split = validate_evaluation_split(split)
     allowed_top = {
         "schema_version",
         "evidence_type",
         "issued_at",
         "dataset_fingerprint",
+        "split",
         "versions",
         "executions",
         "attestation",
@@ -517,6 +640,8 @@ def verify_trusted_evidence(
         raise EvaluationInputError(f"证据包含未知字段：{', '.join(unknown_top)}")
     if payload.get("evidence_type") != EVIDENCE_TYPE:
         raise EvaluationInputError("证据包不是实际系统执行证据")
+    if payload.get("split") != normalized_split:
+        raise EvaluationInputError("证据包 split 与本次评测 split 不一致")
     issued_at = payload.get("issued_at")
     if not isinstance(issued_at, str):
         raise EvaluationInputError("证据包缺少 issued_at")
@@ -547,7 +672,10 @@ def verify_trusted_evidence(
 
     versions = _parse_versions(payload.get("versions"))
     _validate_versions(versions)
-    expected_dataset_digest = dataset_fingerprint(dataset)
+    expected_dataset_digest = dataset_fingerprint(
+        dataset,
+        split=normalized_split,
+    )
     if payload.get("dataset_fingerprint") != expected_dataset_digest:
         raise EvaluationInputError("证据绑定的数据集指纹与当前清单不一致")
     raw_executions = payload.get("executions")
@@ -555,7 +683,7 @@ def verify_trusted_evidence(
         raise EvaluationInputError("executions 必须是数组")
     case_by_fingerprint = {
         _case_fingerprint(expected_dataset_digest, case.id): case
-        for case in dataset.eligible_cases()
+        for case in dataset.eligible_cases(normalized_split)
     }
     seen_cases: set[str] = set()
     seen_runs: set[int] = set()
@@ -604,13 +732,13 @@ def verify_trusted_evidence(
         if (
             execution.get("source") != "generation_worker"
             or execution.get("generator") != TRUSTED_GENERATOR
-            or execution.get("status") != "completed"
+            or execution.get("status") not in TRUSTED_TERMINAL_STATUSES
             or execution.get("model") != versions.model
             or execution.get("prompt_digest") != versions.prompt
             or execution.get("rules_digest") != versions.rules
             or execution.get("data_digest") != versions.data
         ):
-            raise EvaluationInputError(f"第 {index + 1} 条 execution 不是可信完成运行")
+            raise EvaluationInputError(f"第 {index + 1} 条 execution 不是可信终态运行")
         for digest_name in (
             "prompt_digest",
             "rules_digest",
@@ -630,7 +758,13 @@ def verify_trusted_evidence(
         if execution["result_digest"] != _digest(result_payload):
             raise EvaluationInputError(f"第 {index + 1} 条 result 摘要不一致")
         case = case_by_fingerprint[case_digest]
-        results.append(_parse_result(result_payload, case_id=case.id, index=index))
+        result = _parse_result(result_payload, case_id=case.id, index=index)
+        expected_success = execution.get("status") == "completed"
+        if result.generation_succeeded is not expected_success:
+            raise EvaluationInputError(
+                f"第 {index + 1} 条 generation_succeeded 与运行终态不一致"
+            )
+        results.append(result)
         provenances.append(
             ExecutionProvenance(
                 case_fingerprint=case_digest,
@@ -638,6 +772,7 @@ def verify_trusted_evidence(
                 system_run_id=run_id,
                 source=execution["source"],
                 generator=execution["generator"],
+                status=execution["status"],
                 model=execution["model"],
                 prompt_digest=execution["prompt_digest"],
                 rules_digest=execution["rules_digest"],
@@ -654,6 +789,7 @@ def verify_trusted_evidence(
         schema_version=EVIDENCE_SCHEMA_VERSION,
         versions=versions,
         dataset_fingerprint=expected_dataset_digest,
+        split=normalized_split,
         results=tuple(results),
         executions=tuple(provenances),
         key_id=key_id,

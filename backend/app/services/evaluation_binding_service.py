@@ -14,7 +14,10 @@ from app.db.models import (
     GenerationRun,
     UploadedImage,
 )
-from app.services.generation_provenance import canonical_digest
+from app.services.generation_provenance import (
+    GENERATION_PROVENANCE_SCHEMA_VERSION,
+    canonical_digest,
+)
 
 
 EVALUATION_IDEMPOTENCY_PREFIX = "eval-v1:"
@@ -40,10 +43,37 @@ class EvaluationBindingSpec:
     case_fingerprint: str
     asset_digest: str
     task_input_digest: str
+    dataset_split: str
+    model: str
+    prompt_snapshot: str
+    prompt_digest: str
+    rules_digest: str
+    data_digest: str
+    input_snapshot: dict[str, Any]
+    input_digest: str
+    provenance_schema_version: int
 
 
 def is_evaluation_idempotency_key(value: str | None) -> bool:
     return bool(value and value.startswith(EVALUATION_IDEMPOTENCY_PREFIX))
+
+
+def evaluation_execution_digest(spec: EvaluationBindingSpec) -> str:
+    return canonical_digest(
+        {
+            "case_fingerprint": spec.case_fingerprint,
+            "dataset_split": spec.dataset_split,
+            "model": spec.model,
+            "prompt_digest": spec.prompt_digest,
+            "rules_digest": spec.rules_digest,
+            "data_digest": spec.data_digest,
+        }
+    )
+
+
+def evaluation_idempotency_key(spec: EvaluationBindingSpec) -> str:
+    digest = evaluation_execution_digest(spec)
+    return EVALUATION_IDEMPOTENCY_PREFIX + digest.removeprefix("sha256:")
 
 
 def normalize_task_input(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -149,6 +179,16 @@ def validate_spec_for_task(
     task: DesignTask,
     spec: EvaluationBindingSpec,
 ) -> None:
+    if spec.dataset_split not in {"development", "regression", "blind"}:
+        raise EvaluationBindingError("评测绑定缺少合法 split")
+    if not spec.model.strip() or not spec.prompt_snapshot:
+        raise EvaluationBindingError("评测绑定缺少执行前模型或 Prompt 快照")
+    if not isinstance(spec.input_snapshot, dict) or not spec.input_snapshot:
+        raise EvaluationBindingError("评测绑定缺少执行前输入快照")
+    if canonical_digest(spec.prompt_snapshot) != spec.prompt_digest:
+        raise EvaluationBindingError("评测绑定的 Prompt 摘要不一致")
+    if canonical_digest(spec.input_snapshot) != spec.input_digest:
+        raise EvaluationBindingError("评测绑定的输入摘要不一致")
     if task.user_id is not None:
         raise EvaluationBindingError("评测任务不能依赖可变的用户画像")
     if task_input_digest(db, task) != spec.task_input_digest:
@@ -162,6 +202,7 @@ def validate_persisted_binding(
     db: Session,
     *,
     run: GenerationRun,
+    validate_current_generation: bool = False,
 ) -> EvaluationRunBinding:
     binding = db.scalar(
         select(EvaluationRunBinding).where(
@@ -172,9 +213,35 @@ def validate_persisted_binding(
         raise EvaluationBindingError("系统运行缺少持久化评测绑定")
     if binding.task_id != run.task_id:
         raise EvaluationBindingError("评测绑定的任务与系统运行不一致")
-    expected_key = (
-        EVALUATION_IDEMPOTENCY_PREFIX
-        + binding.case_fingerprint.removeprefix("sha256:")
+    frozen_values = {
+        "model": binding.model,
+        "prompt_digest": binding.prompt_digest,
+        "rules_digest": binding.rules_digest,
+        "data_digest": binding.data_digest,
+        "input_digest": binding.input_digest,
+        "provenance_schema_version": binding.provenance_schema_version,
+    }
+    if binding.dataset_split not in {"development", "regression", "blind"}:
+        raise EvaluationBindingError("历史评测绑定缺少合法 split，不能作为可信证据")
+    if any(value is None or value == "" for value in frozen_values.values()):
+        raise EvaluationBindingError("历史评测绑定缺少执行前冻结版本，不能作为可信证据")
+    if any(getattr(run, name) != value for name, value in frozen_values.items()):
+        raise EvaluationBindingError("系统运行版本与执行前评测绑定不一致")
+    expected_key = evaluation_idempotency_key(
+        EvaluationBindingSpec(
+            case_fingerprint=binding.case_fingerprint,
+            asset_digest=binding.asset_digest,
+            task_input_digest=binding.task_input_digest,
+            dataset_split=binding.dataset_split,
+            model=binding.model,
+            prompt_snapshot=run.prompt_snapshot or "",
+            prompt_digest=binding.prompt_digest,
+            rules_digest=binding.rules_digest,
+            data_digest=binding.data_digest,
+            input_snapshot=run.input_snapshot or {},
+            input_digest=binding.input_digest,
+            provenance_schema_version=binding.provenance_schema_version,
+        )
     )
     if run.idempotency_key != expected_key:
         raise EvaluationBindingError("评测绑定与运行幂等键不一致")
@@ -188,6 +255,59 @@ def validate_persisted_binding(
             case_fingerprint=binding.case_fingerprint,
             asset_digest=binding.asset_digest,
             task_input_digest=binding.task_input_digest,
+            dataset_split=binding.dataset_split,
+            model=binding.model,
+            prompt_snapshot=run.prompt_snapshot or "",
+            prompt_digest=binding.prompt_digest,
+            rules_digest=binding.rules_digest,
+            data_digest=binding.data_digest,
+            input_snapshot=run.input_snapshot or {},
+            input_digest=binding.input_digest,
+            provenance_schema_version=binding.provenance_schema_version,
         ),
     )
+    if validate_current_generation:
+        _validate_current_generation_facts(db, task=task, binding=binding)
     return binding
+
+
+def _validate_current_generation_facts(
+    db: Session,
+    *,
+    task: DesignTask,
+    binding: EvaluationRunBinding,
+) -> None:
+    """Worker 领取前复算当前部署的完整生成事实，防止绑定后混版。"""
+    from app.core.config import settings
+    from app.services import catalog_service, llm_service
+    from app.services.generation_provenance import build_generation_provenance
+
+    payload = task_input_payload(db, task)
+    requirement = payload.get("confirmed_requirement")
+    if not isinstance(requirement, dict) or not requirement:
+        raise EvaluationBindingError("正式评测缺少冻结的 confirmed_requirement")
+    requirement_for_llm = dict(requirement)
+    image_context = payload.get("image_context") or []
+    if image_context:
+        requirement_for_llm["image_analysis"] = list(image_context)
+    catalog_context = catalog_service.build_catalog_context(db)
+    prompt_snapshot = llm_service.generation_prompt_snapshot()
+    input_snapshot = llm_service.generation_input_snapshot(
+        requirement_for_llm,
+        catalog_context,
+    )
+    provenance = build_generation_provenance(
+        prompt_snapshot=prompt_snapshot,
+        input_snapshot=input_snapshot,
+        catalog_context=catalog_context,
+    )
+    current_values = {
+        "model": settings.llm_model,
+        "prompt_digest": provenance["prompt_digest"],
+        "rules_digest": provenance["rules_digest"],
+        "data_digest": provenance["data_digest"],
+        "input_digest": provenance["input_digest"],
+        "provenance_schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
+    }
+    if any(getattr(binding, name) != value for name, value in current_values.items()):
+        raise EvaluationBindingError("当前生成制品或完整输入与执行前评测绑定不一致")

@@ -234,6 +234,13 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "case_fingerprint",
             "asset_digest",
             "task_input_digest",
+            "dataset_split",
+            "model",
+            "prompt_digest",
+            "rules_digest",
+            "data_digest",
+            "input_digest",
+            "provenance_schema_version",
             "created_at",
         } <= evaluation_binding_columns
         rendered_image_columns = {

@@ -7,7 +7,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.database import Base
-from app.db.models import DesignTask, GenerationRun, GenerationRunEvent, UploadedImage
+from app.db.models import (
+    DesignTask,
+    EvaluationRunBinding,
+    GenerationRun,
+    GenerationRunEvent,
+    UploadedImage,
+)
 from app.services.generation_provenance import canonical_digest
 from evals import collect_real_world_evidence
 from evals.real_world import load_case_manifest
@@ -147,28 +153,15 @@ def _completed_system_run(
     run = bind_evaluation_run(
         db,
         dataset=dataset,
+        split="regression",
         case_id=case_id,
         task=task,
     )
     now = datetime.now(timezone.utc)
-    prompt_snapshot = "private static prompt contract"
-    input_snapshot = {
-        "schema_version": 2,
-        "private_requirement": "do not serialize",
-        "case_execution": case_id,
-    }
     run.status = "completed"
     run.progress = 100
     run.current_node = "completed"
     run.generator = generator
-    run.model = "model-prod-7"
-    run.prompt_snapshot = prompt_snapshot
-    run.prompt_digest = canonical_digest(prompt_snapshot)
-    run.rules_digest = "sha256:" + "2" * 64
-    run.data_digest = "sha256:" + "3" * 64
-    run.input_snapshot = input_snapshot
-    run.input_digest = canonical_digest(input_snapshot)
-    run.provenance_schema_version = 2
     run.output_snapshot = {
         "plan_count": 1,
         "plans": [
@@ -214,10 +207,10 @@ def _write_bundle(tmp_path: Path, payload: dict) -> Path:
 
 def test_dataset_fingerprint_binds_asset_bytes_and_case_governance(tmp_path):
     dataset = _dataset(tmp_path)
-    first = dataset_fingerprint(dataset)
+    first = dataset_fingerprint(dataset, split="regression")
 
     dataset.cases[0].asset_path.write_bytes(b"changed-room-bytes")
-    second = dataset_fingerprint(dataset)
+    second = dataset_fingerprint(dataset, split="regression")
 
     assert first.startswith("sha256:")
     assert first != second
@@ -234,6 +227,7 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
     bundle = collect_trusted_evidence(
         db,
         dataset=dataset,
+        split="regression",
         bindings=(
             RunBinding(
                 case_id="private-case-alias",
@@ -247,13 +241,16 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
 
     serialized = json.dumps(bundle, ensure_ascii=False)
     execution = bundle["executions"][0]
-    assert bundle["schema_version"] == "2.0"
-    assert bundle["dataset_fingerprint"] == dataset_fingerprint(dataset)
+    assert bundle["schema_version"] == "3.0"
+    assert bundle["dataset_fingerprint"] == dataset_fingerprint(
+        dataset,
+        split="regression",
+    )
     assert execution["task_id"] == run.task_id
     assert execution["system_run_id"] == run.id
     assert execution["model"] == run.model
     assert bundle["versions"] == {
-        "model": "model-prod-7",
+        "model": run.model,
         "prompt": run.prompt_digest,
         "rules": run.rules_digest,
         "data": run.data_digest,
@@ -283,6 +280,7 @@ def test_collector_rejects_non_system_execution_sources(db, tmp_path, generator)
         collect_trusted_evidence(
             db,
             dataset=dataset,
+            split="regression",
             bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
@@ -305,6 +303,7 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
         collect_trusted_evidence(
             db,
             dataset=dataset,
+            split="regression",
             bindings=(
                 RunBinding("private-a", run.task_id + 1, run.id),
                 RunBinding("private-b", second_run.task_id, second_run.id),
@@ -315,10 +314,11 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
 
     run.status = "running"
     db.commit()
-    with pytest.raises(EvaluationInputError, match="未完成"):
+    with pytest.raises(EvaluationInputError, match="可信终态"):
         collect_trusted_evidence(
             db,
             dataset=dataset,
+            split="regression",
             bindings=(
                 RunBinding("private-a", run.task_id, run.id),
                 RunBinding("private-b", second_run.task_id, second_run.id),
@@ -333,6 +333,7 @@ def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_p
         collect_trusted_evidence(
             db,
             dataset=dataset,
+            split="regression",
             bindings=(
                 RunBinding("private-a", run.task_id, run.id),
                 RunBinding("private-b", run.task_id, run.id),
@@ -358,10 +359,11 @@ def test_run_is_bound_to_dataset_case_before_execution_and_cannot_be_swapped(
         case_id="private-b",
     )
 
-    with pytest.raises(EvaluationInputError, match="执行前绑定"):
+    with pytest.raises(EvaluationInputError, match="不属于当前案例"):
         collect_trusted_evidence(
             db,
             dataset=dataset,
+            split="regression",
             bindings=(
                 RunBinding("private-a", run_b.task_id, run_b.id),
                 RunBinding("private-b", run_a.task_id, run_a.id),
@@ -373,11 +375,17 @@ def test_run_is_bound_to_dataset_case_before_execution_and_cannot_be_swapped(
 
 def test_eval_idempotency_key_is_persisted_and_does_not_expose_case_id(db, tmp_path):
     dataset = _dataset(tmp_path)
-    key = evaluation_run_idempotency_key(dataset, "private-case-alias")
     run = _completed_system_run(
         db,
         dataset=dataset,
         case_id="private-case-alias",
+    )
+    key = evaluation_run_idempotency_key(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id="private-case-alias",
+        task=db.get(DesignTask, run.task_id),
     )
 
     assert run.idempotency_key == key
@@ -404,10 +412,11 @@ def test_collector_rejects_historical_missing_or_mixed_runtime_versions(db, tmp_
 
     run_a.prompt_digest = None
     db.commit()
-    with pytest.raises(EvaluationInputError, match="版本摘要"):
+    with pytest.raises(EvaluationInputError, match="执行前评测绑定"):
         collect_trusted_evidence(
             db,
             dataset=dataset,
+            split="regression",
             bindings=bindings,
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
@@ -415,11 +424,15 @@ def test_collector_rejects_historical_missing_or_mixed_runtime_versions(db, tmp_
 
     run_a.prompt_digest = canonical_digest(run_a.prompt_snapshot)
     run_b.rules_digest = "sha256:" + "9" * 64
+    db.query(EvaluationRunBinding).filter_by(
+        generation_run_id=run_b.id
+    ).one().rules_digest = run_b.rules_digest
     db.commit()
-    with pytest.raises(EvaluationInputError, match="版本不一致"):
+    with pytest.raises(EvaluationInputError, match="幂等键不一致"):
         collect_trusted_evidence(
             db,
             dataset=dataset,
+            split="regression",
             bindings=bindings,
             signing_key=SIGNING_KEY,
             key_id="quality-ci-1",
@@ -450,7 +463,12 @@ def test_loader_rejects_legacy_hand_written_case_results(tmp_path):
     )
 
     with pytest.raises(EvaluationInputError, match="不接受手工结果"):
-        load_case_results(path, dataset=dataset, verification_keys={})
+        load_case_results(
+            path,
+            dataset=dataset,
+            split="regression",
+            verification_keys={},
+        )
 
 
 def test_loader_rejects_tampered_signed_result(db, tmp_path):
@@ -463,6 +481,7 @@ def test_loader_rejects_tampered_signed_result(db, tmp_path):
     bundle = collect_trusted_evidence(
         db,
         dataset=dataset,
+        split="regression",
         bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
         signing_key=SIGNING_KEY,
         key_id="quality-ci-1",
@@ -474,6 +493,7 @@ def test_loader_rejects_tampered_signed_result(db, tmp_path):
         load_case_results(
             path,
             dataset=dataset,
+            split="regression",
             verification_keys={"quality-ci-1": SIGNING_KEY},
         )
 
@@ -492,6 +512,7 @@ def test_loader_and_cli_fail_closed_without_verification_key(
     bundle = collect_trusted_evidence(
         db,
         dataset=dataset,
+        split="regression",
         bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
         signing_key=SIGNING_KEY,
         key_id="quality-ci-1",
@@ -499,7 +520,12 @@ def test_loader_and_cli_fail_closed_without_verification_key(
     path = _write_bundle(tmp_path, bundle)
 
     with pytest.raises(EvaluationInputError, match="缺少验签密钥"):
-        load_case_results(path, dataset=dataset, verification_keys={})
+        load_case_results(
+            path,
+            dataset=dataset,
+            split="regression",
+            verification_keys={},
+        )
 
     monkeypatch.delenv("EVAL_EVIDENCE_HMAC_KEY", raising=False)
     output_dir = tmp_path / "reports"
@@ -507,6 +533,8 @@ def test_loader_and_cli_fail_closed_without_verification_key(
         [
             "--manifest",
             str(tmp_path / "manifest.json"),
+            "--split",
+            "regression",
             "--results",
             str(path),
             "--output-dir",
@@ -527,6 +555,7 @@ def test_verified_report_contains_only_anonymous_execution_provenance(db, tmp_pa
     bundle = collect_trusted_evidence(
         db,
         dataset=dataset,
+        split="regression",
         bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
         signing_key=SIGNING_KEY,
         key_id="quality-ci-1",
@@ -534,14 +563,22 @@ def test_verified_report_contains_only_anonymous_execution_provenance(db, tmp_pa
     evidence = load_case_results(
         _write_bundle(tmp_path, bundle),
         dataset=dataset,
+        split="regression",
         verification_keys={"quality-ci-1": SIGNING_KEY},
     )
-    report = build_evaluation_report(dataset=dataset, evidence=evidence)
+    report = build_evaluation_report(
+        dataset=dataset,
+        split="regression",
+        evidence=evidence,
+    )
     serialized = json.dumps(report, ensure_ascii=False)
 
     assert report["evidence"]["trust_level"] == "system_execution"
     assert report["evidence"]["execution_count"] == 1
-    assert report["evidence"]["dataset_fingerprint"] == dataset_fingerprint(dataset)
+    assert report["evidence"]["dataset_fingerprint"] == dataset_fingerprint(
+        dataset,
+        split="regression",
+    )
     assert report["metrics"]["severe_cross_user_access"] is None
     assert report["metrics"]["unbounded_retry_cases"] is None
     assert report["gate_passed"] is False
@@ -566,7 +603,8 @@ def test_collector_and_evaluator_cli_use_the_same_fail_closed_contract(
     bindings_path.write_text(
         json.dumps(
             {
-                "schema_version": "1.0",
+                "schema_version": "2.0",
+                "split": "regression",
                 "bindings": [
                     {
                         "case_id": "private-case-alias",
@@ -587,6 +625,8 @@ def test_collector_and_evaluator_cli_use_the_same_fail_closed_contract(
         [
             "--manifest",
             str(tmp_path / "manifest.json"),
+            "--split",
+            "regression",
             "--run-bindings",
             str(bindings_path),
             "--output",
@@ -598,6 +638,8 @@ def test_collector_and_evaluator_cli_use_the_same_fail_closed_contract(
         [
             "--manifest",
             str(tmp_path / "manifest.json"),
+            "--split",
+            "regression",
             "--results",
             str(evidence_path),
             "--establish-baseline",

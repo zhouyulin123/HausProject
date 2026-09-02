@@ -855,6 +855,13 @@ class EvaluationRunBinding(Base):
     case_fingerprint = Column(String(71), nullable=False, index=True)
     asset_digest = Column(String(71), nullable=False)
     task_input_digest = Column(String(71), nullable=False)
+    dataset_split = Column(String(20), nullable=True)
+    model = Column(String(100), nullable=True)
+    prompt_digest = Column(String(71), nullable=True)
+    rules_digest = Column(String(71), nullable=True)
+    data_digest = Column(String(71), nullable=True)
+    input_digest = Column(String(71), nullable=True)
+    provenance_schema_version = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

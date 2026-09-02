@@ -143,14 +143,11 @@ def _finish_failure(db: Session, run, task: DesignTask) -> None:
 
 
 def _finish_cancelled(db: Session, run, task: DesignTask) -> None:
-    now = datetime.now(timezone.utc)
-    run.status = "cancelled"
-    run.current_node = "cancelled"
-    run.attempt_count = 1
-    run.started_at = now
-    run.completed_at = now
-    task.status = "cancelled"
-    db.commit()
+    assert generation_run_service.request_cancel(db, run=run) == "cancelled"
+    db.refresh(task)
+    assert run.attempt_count == 0
+    assert run.started_at is None
+    assert task.status == "cancelled"
 
 
 def test_binding_freezes_split_and_versions_before_worker_execution(db, tmp_path):
@@ -269,7 +266,7 @@ def test_cancelled_eval_run_is_counted_as_generation_failure(db, tmp_path):
     )
 
     assert report["metrics"]["generation_success_rate"] == 0.5
-    assert bundle["executions"][1]["status"] == "cancelled"
+    assert any(item["status"] == "cancelled" for item in bundle["executions"])
 
 
 @pytest.mark.parametrize(

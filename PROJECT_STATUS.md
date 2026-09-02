@@ -1811,3 +1811,13 @@
 3. 接入真实 LLM 需求解析，并保留当前规则解析作为 fallback。
 4. 接入真实 PDF 生成能力。
 5. 接入真实效果图生成服务或明确半自动占位流程。
+# 2026-09-02 阶段 4 第三轮 P0：失败分母、执行前版本与 split 隔离
+
+- 真实评测证据升级为 3.0，绑定、收集、验签、报告 CLI 和基线比较都必须显式指定 `development`、`regression` 或 `blind`，拒绝空分组、混合集及跨分组比较。
+- `completed` 之外，可信绑定的 `failed`、`dead_letter`、`cost_limit_exceeded`、`provider_unavailable`、`cancelled` 终态也进入 `generation_success_rate` 分母；取消不能用于剔除差样本，失败运行不伪造其余质量指标。
+- 证据收集严格校验 run/task 终态映射：`completed -> completed`、`failed/dead_letter -> failed`、`cost_limit_exceeded/provider_unavailable -> needs_human`、`cancelled -> cancelled`，任何错配均拒绝签发。
+- 评测运行在 Worker 执行前冻结模型、静态 Prompt/Schema/工具配置、完整动态请求、规则源码制品及完整商品/定制价目上下文。来源摘要不再依赖成功后选出的 plans 或报价字段，模型调用前失败也保留可比较版本。
+- `EvaluationRunBinding` 保留原案例/资产/任务输入字段，并新增 split 与冻结版本摘要。Worker 领取和证据收集双重核验；绑定后模型、规则、商品上下文或任务输入变化会失败关闭。
+- 评测幂等身份新增模型和静态制品版本，同一案例的新候选版本会创建独立运行，不会错误复用旧基线。普通生成与 Agent 的 `create_run(commit=False)` 路径不变。
+- 新增 Alembic 迁移 `7b8c9d0e1f2a`，线性接在 `6a7b8c9d0e1f` 后；历史绑定因缺少 split 和执行前版本字段，按设计不能作为 3.0 可信证据。
+- 当前未导入任何真实客户案例，也未生成或宣称真实验收指标；真实授权、人工标签与受控盲测执行仍是外部前置条件。

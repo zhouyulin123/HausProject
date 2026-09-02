@@ -30,20 +30,22 @@
 ## 可信证据格式
 
 不能手写逐例 `CaseResult`。先让正式 Generation Worker 实际执行每个已准入案例，
-再以 `run-bindings.template.json` 记录内部案例 ID、任务 ID 和运行 ID。收集器只接受：
+再以 `run-bindings.template.json` 记录单一 `split`、内部案例 ID、任务 ID和运行 ID。收集器只接受：
 
-- 状态为 `completed` 且 task/run 归属一致的运行；
+- 状态为 `completed`、`failed`、`dead_letter`、`cost_limit_exceeded`、`provider_unavailable` 或 `cancelled`，且 task/run 归属一致的可信终态运行；其中取消运行也作为生成失败进入分母，不能用于剔除差样本；
 - `generator=llm`，不接受 template 降级、demo、mock、manual、test 或 synthetic；
-- 存在完整的静态 Prompt 契约、动态输入、输出快照和四个 Worker 节点；
-- `generate_plans` 来自 LLM，报价与质量校验来自确定性节点；
+- 所有终态都必须在执行前冻结模型、静态 Prompt 契约、完整动态输入、规则制品和完整商品上下文；
+- 成功运行还必须存在输出快照和四个 Worker 节点，且 `generate_plans` 来自 LLM，报价与质量校验来自确定性节点；
 - 同一证据包内每个已准入案例恰好一个运行，同一 run 不得跨案例复用。
 
 创建 GenerationRun 时，评测队列器必须调用
-`evals.trusted_evidence.bind_evaluation_run(db, dataset=..., case_id=..., task=...)`，在同一事务中写入运行及持久化案例绑定。只把 `evaluation_run_idempotency_key(...)` 返回值传给现有 `generate-async` 不构成可信绑定，服务会失败关闭。Worker 领取与证据收集都会复核任务需求、按上传顺序冻结的图片分析事实和唯一原始资产摘要；错误图片、额外图片、分析变化、需求变化、可变用户画像、缺少 `task_input` 或历史图片没有摘要时均拒绝执行或签发。
+`evals.trusted_evidence.bind_evaluation_run(db, dataset=..., split="regression", case_id=..., task=...)`，在同一事务中写入运行及持久化案例绑定。`evaluation_run_idempotency_key` 也必须传入 `db`、`task` 和 `split`，其身份同时包含案例、split、模型与静态制品版本；只把幂等键传给现有 `generate-async` 不构成可信绑定，服务会失败关闭。Worker 领取与证据收集都会复核任务需求、按上传顺序冻结的图片分析事实、唯一原始资产摘要和执行前版本；错误图片、额外图片、分析变化、需求变化、可变用户画像、绑定后混版、缺少 `task_input` 或历史图片没有摘要时均拒绝执行或签发。
 
 收集器不会接收 CaseResult。当前可从运行事实确定性推导生成成功、有效 SKU 和报价一致性；需求、空间、布局和人工满意度在接入可追溯标注执行器前保持无证据，因此质量门禁会失败，不会用模拟值或手工值补齐。
 
-证据包 2.0 使用独立 HMAC 密钥签名，绑定数据集内容指纹、匿名案例指纹、task/run ID、模型及三个运行时制品摘要，以及输入、输出和结果摘要。Prompt 摘要从静态系统 Prompt、输出 Schema 和工具/调用参数契约复算；完整动态模型请求另行计算 `input_digest`，不得截断；规则摘要绑定生成/报价源码与服务端报价规则版本；数据摘要绑定实际商品上下文与目录版本。签发 CLI 不接受调用方自报版本。文件不包含案例 ID、资产路径、Prompt、输入或模型输出原文。签名密钥必须只配置在受控 Worker/CI，不应写入仓库、命令行或开发者共享环境。
+证据包 3.0 使用独立 HMAC 密钥签名，绑定一个显式 split 的数据集内容指纹、匿名案例指纹、task/run ID、运行终态、模型及三个运行时制品摘要，以及输入、输出和结果摘要。Prompt 摘要从静态系统 Prompt、输出 Schema 和工具/调用参数契约复算；完整动态模型请求另行计算 `input_digest`，不得截断；规则摘要只绑定执行前可读取的生成与报价源码制品；数据摘要绑定模型实际接收的完整商品与定制价目上下文，不依赖成功后选出的方案。签发 CLI 不接受调用方自报版本。文件不包含案例 ID、资产路径、Prompt、输入或模型输出原文。签名密钥必须只配置在受控 Worker/CI，不应写入仓库、命令行或开发者共享环境。
+
+终态失败会进入 `generation_success_rate` 分母并记为失败，但不会伪造 SKU、报价、布局或满意度等它没有产出的指标。`development`、`regression`、`blind` 必须分别绑定、收集、验签和比较；任何 CLI 省略 `--split`、绑定文件 split 不一致、跨 split 案例混入或所选 split 为空都会失败关闭。
 
 跨用户访问和重试边界不能依靠默认零值证明安全。每个逐例结果必须分别填写实际执行的 `cross_user_access_checks` 和 `retry_bound_checks`；检查次数为 0 时，对应安全门禁输出 `NO EVIDENCE` 并失败。若记录了严重跨用户问题或无限重试，却没有对应检查证据，输入会被直接拒绝。
 
@@ -55,12 +57,14 @@ $env:EVAL_EVIDENCE_KEY_ID = "quality-ci-2026-09"
 $env:EVAL_EVIDENCE_HMAC_KEY = "从密钥管理服务注入的至少32字节随机密钥"
 python -m evals.collect_real_world_evidence `
   --manifest backend/evals/cases/real_world/manifest.json `
+  --split regression `
   --asset-root . `
   --run-bindings backend/evals/cases/real_world/run-bindings.json `
   --output backend/evals/reports/evidence/real_world_eval.evidence.json
 
 python -m evals.run_real_world_eval `
   --manifest backend/evals/cases/real_world/manifest.json `
+  --split regression `
   --asset-root . `
   --results backend/evals/reports/evidence/real_world_eval.evidence.json `
   --establish-baseline `
@@ -74,13 +78,14 @@ python -m evals.run_real_world_eval `
 ```powershell
 python -m evals.run_real_world_eval `
   --manifest backend/evals/cases/real_world/manifest.json `
+  --split regression `
   --asset-root . `
   --results backend/evals/reports/evidence/real_world_eval.evidence.json `
   --baseline-results backend/evals/reports/evidence/baseline.evidence.json `
   --output-dir backend/evals/reports/candidate
 ```
 
-基线和候选的评测数据集指纹或匿名案例指纹集合不一致时拒绝比较。即使候选仍达到绝对门禁，只要比例指标下降、跨用户访问或无限重试计数增加，版本回归也会失败。
+基线和候选的 split、评测数据集指纹或匿名案例指纹集合不一致时拒绝比较。即使候选仍达到绝对门禁，只要比例指标下降、跨用户访问或无限重试计数增加，版本回归也会失败。盲测证据不能隐式作为 development 或 regression 的候选或基线。
 
 报告和签名证据会绑定准入案例的资产 SHA-256、标签版本、来源和分组。基线与候选即使沿用相同数据版本，只要实际资产、标签或分组发生变化，也会拒绝伪装成同一案例集比较。
 

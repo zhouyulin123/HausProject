@@ -225,7 +225,6 @@ def test_generation_emits_provenance_from_actual_prompt_rules_and_catalog(monkey
             prompt_snapshot=prompt_snapshot,
             input_snapshot={"requirement": {"rooms": ["客厅"]}},
             catalog_context=catalog_context,
-            plans=plans,
         )
         assert emitted[0]["meta"] == {
             "model": "model-runtime-v3",

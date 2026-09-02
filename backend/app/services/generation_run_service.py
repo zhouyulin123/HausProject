@@ -159,9 +159,8 @@ def create_run(
             "评测运行必须在创建事务内提供持久化案例绑定"
         )
     if evaluation_binding is not None:
-        expected_key = (
-            evaluation_binding_service.EVALUATION_IDEMPOTENCY_PREFIX
-            + evaluation_binding.case_fingerprint.removeprefix("sha256:")
+        expected_key = evaluation_binding_service.evaluation_idempotency_key(
+            evaluation_binding
         )
         if normalized_key != expected_key:
             raise evaluation_binding_service.EvaluationBindingError(
@@ -225,6 +224,33 @@ def create_run(
         request_digest=request_digest,
         request_id=request_id,
         max_attempts=max(1, max_attempts),
+        generator=("llm" if evaluation_binding is not None else None),
+        model=(evaluation_binding.model if evaluation_binding is not None else None),
+        prompt_snapshot=(
+            evaluation_binding.prompt_snapshot
+            if evaluation_binding is not None
+            else None
+        ),
+        prompt_digest=(
+            evaluation_binding.prompt_digest if evaluation_binding is not None else None
+        ),
+        rules_digest=(
+            evaluation_binding.rules_digest if evaluation_binding is not None else None
+        ),
+        data_digest=(
+            evaluation_binding.data_digest if evaluation_binding is not None else None
+        ),
+        input_snapshot=(
+            evaluation_binding.input_snapshot if evaluation_binding is not None else None
+        ),
+        input_digest=(
+            evaluation_binding.input_digest if evaluation_binding is not None else None
+        ),
+        provenance_schema_version=(
+            evaluation_binding.provenance_schema_version
+            if evaluation_binding is not None
+            else None
+        ),
     )
     db.add(run)
     try:
@@ -237,6 +263,15 @@ def create_run(
                     case_fingerprint=evaluation_binding.case_fingerprint,
                     asset_digest=evaluation_binding.asset_digest,
                     task_input_digest=evaluation_binding.task_input_digest,
+                    dataset_split=evaluation_binding.dataset_split,
+                    model=evaluation_binding.model,
+                    prompt_digest=evaluation_binding.prompt_digest,
+                    rules_digest=evaluation_binding.rules_digest,
+                    data_digest=evaluation_binding.data_digest,
+                    input_digest=evaluation_binding.input_digest,
+                    provenance_schema_version=(
+                        evaluation_binding.provenance_schema_version
+                    ),
                 )
             )
             db.flush()
@@ -564,7 +599,11 @@ def claim_next_run(
         run.idempotency_key
     ):
         try:
-            evaluation_binding_service.validate_persisted_binding(db, run=run)
+            evaluation_binding_service.validate_persisted_binding(
+                db,
+                run=run,
+                validate_current_generation=True,
+            )
         except evaluation_binding_service.EvaluationBindingError as exc:
             _clear_worker(run)
             run.status = "dead_letter"

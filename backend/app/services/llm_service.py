@@ -419,9 +419,8 @@ def generate_plans(
     global _last_generation_meta
     _last_generation_meta = None  # 每次调用先清空，避免降级时残留上次的元数据
 
-    user = "业主需求：" + json.dumps(requirement, ensure_ascii=False)
-    if catalog_context:
-        user += "\n\n" + catalog_context
+    input_snapshot = generation_input_snapshot(requirement, catalog_context)
+    user = input_snapshot["user"]
     usage: Dict[str, Any] = {}
     data = _chat_json(
         _PLAN_SYSTEM,
@@ -438,7 +437,25 @@ def generate_plans(
     if len(plans) < _PLAN_MIN_VALID_COUNT:
         raise LLMUnavailable(f"LLM 有效方案不足（{len(plans)} 套）")
 
-    prompt_contract = json.dumps(
+    prompt_contract = generation_prompt_snapshot()
+    _last_generation_meta = {
+        "model": settings.llm_model,
+        "prompt_snapshot": prompt_contract,
+        "input_snapshot": input_snapshot,
+        "provenance_schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
+        "usage": usage or None,
+        "cost_cny": estimate_cost_cny(
+            usage or None,
+            settings.llm_input_price_per_mtok,
+            settings.llm_output_price_per_mtok,
+        ),
+    }
+    return plans
+
+
+def generation_prompt_snapshot() -> str:
+    """返回方案生成的静态 Prompt、Schema 与工具配置快照。"""
+    return json.dumps(
         {
             "schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
             "system_prompt": _PLAN_SYSTEM,
@@ -457,22 +474,20 @@ def generate_plans(
         sort_keys=True,
         separators=(",", ":"),
     )
-    _last_generation_meta = {
-        "model": settings.llm_model,
-        "prompt_snapshot": prompt_contract,
-        "input_snapshot": {
-            "schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
-            "user": user,
-        },
-        "provenance_schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
-        "usage": usage or None,
-        "cost_cny": estimate_cost_cny(
-            usage or None,
-            settings.llm_input_price_per_mtok,
-            settings.llm_output_price_per_mtok,
-        ),
+
+
+def generation_input_snapshot(
+    requirement: Dict[str, Any],
+    catalog_context: Optional[str] = None,
+) -> Dict[str, Any]:
+    """返回模型实际接收的完整动态输入，不做长度截断。"""
+    user = "业主需求：" + json.dumps(requirement, ensure_ascii=False)
+    if catalog_context:
+        user += "\n\n" + catalog_context
+    return {
+        "schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
+        "user": user,
     }
-    return plans
 
 
 # ---------------------------------------------------------------- 方案精修（Refine）

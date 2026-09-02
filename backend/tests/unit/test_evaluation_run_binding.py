@@ -100,6 +100,7 @@ def test_binding_rejects_wrong_requirement_and_wrong_uploaded_asset(db, tmp_path
         bind_evaluation_run(
             db,
             dataset=dataset,
+            split="regression",
             case_id=case.id,
             task=wrong_requirement,
         )
@@ -109,6 +110,7 @@ def test_binding_rejects_wrong_requirement_and_wrong_uploaded_asset(db, tmp_path
         bind_evaluation_run(
             db,
             dataset=dataset,
+            split="regression",
             case_id=case.id,
             task=wrong_asset,
         )
@@ -126,6 +128,7 @@ def test_binding_rejects_wrong_requirement_and_wrong_uploaded_asset(db, tmp_path
         bind_evaluation_run(
             db,
             dataset=dataset,
+            split="regression",
             case_id=case.id,
             task=mixed_assets,
         )
@@ -151,6 +154,7 @@ def test_binding_rejects_correct_asset_mixed_with_unverifiable_legacy_upload(
         bind_evaluation_run(
             db,
             dataset=dataset,
+            split="regression",
             case_id=case.id,
             task=task,
         )
@@ -165,7 +169,13 @@ def test_eval_idempotency_key_alone_cannot_create_a_run(db, tmp_path):
         generation_run_service.create_run(
             db,
             task=task,
-            idempotency_key=evaluation_run_idempotency_key(dataset, case.id),
+            idempotency_key=evaluation_run_idempotency_key(
+                db,
+                dataset=dataset,
+                split="regression",
+                case_id=case.id,
+                task=task,
+            ),
         )
 
 
@@ -176,7 +186,13 @@ def test_worker_claim_revalidates_persisted_binding_and_rejects_task_mutation(
     dataset = _dataset(tmp_path)
     case = dataset.eligible_cases()[0]
     task = _task(db, asset_digest=f"sha256:{case.asset_sha256}")
-    run = bind_evaluation_run(db, dataset=dataset, case_id=case.id, task=task)
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
 
     task.confirmed_requirement_json = {"style": "篡改后的风格"}
     db.commit()
@@ -200,7 +216,13 @@ def test_worker_claim_rejects_image_analysis_mutated_after_binding(db, tmp_path)
     image = db.query(UploadedImage).filter_by(task_id=task.id).one()
     image.analysis_json = {"findings": ["绑定时的空间事实"]}
     db.commit()
-    run = bind_evaluation_run(db, dataset=dataset, case_id=case.id, task=task)
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
 
     image.analysis_json = {"findings": ["执行前被替换的空间事实"]}
     db.commit()
@@ -221,7 +243,13 @@ def test_collector_requires_binding_even_when_idempotency_key_is_correct(db, tmp
     dataset = _dataset(tmp_path)
     case = dataset.eligible_cases()[0]
     task = _task(db, asset_digest=f"sha256:{case.asset_sha256}")
-    run = bind_evaluation_run(db, dataset=dataset, case_id=case.id, task=task)
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
     binding = db.query(EvaluationRunBinding).filter_by(generation_run_id=run.id).one()
     db.delete(binding)
     run.status = "completed"
@@ -232,6 +260,7 @@ def test_collector_requires_binding_even_when_idempotency_key_is_correct(db, tmp
         collect_trusted_evidence(
             db,
             dataset=dataset,
+            split="regression",
             bindings=(RunBinding(case.id, task.id, run.id),),
             signing_key="test-signing-key-longer-than-thirty-two-bytes",
             key_id="test-key",

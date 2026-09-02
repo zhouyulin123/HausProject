@@ -9,19 +9,29 @@ from pathlib import Path
 from typing import Any
 
 from app.db.database import SessionLocal
-from evals.real_world import EvaluationInputError, load_case_manifest
+from evals.real_world import (
+    EvaluationInputError,
+    EvaluationSplit,
+    load_case_manifest,
+)
 from evals.trusted_evidence import RunBinding, collect_trusted_evidence
 
 
-def _read_bindings(path: Path) -> tuple[RunBinding, ...]:
+def _read_bindings(
+    path: Path,
+    *,
+    split: EvaluationSplit,
+) -> tuple[RunBinding, ...]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise EvaluationInputError(f"无法读取运行绑定：{exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != "1.0":
-        raise EvaluationInputError("运行绑定 schema_version 必须为 1.0")
-    if set(payload) != {"schema_version", "bindings"}:
+    if not isinstance(payload, dict) or payload.get("schema_version") != "2.0":
+        raise EvaluationInputError("运行绑定 schema_version 必须为 2.0")
+    if set(payload) != {"schema_version", "split", "bindings"}:
         raise EvaluationInputError("运行绑定包含未知字段")
+    if payload.get("split") != split:
+        raise EvaluationInputError("运行绑定 split 与命令行 split 不一致")
     raw_bindings = payload.get("bindings")
     if not isinstance(raw_bindings, list):
         raise EvaluationInputError("bindings 必须是数组")
@@ -54,6 +64,11 @@ def _read_bindings(path: Path) -> tuple[RunBinding, ...]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="签发真实系统执行评测证据")
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument(
+        "--split",
+        choices=("development", "regression", "blind"),
+        required=True,
+    )
     parser.add_argument("--asset-root", type=Path)
     parser.add_argument("--run-bindings", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -66,11 +81,12 @@ def main(argv: list[str] | None = None) -> int:
                 "缺少签名密钥：必须配置 EVAL_EVIDENCE_HMAC_KEY 和 EVAL_EVIDENCE_KEY_ID"
             )
         dataset = load_case_manifest(args.manifest, asset_root=args.asset_root)
-        bindings = _read_bindings(args.run_bindings.resolve())
+        bindings = _read_bindings(args.run_bindings.resolve(), split=args.split)
         with SessionLocal() as db:
             bundle = collect_trusted_evidence(
                 db,
                 dataset=dataset,
+                split=args.split,
                 bindings=bindings,
                 signing_key=signing_key,
                 key_id=key_id,

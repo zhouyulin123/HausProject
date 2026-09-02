@@ -1,5 +1,6 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
+  "split": "regression",
   "bindings": [
     {
       "case_id": "填写已准入案例 ID",
