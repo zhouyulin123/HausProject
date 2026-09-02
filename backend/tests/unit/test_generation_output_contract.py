@@ -7,7 +7,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.database import Base
-from app.db.models import DesignTask
+from app.db.models import (
+    DesignScene,
+    DesignSceneVersion,
+    DesignTask,
+    GenerationRunSceneEvidence,
+)
 from app.services import (
     design_version_service,
     generation_output_service,
@@ -118,6 +123,67 @@ def _revision(db: Session, task: DesignTask, *, plans: list[dict]):
     )
 
 
+def _scene_document(*, room_id: str, instance_id: str, x: float = 0) -> dict:
+    return {
+        "schemaVersion": "1.0",
+        "unit": "m",
+        "coordinateSystem": "right-handed-y-up",
+        "room": {
+            "id": room_id,
+            "name": "客厅",
+            "floorPolygon": [
+                {"x": -3, "z": -3},
+                {"x": 3, "z": -3},
+                {"x": 3, "z": 3},
+                {"x": -3, "z": 3},
+            ],
+            "ceilingHeight": 2.8,
+            "wallThickness": 0.12,
+        },
+        "openings": [],
+        "items": [
+            {
+                "instanceId": instance_id,
+                "sku": "SOFA-001",
+                "category": "沙发",
+                "transform": {
+                    "position": {"x": x, "y": 0.45, "z": 0},
+                    "rotation": {"x": 0, "y": 0, "z": 0},
+                    "scale": {"x": 1, "y": 1, "z": 1},
+                },
+                "dimensions": {"x": 2, "y": 0.9, "z": 1},
+            }
+        ],
+    }
+
+
+def _add_scenes(db: Session, revision, *, reverse: bool = False, x: float = 0):
+    plans = list(revision.plans)
+    if reverse:
+        plans.reverse()
+    by_key = {}
+    for plan in plans:
+        scene = DesignScene(plan_version_id=plan.id, current_version=1)
+        db.add(scene)
+        db.flush()
+        document = _scene_document(
+            room_id=f"room-{plan.plan_key}",
+            instance_id=f"item-{plan.plan_key}",
+            x=x,
+        )
+        version = DesignSceneVersion(
+            scene_id=scene.id,
+            version=1,
+            scene_json=document,
+            validation_json={"valid": True, "errors": [], "warnings": []},
+            source="auto_layout",
+        )
+        db.add(version)
+        db.flush()
+        by_key[plan.plan_key] = (scene, version)
+    return by_key
+
+
 def test_output_digest_ignores_unordered_items_but_binds_plan_order_and_content(db):
     first_task = _task(db)
     second_task = _task(
@@ -127,17 +193,21 @@ def test_output_digest_ignores_unordered_items_but_binds_plan_order_and_content(
     third_task = _task(db)
     fourth_task = _task(db)
     first = _revision(db, first_task, plans=_plans())
+    _add_scenes(db, first)
     unordered_items_reordered = _revision(
         db,
         second_task,
         plans=_plans(reverse_unordered_items=True),
     )
+    _add_scenes(db, unordered_items_reordered)
     plans_reordered = _revision(
         db,
         third_task,
         plans=_plans(reverse_plan_order=True),
     )
+    _add_scenes(db, plans_reordered)
     changed = _revision(db, fourth_task, plans=_plans(total=10001))
+    _add_scenes(db, changed)
 
     first_digest = generation_output_service.revision_output_digest(
         db,
@@ -203,6 +273,7 @@ def test_completed_run_atomically_binds_revision_and_digest(db):
     )
     assert claimed is not None
     revision = _revision(db, task, plans=_plans())
+    scenes = _add_scenes(db, revision, reverse=True)
 
     assert generation_run_service.mark_completed(
         db,
@@ -220,6 +291,131 @@ def test_completed_run_atomically_binds_revision_and_digest(db):
         db,
         revision_id=revision.id,
     )
+    evidence = {
+        item.plan_version_id: item
+        for item in db.query(GenerationRunSceneEvidence).all()
+    }
+    assert set(evidence) == {plan.id for plan in revision.plans}
+    payload = generation_output_service.validated_run_output(db, run=run)
+    assert {
+        record["plan_key"]: record["scene"]["document"]["room"]["id"]
+        for record in payload["plans"]
+    } == {
+        "plan-a": "room-plan-a",
+        "plan-b": "room-plan-b",
+    }
+    for plan in revision.plans:
+        assert evidence[plan.id].scene_version_id == scenes[plan.plan_key][1].id
+
+
+def test_completed_run_fails_closed_when_any_plan_has_no_scene(db):
+    task = _task(db)
+    run = generation_run_service.create_run(db, task=task)
+    generation_run_service.claim_next_run(
+        db,
+        worker_id="worker-output-missing-scene",
+        lease_seconds=60,
+    )
+    revision = _revision(db, task, plans=_plans())
+    first_plan = revision.plans[0]
+    partial_revision = type("PartialRevision", (), {"plans": [first_plan]})()
+    _add_scenes(db, partial_revision)
+
+    with pytest.raises(
+        generation_output_service.GenerationOutputValidationError,
+        match="缺少冻结场景",
+    ):
+        generation_run_service.mark_completed(
+            db,
+            run_id=run.id,
+            worker_id="worker-output-missing-scene",
+            worker_attempt=1,
+            generator="llm",
+            result_revision_id=revision.id,
+        )
+
+    db.refresh(run)
+    assert run.status == "running"
+    assert run.result_revision_id is None
+    assert db.query(GenerationRunSceneEvidence).count() == 0
+
+
+def test_bound_output_keeps_frozen_scene_after_current_scene_advances(db):
+    task = _task(db)
+    run = generation_run_service.create_run(db, task=task)
+    generation_run_service.claim_next_run(
+        db,
+        worker_id="worker-output-frozen-scene",
+        lease_seconds=60,
+    )
+    revision = _revision(db, task, plans=[_plans()[0]])
+    scenes = _add_scenes(db, revision)
+    assert generation_run_service.mark_completed(
+        db,
+        run_id=run.id,
+        worker_id="worker-output-frozen-scene",
+        worker_attempt=1,
+        generator="llm",
+        result_revision_id=revision.id,
+    )
+    original_digest = run.output_digest
+    scene, _ = scenes["plan-a"]
+    scene.current_version = 2
+    db.add(
+        DesignSceneVersion(
+            scene_id=scene.id,
+            version=2,
+            scene_json=_scene_document(
+                room_id="room-plan-a",
+                instance_id="item-plan-a",
+                x=1,
+            ),
+            validation_json={"valid": True, "errors": [], "warnings": []},
+            source="manual",
+        )
+    )
+    db.commit()
+
+    payload = generation_output_service.validated_run_output(db, run=run)
+
+    assert run.output_digest == original_digest
+    assert payload["plans"][0]["scene"]["version"] == 1
+    assert payload["plans"][0]["scene"]["document"]["items"][0]["transform"][
+        "position"
+    ]["x"] == 0
+
+
+def test_bound_output_rejects_tampered_frozen_scene_content(db):
+    task = _task(db)
+    run = generation_run_service.create_run(db, task=task)
+    generation_run_service.claim_next_run(
+        db,
+        worker_id="worker-output-scene-tamper",
+        lease_seconds=60,
+    )
+    revision = _revision(db, task, plans=[_plans()[0]])
+    scenes = _add_scenes(db, revision)
+    assert generation_run_service.mark_completed(
+        db,
+        run_id=run.id,
+        worker_id="worker-output-scene-tamper",
+        worker_attempt=1,
+        generator="llm",
+        result_revision_id=revision.id,
+    )
+    _, version = scenes["plan-a"]
+    version.scene_json = _scene_document(
+        room_id="room-plan-a",
+        instance_id="item-plan-a",
+        x=2,
+    )
+    db.commit()
+
+    with pytest.raises(
+        generation_output_service.GenerationOutputValidationError,
+        match="场景摘要不一致",
+    ):
+        generation_output_service.validated_run_output(db, run=run)
 
 
 def test_terminal_failure_clears_untrusted_output_fields(db):

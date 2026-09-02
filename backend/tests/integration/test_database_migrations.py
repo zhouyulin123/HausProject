@@ -271,6 +271,30 @@ def test_alembic_upgrades_empty_database_to_current_schema():
         assert generation_foreign_keys[("result_revision_id",)][
             "referred_table"
         ] == "design_revisions"
+        scene_evidence_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "generation_run_scene_evidence"
+            )
+        }
+        assert {
+            "generation_run_id",
+            "plan_version_id",
+            "scene_id",
+            "scene_version_id",
+            "scene_version",
+            "scene_digest",
+            "created_at",
+        } <= scene_evidence_columns
+        scene_evidence_constraints = {
+            constraint["name"]: set(constraint["column_names"])
+            for constraint in inspect(inspection_engine).get_unique_constraints(
+                "generation_run_scene_evidence"
+            )
+        }
+        assert scene_evidence_constraints[
+            "uq_generation_run_scene_plan"
+        ] == {"generation_run_id", "plan_version_id"}
     finally:
         if inspection_engine is not None:
             inspection_engine.dispose()

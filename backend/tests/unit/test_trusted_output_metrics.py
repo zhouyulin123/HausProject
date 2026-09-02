@@ -10,7 +10,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.database import Base
-from app.db.models import DesignTask, GenerationRunEvent, UploadedImage
+from app.db.models import (
+    DesignScene,
+    DesignSceneVersion,
+    DesignTask,
+    GenerationRunEvent,
+    UploadedImage,
+)
 from app.services import design_version_service, generation_run_service
 from evals.real_world import EvaluationInputError, load_case_manifest
 from evals.trusted_evidence import (
@@ -34,7 +40,7 @@ def db():
     engine.dispose()
 
 
-def _dataset(tmp_path: Path):
+def _dataset(tmp_path: Path, *, constraint_type: str = "inside_room"):
     (tmp_path / "room.png").write_bytes(b"deidentified-room")
     manifest = write_v2_manifest(
         tmp_path,
@@ -66,10 +72,36 @@ def _dataset(tmp_path: Path):
             }
         ],
     )
+    if constraint_type != "inside_room":
+        manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+        annotation_path = tmp_path / manifest_payload["cases"][0]["annotation_path"]
+        annotation = json.loads(annotation_path.read_text(encoding="utf-8"))
+        constraint = annotation["layout_hard_constraints"][0]
+        constraint.update(
+            {
+                "constraint_id": "walkway-main",
+                "type": constraint_type,
+                "subject_id": "walkway-main",
+                "operator": "gte",
+                "value": 800,
+                "unit": "mm",
+            }
+        )
+        annotation_path.write_text(
+            json.dumps(annotation, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        manifest_payload["cases"][0]["annotation_sha256"] = hashlib.sha256(
+            annotation_path.read_bytes()
+        ).hexdigest()
+        manifest.write_text(
+            json.dumps(manifest_payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
     return load_case_manifest(manifest)
 
 
-def _plan() -> dict:
+def _plan(*, model_reports_passed: bool = True) -> dict:
     return {
         "id": "plan-a",
         "name": "真实输出方案",
@@ -79,7 +111,7 @@ def _plan() -> dict:
             {"id": "LAMP-OUTSIDE", "sku": "LAMP-OUTSIDE", "quantity": 1},
         ],
         "layoutConstraintResults": [
-            {"constraintId": "inside-room", "passed": True}
+            {"constraintId": "inside-room", "passed": model_reports_passed}
         ],
         "shopQuote": {
             "currency": "CNY",
@@ -98,7 +130,47 @@ def _plan() -> dict:
     }
 
 
-def _completed_run(db: Session, dataset):
+def _scene_document(*, x: float) -> dict:
+    return {
+        "schemaVersion": "1.0",
+        "unit": "m",
+        "coordinateSystem": "right-handed-y-up",
+        "room": {
+            "id": "living",
+            "name": "客厅",
+            "floorPolygon": [
+                {"x": -2, "z": -2},
+                {"x": 2, "z": -2},
+                {"x": 2, "z": 2},
+                {"x": -2, "z": 2},
+            ],
+            "ceilingHeight": 2.8,
+            "wallThickness": 0.12,
+        },
+        "openings": [],
+        "items": [
+            {
+                "instanceId": "sofa-main",
+                "sku": "SOFA-001",
+                "category": "沙发",
+                "transform": {
+                    "position": {"x": x, "y": 0.45, "z": 0},
+                    "rotation": {"x": 0, "y": 0, "z": 0},
+                    "scale": {"x": 1, "y": 1, "z": 1},
+                },
+                "dimensions": {"x": 1, "y": 0.9, "z": 1},
+            }
+        ],
+    }
+
+
+def _completed_run(
+    db: Session,
+    dataset,
+    *,
+    scene_x: float = 3,
+    model_reports_passed: bool = True,
+):
     case = dataset.cases[0]
     task = DesignTask(
         status="confirmed",
@@ -130,10 +202,24 @@ def _completed_run(db: Session, dataset):
     revision = design_version_service.persist_generation(
         db,
         task=task,
-        plans=[_plan()],
+        plans=[_plan(model_reports_passed=model_reports_passed)],
         generator="llm",
         workflow_trace=[{"node": "validate_quality", "status": "completed"}],
     )
+    plan = revision.plans[0]
+    scene = DesignScene(plan_version_id=plan.id, current_version=1)
+    db.add(scene)
+    db.flush()
+    db.add(
+        DesignSceneVersion(
+            scene_id=scene.id,
+            version=1,
+            scene_json=_scene_document(x=scene_x),
+            validation_json={"valid": True, "errors": [], "warnings": []},
+            source="auto_layout",
+        )
+    )
+    db.flush()
     now = datetime.now(timezone.utc)
     run.attempt_count = 1
     run.started_at = now
@@ -215,11 +301,45 @@ def test_collector_recomputes_metrics_from_revision_and_annotation(db, tmp_path)
     assert result["budget_within_limit"] == 1
     assert result["layout_checks"] == 1
     assert result["layout_hard_passes"] == 0
+    assert result["layout_no_evidence"] == 0
     assert result["style_checks"] == 1
     assert result["style_consistent"] == 1
     assert result["human_rating_count"] == 0
     assert result["human_review_count"] == 0
     assert result["human_edit_count"] == 0
+
+
+def test_collector_uses_frozen_geometry_not_model_reported_layout_result(
+    db,
+    tmp_path,
+):
+    dataset = _dataset(tmp_path)
+    run, _ = _completed_run(
+        db,
+        dataset,
+        scene_x=0,
+        model_reports_passed=False,
+    )
+
+    result = _collect(db, dataset, run)["executions"][0]["result"]
+
+    assert result["layout_checks"] == 1
+    assert result["layout_hard_passes"] == 1
+    assert result["layout_no_evidence"] == 0
+
+
+def test_collector_reports_no_evidence_for_unrepresented_geometry_constraint(
+    db,
+    tmp_path,
+):
+    dataset = _dataset(tmp_path, constraint_type="walkway_width")
+    run, _ = _completed_run(db, dataset, scene_x=0)
+
+    result = _collect(db, dataset, run)["executions"][0]["result"]
+
+    assert result["layout_checks"] == 0
+    assert result["layout_hard_passes"] == 0
+    assert result["layout_no_evidence"] == 1
 
 
 def test_collector_rejects_tampered_revision_even_if_snapshot_is_unchanged(db, tmp_path):
