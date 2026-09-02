@@ -13,7 +13,12 @@ from evals.annotations import (
     load_case_annotation,
     load_execution_review,
 )
-from evals.real_world import RealWorldCase, RealWorldDataset
+from evals.real_world import (
+    DatasetValidationError,
+    RealWorldCase,
+    RealWorldDataset,
+    load_case_manifest,
+)
 
 
 def _sha256(content: bytes) -> str:
@@ -151,6 +156,81 @@ def _write_annotation(tmp_path: Path, payload: dict) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _write_v2_manifest(
+    tmp_path: Path,
+    *,
+    annotation_path: str | None,
+    annotation_sha256: str | None,
+) -> Path:
+    manifest = {
+        "schema_version": "2.0",
+        "dataset_version": "2026-09-02.2",
+        "cases": [
+            {
+                "id": "real-case-001",
+                "name": "脱敏案例",
+                "split": "regression",
+                "origin": "private_real",
+                "asset_path": "assets/room.png",
+                "consent_status": "granted",
+                "annotation_status": "ready",
+                "label_version": "labels-2026-09-02.1",
+                "allowed_purposes": ["offline_evaluation"],
+                "failure_tags": [],
+                "annotation_path": annotation_path,
+                "annotation_sha256": annotation_sha256,
+            }
+        ],
+    }
+    path = tmp_path / "manifest-v2.json"
+    path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_v2_manifest_loads_and_freezes_ready_annotation_asset(tmp_path):
+    seed_dataset = _dataset(tmp_path)
+    annotation_path = _write_annotation(tmp_path, _payload(seed_dataset))
+    annotation_sha256 = _sha256(annotation_path.read_bytes())
+    manifest_path = _write_v2_manifest(
+        tmp_path,
+        annotation_path="annotations/real-case-001.json",
+        annotation_sha256=annotation_sha256,
+    )
+
+    dataset = load_case_manifest(manifest_path)
+    case = dataset.eligible_cases("regression")[0]
+
+    assert case.annotation is not None
+    assert case.annotation.file_sha256 == annotation_sha256
+    assert case.annotation_sha256 == annotation_sha256
+    assert case.annotation.content_fingerprint.startswith("sha256:")
+    assert dataset.fingerprint.startswith("sha256:")
+
+
+@pytest.mark.parametrize(
+    ("annotation_path", "annotation_sha256"),
+    [
+        (None, None),
+        ("annotations/real-case-001.json", None),
+        (None, "0" * 64),
+    ],
+)
+def test_v2_manifest_rejects_ready_case_without_frozen_annotation_reference(
+    tmp_path,
+    annotation_path,
+    annotation_sha256,
+):
+    _dataset(tmp_path)
+    path = _write_v2_manifest(
+        tmp_path,
+        annotation_path=annotation_path,
+        annotation_sha256=annotation_sha256,
+    )
+
+    with pytest.raises(DatasetValidationError, match="annotation_path|annotation_sha256"):
+        load_case_manifest(path)
 
 
 def test_loads_complete_annotation_and_freezes_file_digest(tmp_path):
