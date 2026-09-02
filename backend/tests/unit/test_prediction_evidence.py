@@ -20,6 +20,7 @@ from app.services import (
     design_version_service,
     evaluation_binding_service,
     generation_run_service,
+    prediction_evidence_service,
 )
 from app.services.generation_provenance import canonical_digest
 from evals.real_world import load_case_manifest
@@ -95,7 +96,7 @@ def _room_model(*, room_id: str = "living", width_m: float | None = 4.2):
                 "confidence": 0.42,
             }
         ],
-        "scale": {"source": "vl", "confidence": 0.42},
+        "scale": {"source": "vl", "confidence": 0.55},
         "confidence": 0.42,
         "requiresConfirmation": [f"rooms.{room_id}.width_m"],
     }
@@ -137,9 +138,11 @@ def _task_with_predictions(
         file_url="/uploads/eval-room.png",
         content_digest=f"sha256:{case.asset_sha256}",
         analysis_json={"room_model": room_model, "source": prediction_source},
-        original_prediction_json=room_model,
-        original_prediction_source=prediction_source,
-        original_prediction_digest=canonical_digest(room_model),
+    )
+    prediction_evidence_service.capture_uploaded_prediction(
+        image,
+        raw_room_model=room_model,
+        source=prediction_source,
     )
     db.add(image)
     db.commit()
@@ -234,7 +237,7 @@ def test_metrics_use_frozen_pre_calibration_llm_and_vlm_predictions(db, tmp_path
             fact_path="rooms.living.width_m",
             previous_value_json=4.2,
             confirmed_value_json=4.8,
-            previous_confidence=0.42,
+            previous_confidence=0.55,
             confirmed_by_type="anonymous_session",
             confirmed_by_id="session-001",
         )
@@ -257,7 +260,10 @@ def test_metrics_use_frozen_pre_calibration_llm_and_vlm_predictions(db, tmp_path
     assert result["low_confidence_facts"] == 1
     binding = db.query(EvaluationRunBinding).filter_by(generation_run_id=run.id).one()
     assert binding.prediction_digest == canonical_digest(binding.prediction_snapshot_json)
-    assert binding.prediction_snapshot_json["space"]["room_model"]["rooms"]["living"]["width_m"] == 4.2
+    execution = _collect(db, dataset, run)["executions"][0]
+    assert execution["prediction_digest"] == binding.prediction_digest
+    room_prediction = binding.prediction_snapshot_json["space"]["room_model"]
+    assert room_prediction["rooms"]["living"]["width_m"] == 4.2
 
 
 def test_missing_or_untrusted_prediction_is_a_miss_not_a_smaller_denominator(db, tmp_path):

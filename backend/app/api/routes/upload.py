@@ -15,7 +15,12 @@ from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import UploadedImage
 from app.schemas.room_model import RoomModel, RoomModelCalibrationRequest
-from app.services import anonymous_session_service, llm_service, room_model_service
+from app.services import (
+    anonymous_session_service,
+    llm_service,
+    prediction_evidence_service,
+    room_model_service,
+)
 from app.services.llm_service import LLMUnavailable
 from app.services.upload_validation import UploadValidationError, validate_image_upload
 
@@ -98,6 +103,11 @@ async def upload_image(
         image.image_type = analysis["image_kind"]
     image.file_url = f"/uploads/{stored_name}"
     image.analysis_json = {**analysis, "source": source}
+    prediction_evidence_service.capture_uploaded_prediction(
+        image,
+        raw_room_model=room_model,
+        source=source,
+    )
     db.commit()
     anonymous_session_service.attach_image(db, x_session_id, image.id)
 

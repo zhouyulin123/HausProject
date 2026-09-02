@@ -104,6 +104,10 @@ class UploadedImage(Base):
     file_size = Column(Integer, nullable=True)
     content_digest = Column(String(71), nullable=True)
     analysis_json = Column(JSON, nullable=True)  # AI 空间识别结果
+    # 上传分析成功时写入一次；用户校准仅更新 analysis_json 投影。
+    original_prediction_json = Column(JSON, nullable=True)
+    original_prediction_source = Column(String(30), nullable=True)
+    original_prediction_digest = Column(String(71), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -968,6 +972,20 @@ class EvaluationRunBinding(Base):
     data_digest = Column(String(71), nullable=True)
     input_digest = Column(String(71), nullable=True)
     provenance_schema_version = Column(Integer, nullable=True)
+    requirement_parse_result_id = Column(
+        Integer,
+        ForeignKey("requirement_parse_results.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    uploaded_image_id = Column(
+        Integer,
+        ForeignKey("uploaded_images.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    prediction_snapshot_json = Column(JSON, nullable=True)
+    prediction_digest = Column(String(71), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

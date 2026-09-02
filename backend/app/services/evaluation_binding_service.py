@@ -18,6 +18,7 @@ from app.services.generation_provenance import (
     GENERATION_PROVENANCE_SCHEMA_VERSION,
     canonical_digest,
 )
+from app.services import prediction_evidence_service
 
 
 EVALUATION_IDEMPOTENCY_PREFIX = "eval-v1:"
@@ -52,6 +53,10 @@ class EvaluationBindingSpec:
     input_snapshot: dict[str, Any]
     input_digest: str
     provenance_schema_version: int
+    requirement_parse_result_id: int | None
+    uploaded_image_id: int
+    prediction_snapshot: dict[str, Any]
+    prediction_digest: str
 
 
 def is_evaluation_idempotency_key(value: str | None) -> bool:
@@ -67,6 +72,7 @@ def evaluation_execution_digest(spec: EvaluationBindingSpec) -> str:
             "prompt_digest": spec.prompt_digest,
             "rules_digest": spec.rules_digest,
             "data_digest": spec.data_digest,
+            "prediction_digest": spec.prediction_digest,
         }
     )
 
@@ -189,6 +195,8 @@ def validate_spec_for_task(
         raise EvaluationBindingError("评测绑定的 Prompt 摘要不一致")
     if canonical_digest(spec.input_snapshot) != spec.input_digest:
         raise EvaluationBindingError("评测绑定的输入摘要不一致")
+    if canonical_digest(spec.prediction_snapshot) != spec.prediction_digest:
+        raise EvaluationBindingError("评测绑定的预测证据摘要不一致")
     if task.user_id is not None:
         raise EvaluationBindingError("评测任务不能依赖可变的用户画像")
     if task_input_digest(db, task) != spec.task_input_digest:
@@ -213,6 +221,11 @@ def validate_persisted_binding(
         raise EvaluationBindingError("系统运行缺少持久化评测绑定")
     if binding.task_id != run.task_id:
         raise EvaluationBindingError("评测绑定的任务与系统运行不一致")
+    if (
+        not isinstance(binding.prediction_snapshot_json, dict)
+        or not isinstance(binding.prediction_digest, str)
+    ):
+        raise EvaluationBindingError("历史评测绑定缺少预测证据，不能作为可信证据")
     frozen_values = {
         "model": binding.model,
         "prompt_digest": binding.prompt_digest,
@@ -241,6 +254,10 @@ def validate_persisted_binding(
             input_snapshot=run.input_snapshot or {},
             input_digest=binding.input_digest,
             provenance_schema_version=binding.provenance_schema_version,
+            requirement_parse_result_id=binding.requirement_parse_result_id,
+            uploaded_image_id=binding.uploaded_image_id,
+            prediction_snapshot=binding.prediction_snapshot_json or {},
+            prediction_digest=binding.prediction_digest or "",
         )
     )
     if run.idempotency_key != expected_key:
@@ -264,8 +281,20 @@ def validate_persisted_binding(
             input_snapshot=run.input_snapshot or {},
             input_digest=binding.input_digest,
             provenance_schema_version=binding.provenance_schema_version,
+            requirement_parse_result_id=binding.requirement_parse_result_id,
+            uploaded_image_id=binding.uploaded_image_id,
+            prediction_snapshot=binding.prediction_snapshot_json or {},
+            prediction_digest=binding.prediction_digest or "",
         ),
     )
+    try:
+        prediction_evidence_service.validate_frozen_prediction(
+            db,
+            task=task,
+            binding=binding,
+        )
+    except prediction_evidence_service.PredictionEvidenceError as exc:
+        raise EvaluationBindingError(str(exc)) from exc
     if validate_current_generation:
         _validate_current_generation_facts(db, task=task, binding=binding)
     return binding

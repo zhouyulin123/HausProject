@@ -280,7 +280,7 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
 
     serialized = json.dumps(bundle, ensure_ascii=False)
     execution = bundle["executions"][0]
-    assert bundle["schema_version"] == "4.0"
+    assert bundle["schema_version"] == "5.0"
     assert bundle["dataset_fingerprint"] == dataset_fingerprint(
         dataset,
         split="regression",

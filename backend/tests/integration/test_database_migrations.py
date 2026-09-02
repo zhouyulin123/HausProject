@@ -250,6 +250,8 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "provenance_schema_version",
             "prediction_snapshot_json",
             "prediction_digest",
+            "requirement_parse_result_id",
+            "uploaded_image_id",
             "created_at",
         } <= evaluation_binding_columns
         rendered_image_columns = {

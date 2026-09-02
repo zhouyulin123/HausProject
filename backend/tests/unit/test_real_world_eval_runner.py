@@ -93,6 +93,7 @@ def _evidence(dataset, *, model: str, results: tuple[CaseResult, ...]):
             rules_digest="sha256:" + "2" * 64,
             data_digest="sha256:" + "3" * 64,
             input_digest="sha256:" + "2" * 64,
+            prediction_digest="sha256:" + "5" * 64,
             output_digest="sha256:" + "3" * 64,
             result_digest="sha256:" + "4" * 64,
         )

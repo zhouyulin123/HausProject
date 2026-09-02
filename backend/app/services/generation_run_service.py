@@ -272,6 +272,12 @@ def create_run(
                     provenance_schema_version=(
                         evaluation_binding.provenance_schema_version
                     ),
+                    requirement_parse_result_id=(
+                        evaluation_binding.requirement_parse_result_id
+                    ),
+                    uploaded_image_id=evaluation_binding.uploaded_image_id,
+                    prediction_snapshot_json=evaluation_binding.prediction_snapshot,
+                    prediction_digest=evaluation_binding.prediction_digest,
                 )
             )
             db.flush()
