@@ -1,7 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import SessionIdHeader, require_owned_design_task
+from app.api.dependencies import (
+    SessionIdHeader,
+    require_active_session,
+    require_owned_design_task,
+)
 from app.db.database import get_db
 from app.schemas.design_agent import (
     AgentCheckpointResponse,
@@ -10,7 +14,7 @@ from app.schemas.design_agent import (
     CustomFurnitureDraftRequest,
     CustomFurnitureDraftResponse,
 )
-from app.services import design_agent_service
+from app.services import aggregate_lock_service, design_agent_service
 
 
 router = APIRouter()
@@ -26,12 +30,18 @@ def save_custom_furniture_draft(
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    task = require_owned_design_task(
-        db,
-        session_id=x_session_id,
-        task_id=task_id,
-    )
     try:
+        require_active_session(db, x_session_id)
+        task = aggregate_lock_service.lock_owned_task(
+            db,
+            session_id=x_session_id,
+            task_id=task_id,
+        )
+        if task is None:
+            raise HTTPException(
+                status_code=404,
+                detail="设计任务不存在或不属于当前会话",
+            )
         response = design_agent_service.save_custom_furniture_draft(
             db,
             task=task,
@@ -56,7 +66,15 @@ def save_custom_furniture_draft(
                 "code": "agent_state_conflict",
                 "message": str(exc),
                 "state_version": exc.state_version,
+                "custom_furniture_draft": exc.custom_furniture_draft,
+                "scene_ref": exc.scene_ref,
             },
+        ) from exc
+    except aggregate_lock_service.AggregateLockBusy as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "aggregate_busy", "message": str(exc)},
         ) from exc
 
 

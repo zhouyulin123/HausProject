@@ -42,6 +42,7 @@ import {
   writeTaskId,
 } from "./sessionStorage";
 import { readToken } from "./authApi";
+import { CustomFurnitureDraftConflictError } from "@/lib/customFurnitureDraftQueue";
 
 /**
  * API 层：优先调用真实后端（FastAPI + MySQL + DeepSeek），
@@ -74,6 +75,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly detail?: unknown,
   ) {
     super(message);
   }
@@ -88,7 +90,16 @@ async function rawRequest<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers,
   });
-  if (!resp.ok) throw new ApiError(`${path} -> ${resp.status}`, resp.status);
+  if (!resp.ok) {
+    let detail: unknown;
+    try {
+      const body = await resp.json() as { detail?: unknown };
+      detail = body.detail;
+    } catch {
+      detail = undefined;
+    }
+    throw new ApiError(`${path} -> ${resp.status}`, resp.status, detail);
+  }
   return resp.json() as Promise<T>;
 }
 
@@ -1257,14 +1268,38 @@ export async function saveCustomFurnitureDraft(
   state_version: number;
   custom_furniture_spec: CustomFurnitureSpecPatch;
 }> {
-  return request(`/api/design/tasks/${taskId}/custom-furniture-draft`, {
-    method: "PUT",
-    body: JSON.stringify({
-      client_mutation_id: payload.clientMutationId,
-      base_state_version: payload.baseStateVersion,
-      custom_furniture_spec: payload.spec,
-    }),
-  });
+  try {
+    return await request(`/api/design/tasks/${taskId}/custom-furniture-draft`, {
+      method: "PUT",
+      body: JSON.stringify({
+        client_mutation_id: payload.clientMutationId,
+        base_state_version: payload.baseStateVersion,
+        custom_furniture_spec: payload.spec,
+      }),
+    });
+  } catch (error) {
+    const detail = error instanceof ApiError && error.status === 409
+      && typeof error.detail === "object" && error.detail !== null
+      ? error.detail as Record<string, unknown>
+      : null;
+    if (
+      detail?.code === "agent_state_conflict"
+      && typeof detail.state_version === "number"
+    ) {
+      throw new CustomFurnitureDraftConflictError({
+        stateVersion: detail.state_version,
+        customFurnitureDraft:
+          typeof detail.custom_furniture_draft === "object"
+          ? detail.custom_furniture_draft as CustomFurnitureSpecPatch
+          : null,
+        sceneRef:
+          typeof detail.scene_ref === "object"
+          ? detail.scene_ref as AgentSceneReference
+          : null,
+      });
+    }
+    throw error;
+  }
 }
 
 /** 新工作台唯一对话写入口；client_turn_id 为服务端幂等键。 */

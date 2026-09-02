@@ -204,6 +204,31 @@ class DesignAgentTurn(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class CustomFurnitureDraftMutation(Base):
+    """与真实 Agent turn 隔离的定制家具草稿幂等记录。"""
+
+    __tablename__ = "custom_furniture_draft_mutations"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "client_mutation_id",
+            name="uq_custom_draft_mutations_task_client_mutation",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    client_mutation_id = Column(String(100), nullable=False)
+    request_json = Column(JSON, nullable=False)
+    response_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class DesignAgentEvent(Base):
     """不含思维链的可审计 Agent 工具与状态事件。"""
 

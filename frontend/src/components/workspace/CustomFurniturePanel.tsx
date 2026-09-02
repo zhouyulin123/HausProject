@@ -24,6 +24,7 @@ import {
   customFurnitureFocusField,
   quotePreviewDisplay,
 } from "@/lib/customFurnitureWorkspace";
+import { createCustomFurnitureDraftSaveCoordinator } from "@/lib/customFurnitureDraftQueue";
 import type { AgentPendingQuestion } from "@/types/agent";
 import type {
   CabinetCustomFurnitureSpec,
@@ -120,9 +121,9 @@ export default function CustomFurniturePanel({
   const [draftSaveError, setDraftSaveError] = useState("");
   const lastSubmissionRef = useRef<{ signature: string; turnId: string } | null>(null);
   const initialDraftSignatureRef = useRef(JSON.stringify(draft));
-  const draftVersionRef = useRef(stateVersion);
-  const draftQueueRef = useRef(Promise.resolve());
-  const lastDraftSaveRef = useRef<{ signature: string; mutationId: string } | null>(null);
+  const draftCoordinatorRef = useRef<ReturnType<
+    typeof createCustomFurnitureDraftSaveCoordinator
+  > | null>(null);
   const familyRef = useRef<HTMLButtonElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const purposeRef = useRef<HTMLSelectElement>(null);
@@ -130,6 +131,28 @@ export default function CustomFurniturePanel({
   const dimensionsRef = useRef<HTMLInputElement>(null);
   const structureRef = useRef<HTMLSelectElement>(null);
   const focusField = customFurnitureFocusField(pendingQuestions);
+
+  useEffect(() => {
+    const coordinator = createCustomFurnitureDraftSaveCoordinator({
+      initialStateVersion: stateVersion,
+      createMutationId: () => nextTurnId(taskId),
+      save: (payload) => saveCustomFurnitureDraft(taskId, payload),
+      onSynced: ({ spec }) => {
+        initialDraftSignatureRef.current = JSON.stringify(spec);
+        setDraftSaveError("");
+      },
+      onError: () => {
+        setDraftSaveError("服务端状态已变化或网络中断，草稿未覆盖远端版本。可重试同步。");
+      },
+    });
+    draftCoordinatorRef.current = coordinator;
+    return () => {
+      coordinator.dispose();
+      if (draftCoordinatorRef.current === coordinator) {
+        draftCoordinatorRef.current = null;
+      }
+    };
+  }, [taskId]);
 
   useEffect(() => {
     if (initialSpec) {
@@ -140,35 +163,14 @@ export default function CustomFurniturePanel({
   }, [initialSpec]);
 
   useEffect(() => {
-    draftVersionRef.current = Math.max(draftVersionRef.current, stateVersion);
+    draftCoordinatorRef.current?.updateStateVersion(stateVersion);
   }, [stateVersion]);
 
   useEffect(() => {
     const signature = JSON.stringify(draft);
     if (signature === initialDraftSignatureRef.current) return;
-    const timer = window.setTimeout(() => {
-      const mutationId = lastDraftSaveRef.current?.signature === signature
-        ? lastDraftSaveRef.current.mutationId
-        : nextTurnId(taskId);
-      lastDraftSaveRef.current = { signature, mutationId };
-      draftQueueRef.current = draftQueueRef.current
-        .catch(() => undefined)
-        .then(async () => {
-          const saved = await saveCustomFurnitureDraft(taskId, {
-            clientMutationId: mutationId,
-            baseStateVersion: draftVersionRef.current,
-            spec: draft,
-          });
-          draftVersionRef.current = saved.state_version;
-          initialDraftSignatureRef.current = signature;
-          setDraftSaveError("");
-        })
-        .catch(() => {
-          setDraftSaveError("草稿暂未同步到服务端，继续编辑后会重试。");
-        });
-    }, 600);
-    return () => window.clearTimeout(timer);
-  }, [draft, taskId]);
+    draftCoordinatorRef.current?.schedule(draft);
+  }, [draft]);
 
   useEffect(() => {
     if (!focusField) return;
@@ -416,7 +418,18 @@ export default function CustomFurniturePanel({
         )}
 
         {submitError && <p role="alert" className="mt-4 border border-[#8f4938] bg-[#2b1c18] px-3 py-2 text-xs text-[#f1b59e]">{submitError}</p>}
-        {draftSaveError && <p role="alert" className="mt-4 border border-[#8f7040] bg-[#2b2718] px-3 py-2 text-xs text-[#f0d39e]">{draftSaveError}</p>}
+        {draftSaveError && (
+          <div role="alert" className="mt-4 border border-[#8f7040] bg-[#2b2718] px-3 py-2 text-xs text-[#f0d39e]">
+            <p>{draftSaveError}</p>
+            <button
+              type="button"
+              onClick={() => draftCoordinatorRef.current?.retryLatest()}
+              className="mt-2 min-h-9 border border-[#f0d39e]/40 px-3 text-[11px] text-[#f0d39e]"
+            >
+              重试同步
+            </button>
+          </div>
+        )}
         <button
           type="submit"
           disabled={submitting || !draft.name.trim()}

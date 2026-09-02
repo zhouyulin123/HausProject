@@ -1,5 +1,18 @@
 # 项目开发状态记录
 
+## 2026-09-02 工作台定制家具草稿并发闭环
+
+- 定制家具草稿从 `DesignAgentTurn` 分离到独立 `CustomFurnitureDraftMutation` 幂等记录，自动保存不再占用真实 Agent turn 租约或进入会话质量统计。
+- 草稿路由复用统一 `aggregate_lock_service.lock_owned_task`：SQLite 使用主线 `BEGIN IMMEDIATE`，MySQL/PostgreSQL 使用任务行锁；归属与业务事实均在锁内重新读取，服务直接修改该已锁定任务。
+- 状态冲突返回服务端当前 `state_version`、`custom_furniture_draft` 和 `scene_ref`。前端防抖串行协调器会淘汰旧草稿和旧响应，只对未被新编辑覆盖的草稿自动重试最多两次。
+- 网络结果未知时提供明确的人工“重试同步”动作，并复用原请求与幂等键；确定的版本冲突依据服务端事实生成新 mutation ID，禁止静默最后写入覆盖。
+- 新增迁移 `ae1f2a3b4c5d`，线性接续主线 `9d0e1f2a3b4c`；未修改真实案例、评测证据或不可变输出模块。
+
+### 验证
+
+- 后端定向覆盖场景移动后的草稿恢复、同键异载荷、独立 Agent turn 统计、真实文件 SQLite 草稿并发及主线方案/场景并发回归。
+- 前端定向覆盖延迟响应淘汰、有界冲突重试、人工幂等重试及 409 权威快照解析；同时运行全量测试、类型检查和生产构建。
+
 ## 2026-09-02 阶段 4：生成输出不可变证据绑定
 
 - `GenerationRun` 成功终态必须唯一绑定同一任务的 `DesignRevision`，并保存由 revision、方案版本和报价快照规范化计算的 `output_digest`；失败、取消、死信、成本门禁和供应商不可用终态不得残留输出证据。

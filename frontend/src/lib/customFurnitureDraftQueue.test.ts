@@ -99,4 +99,31 @@ describe("定制家具草稿串行协调器", () => {
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ retryable: true }));
   });
+
+  it("网络结果未知时人工重试复用原幂等请求", async () => {
+    vi.useFakeTimers();
+    const draft = createCustomFurnitureDraft("table");
+    const save = vi.fn()
+      .mockRejectedValueOnce(new Error("connection reset"))
+      .mockResolvedValueOnce({ state_version: 1 });
+    const onSynced = vi.fn();
+    const coordinator = createCustomFurnitureDraftSaveCoordinator({
+      initialStateVersion: 0,
+      debounceMs: 600,
+      createMutationId: vi.fn().mockReturnValue("stable-request-id"),
+      save,
+      onSynced,
+      onError: vi.fn(),
+    });
+
+    coordinator.schedule(draft);
+    await vi.advanceTimersByTimeAsync(600);
+    await flushPromises();
+    coordinator.retryLatest();
+    await flushPromises();
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls[1][0]).toEqual(save.mock.calls[0][0]);
+    expect(onSynced).toHaveBeenCalledTimes(1);
+  });
 });

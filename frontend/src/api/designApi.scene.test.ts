@@ -135,6 +135,44 @@ describe("3D 场景 API", () => {
     );
   });
 
+  it("将草稿 409 解析为带权威服务端快照的冲突", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const conflict = new Response(JSON.stringify({
+      detail: {
+        code: "agent_state_conflict",
+        message: "草稿版本冲突",
+        state_version: 8,
+        custom_furniture_draft: { family: "table", name: "服务端草稿" },
+        scene_ref: { scene_id: 12, version: 4 },
+      },
+    }), {
+      status: 409,
+      headers: { "Content-Type": "application/json" },
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(conflict);
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+    const { saveCustomFurnitureDraft } = await import("./designApi");
+
+    await expect(saveCustomFurnitureDraft(42, {
+      clientMutationId: "draft-conflict-001",
+      baseStateVersion: 7,
+      spec: { family: "table", name: "本地草稿" },
+    })).rejects.toMatchObject({
+      conflict: {
+        stateVersion: 8,
+        customFurnitureDraft: { family: "table", name: "服务端草稿" },
+        sceneRef: { scene_id: 12, version: 4 },
+      },
+    });
+  });
+
   it("方案商品变更和定制草稿只调用服务端版本化入口", async () => {
     const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
     const storage = createLocalStorage({
