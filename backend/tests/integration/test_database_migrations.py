@@ -44,6 +44,8 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "order_quotes",
             "design_agent_turns",
             "design_agent_events",
+            "failure_clusters",
+            "failure_triage_imports",
         } <= tables
         task_columns = {
             column["name"]

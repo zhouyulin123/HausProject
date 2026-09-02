@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { QualitySummaryContent } from "./AdminQualityPage";
+import { FailureTriageContent, QualitySummaryContent } from "./AdminQualityPage";
+import type { FailureClusterListResponse } from "@/types/quality";
 import type { QualitySummary } from "@/types/quality";
 
 const summary: QualitySummary = {
@@ -44,5 +45,70 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("128.46");
     expect(html).toContain("invalid_quote");
     expect(html).toContain(">7<");
+  });
+
+  it("失败簇展示严重度、状态和当前阶段的明确动作", () => {
+    const clusters: FailureClusterListResponse = {
+      summary: {
+        total: 3,
+        by_status: { open: 1, in_progress: 1, resolved: 1 },
+        by_severity: { critical: 1, high: 2 },
+      },
+      items: [
+        {
+          id: 1,
+          fingerprint: "a".repeat(64),
+          taxonomy_version: "taxonomy-1",
+          data_version: "data-1",
+          failure_type: "quote",
+          code: "quote_mismatch",
+          severity: "critical",
+          status: "open",
+          owner: null,
+          occurrence_count: 4,
+          affected_count: 3,
+          first_seen_at: "2026-09-01T08:00:00Z",
+          last_seen_at: "2026-09-02T08:00:00Z",
+          detected_version: "candidate-1",
+          fixed_version: null,
+          verified_version: null,
+          created_at: "2026-09-02T08:00:00Z",
+          updated_at: "2026-09-02T08:00:00Z",
+        },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <FailureTriageContent
+        data={clusters}
+        loading={false}
+        error=""
+        actionError=""
+        busyClusterId={null}
+        onRefresh={() => undefined}
+        onUpdate={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("失败修复闭环");
+    expect(html).toContain("严重");
+    expect(html).toContain("待认领");
+    expect(html).toContain("认领并开始修复");
+    expect(html).not.toContain("case_id");
+  });
+
+  it("失败簇 API 错误以可见状态展示", () => {
+    const html = renderToStaticMarkup(
+      <FailureTriageContent
+        data={null}
+        loading={false}
+        error="失败簇加载失败"
+        actionError=""
+        busyClusterId={null}
+        onRefresh={() => undefined}
+        onUpdate={() => undefined}
+      />,
+    );
+    expect(html).toContain("失败簇加载失败");
+    expect(html).toContain("重试加载");
   });
 });

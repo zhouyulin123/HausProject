@@ -50,4 +50,41 @@ describe("运营质量汇总 API", () => {
       expect.any(Object),
     );
   });
+
+  it("使用管理员失败簇资源完成列表、同步和状态更新", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      items: [],
+      summary: { total: 0, by_status: {}, by_severity: {} },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const {
+      fetchFailureClusters,
+      syncFailureTriageReport,
+      updateFailureCluster,
+    } = await import("./adminApi");
+
+    await fetchFailureClusters();
+    await syncFailureTriageReport({
+      schema_version: "1.0",
+      report_id: "report-001",
+      verification_status: "verified",
+      taxonomy_version: "taxonomy-1",
+      data_version: "data-1",
+      candidate_version: "candidate-1",
+      generated_at: "2026-09-02T08:00:00Z",
+      failures: [],
+    });
+    await updateFailureCluster(9, {
+      status: "in_progress",
+      owner: "quality-admin",
+    });
+
+    expect(fetchMock.mock.calls.map(([path]) => String(path))).toEqual([
+      "/api/admin/quality/failure-clusters",
+      "/api/admin/quality/failure-clusters/sync",
+      "/api/admin/quality/failure-clusters/9",
+    ]);
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "POST" });
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: "PATCH" });
+  });
 });
