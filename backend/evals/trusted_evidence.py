@@ -131,6 +131,18 @@ def _case_fingerprint(dataset_digest: str, case_id: str) -> str:
     return _digest({"dataset_fingerprint": dataset_digest, "case_id": case_id})
 
 
+def evaluation_run_idempotency_key(
+    dataset: RealWorldDataset,
+    case_id: str,
+) -> str:
+    """生成执行前绑定键，供创建 GenerationRun 时作为 Idempotency-Key。"""
+    eligible_ids = {case.id for case in dataset.eligible_cases()}
+    if case_id not in eligible_ids:
+        raise EvaluationInputError("只能为已准入案例生成评测运行绑定键")
+    case_digest = _case_fingerprint(dataset_fingerprint(dataset), case_id)
+    return f"eval-v1:{case_digest.removeprefix('sha256:')}"
+
+
 def _normalized_key(signing_key: str) -> bytes:
     if not isinstance(signing_key, str) or len(signing_key.encode("utf-8")) < 32:
         raise EvaluationInputError("评测证据签名密钥缺失或少于 32 字节")
@@ -186,6 +198,7 @@ def _validate_system_run(
     *,
     binding: RunBinding,
     versions: EvaluationVersions,
+    expected_case_fingerprint: str,
 ) -> GenerationRun:
     run = db.get(GenerationRun, binding.system_run_id)
     if run is None:
@@ -193,6 +206,11 @@ def _validate_system_run(
     if run.task_id != binding.task_id:
         raise EvaluationInputError(
             f"系统运行 {run.id} 不属于任务 {binding.task_id}"
+        )
+    expected_run_key = f"eval-v1:{expected_case_fingerprint.removeprefix('sha256:')}"
+    if run.idempotency_key != expected_run_key:
+        raise EvaluationInputError(
+            f"系统运行 {run.id} 没有在执行前绑定当前数据集案例"
         )
     task = db.get(DesignTask, binding.task_id)
     if task is None:
@@ -288,13 +306,19 @@ def collect_trusted_evidence(
     executions: list[dict[str, Any]] = []
     for binding in bindings:
         case = eligible[binding.case_id]
-        run = _validate_system_run(db, binding=binding, versions=versions)
+        case_digest = _case_fingerprint(dataset_digest, case.id)
+        run = _validate_system_run(
+            db,
+            binding=binding,
+            versions=versions,
+            expected_case_fingerprint=case_digest,
+        )
         result = _runtime_result(case.id, run)
         result_payload = asdict(result)
         result_payload.pop("case_id")
         executions.append(
             {
-                "case_fingerprint": _case_fingerprint(dataset_digest, case.id),
+                "case_fingerprint": case_digest,
                 "task_id": run.task_id,
                 "system_run_id": run.id,
                 "source": "generation_worker",

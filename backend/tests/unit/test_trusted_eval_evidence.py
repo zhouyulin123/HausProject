@@ -180,7 +180,12 @@ def test_dataset_fingerprint_binds_asset_bytes_and_case_governance(tmp_path):
 
 def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_path):
     dataset = _dataset(tmp_path)
-    run = _completed_system_run(db)
+    run = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(
+            dataset, "private-case-alias"
+        ),
+    )
 
     bundle = collect_trusted_evidence(
         db,
@@ -223,7 +228,13 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
 )
 def test_collector_rejects_non_system_execution_sources(db, tmp_path, generator):
     dataset = _dataset(tmp_path)
-    run = _completed_system_run(db, generator=generator)
+    run = _completed_system_run(
+        db,
+        generator=generator,
+        idempotency_key=evaluation_run_idempotency_key(
+            dataset, "private-case-alias"
+        ),
+    )
 
     with pytest.raises(EvaluationInputError, match="不可信的执行来源"):
         collect_trusted_evidence(
@@ -243,8 +254,14 @@ def test_collector_rejects_non_system_execution_sources(db, tmp_path, generator)
 
 def test_collector_rejects_task_mismatch_incomplete_run_and_run_replay(db, tmp_path):
     dataset = _two_case_dataset(tmp_path)
-    run = _completed_system_run(db)
-    second_run = _completed_system_run(db)
+    run = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(dataset, "private-a"),
+    )
+    second_run = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(dataset, "private-b"),
+    )
     versions = EvaluationVersions(
         model="model-prod-7",
         prompt="prompt-12",
@@ -358,7 +375,12 @@ def test_loader_rejects_legacy_hand_written_case_results(tmp_path):
 
 def test_loader_rejects_tampered_signed_result(db, tmp_path):
     dataset = _dataset(tmp_path)
-    run = _completed_system_run(db)
+    run = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(
+            dataset, "private-case-alias"
+        ),
+    )
     bundle = collect_trusted_evidence(
         db,
         dataset=dataset,
@@ -389,7 +411,12 @@ def test_loader_and_cli_fail_closed_without_verification_key(
     monkeypatch,
 ):
     dataset = _dataset(tmp_path)
-    run = _completed_system_run(db)
+    run = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(
+            dataset, "private-case-alias"
+        ),
+    )
     bundle = collect_trusted_evidence(
         db,
         dataset=dataset,
@@ -426,7 +453,12 @@ def test_loader_and_cli_fail_closed_without_verification_key(
 
 def test_verified_report_contains_only_anonymous_execution_provenance(db, tmp_path):
     dataset = _dataset(tmp_path)
-    run = _completed_system_run(db)
+    run = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(
+            dataset, "private-case-alias"
+        ),
+    )
     bundle = collect_trusted_evidence(
         db,
         dataset=dataset,
@@ -465,8 +497,13 @@ def test_collector_and_evaluator_cli_use_the_same_fail_closed_contract(
     tmp_path,
     monkeypatch,
 ):
-    _dataset(tmp_path)
-    run = _completed_system_run(db)
+    dataset = _dataset(tmp_path)
+    run = _completed_system_run(
+        db,
+        idempotency_key=evaluation_run_idempotency_key(
+            dataset, "private-case-alias"
+        ),
+    )
     bindings_path = tmp_path / "run-bindings.json"
     bindings_path.write_text(
         json.dumps(

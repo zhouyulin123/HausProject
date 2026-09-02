@@ -37,6 +37,9 @@
 - `generate_plans` 来自 LLM，报价与质量校验来自确定性节点；
 - 同一证据包内每个已准入案例恰好一个运行，同一 run 不得跨案例复用。
 
+创建 GenerationRun 时，评测队列器必须调用
+`evals.trusted_evidence.evaluation_run_idempotency_key(dataset, case_id)`，并把返回值作为现有 `generate-async` 接口的 `Idempotency-Key`。该键在执行前绑定数据集与匿名案例；收集器拒绝没有绑定或事后换绑的 run。
+
 收集器不会接收 CaseResult。当前可从运行事实确定性推导生成成功、有效 SKU 和报价一致性；需求、空间、布局和人工满意度在接入可追溯标注执行器前保持无证据，因此质量门禁会失败，不会用模拟值或手工值补齐。
 
 证据包 2.0 使用独立 HMAC 密钥签名，绑定数据集内容指纹、匿名案例指纹、task/run ID、模型/Prompt/规则/数据版本，以及输入、输出和结果摘要。文件不包含案例 ID、资产路径、Prompt、输入或模型输出原文。签名密钥必须只配置在受控 Worker/CI，不应写入仓库、命令行或开发者共享环境。
