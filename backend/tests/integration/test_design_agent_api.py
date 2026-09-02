@@ -158,6 +158,7 @@ def test_agent_turn_pauses_persists_checkpoint_and_task_bound_chat(
     assert [q["field"] for q in payload["pending_questions"]] == [
         "budget_max",
         "room_dimensions",
+        "delivery_region",
     ]
     assert payload["events"]
 
@@ -192,6 +193,7 @@ def test_agent_turn_resumes_from_structured_answers(agent_api_context):
                 "budget_max": 20000,
                 "room_width_m": 4,
                 "room_depth_m": 5,
+                "delivery_region": "CN-SH",
             },
         },
     )
@@ -201,6 +203,7 @@ def test_agent_turn_resumes_from_structured_answers(agent_api_context):
     assert payload["exit_reason"] == "goal_completed"
     assert payload["state"]["facts"]["budget_max"] == 20000
     assert payload["state"]["facts"]["room_width_m"] == 4
+    assert payload["state"]["facts"]["delivery_region"] == "CN-SH"
     assert payload["intent"] == "design"
     assert payload["result"]["plan_count"] == 3
     catalog_event = next(
@@ -266,6 +269,7 @@ def test_agent_turn_is_idempotent_by_client_turn_id(agent_api_context):
             "budget_max": 20000,
             "room_width_m": 4,
             "room_depth_m": 5,
+            "delivery_region": "CN-SH",
         },
     }
 
@@ -373,6 +377,7 @@ def test_agent_normalizes_current_frontend_requirement_shape(
             "styles": ["原木风"],
             "budgetRange": "8-15 万",
             "area": 90,
+            "deliveryRegion": "CN-SH",
         }
         db.commit()
 
@@ -397,6 +402,7 @@ def test_agent_normalizes_current_frontend_requirement_shape(
         "style": "原木风",
         "budget_min": 80000,
         "budget_max": 150000,
+        "delivery_region": "CN-SH",
     }
 
 
@@ -430,6 +436,7 @@ def test_agent_invalid_sku_never_creates_completed_revision(
                 "budget_max": 20000,
                 "room_width_m": 4,
                 "room_depth_m": 5,
+                "delivery_region": "CN-SH",
             },
         },
     )
@@ -446,6 +453,50 @@ def test_agent_invalid_sku_never_creates_completed_revision(
             ).all()
         )
         assert revision_count == 0
+
+
+@pytest.mark.integration
+def test_agent_missing_sku_retries_then_hands_off_without_quote(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "generate_plans",
+        lambda *_: [{
+            "id": "plan-a",
+            "name": "未绑定商品的方案",
+            "style": "现代简约",
+            "furnitureSuggestions": [],
+        }],
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "missing-sku-001",
+            "message": "开始设计",
+            "active_mode": "catalog_design",
+            "answers": {
+                "budget_max": 20000,
+                "room_width_m": 4,
+                "room_depth_m": 5,
+                "delivery_region": "CN-SH",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "needs_human"
+    assert payload["exit_reason"] == "retry_exhausted"
+    assert "missing_product_sku" in payload["state"]["hard_errors"]
+    with factory() as db:
+        assert not db.scalars(
+            select(DesignRevision).where(DesignRevision.task_id == task_id)
+        ).all()
 
 
 @pytest.mark.integration
@@ -473,6 +524,7 @@ def test_unexpected_failure_is_persisted_and_idempotently_replayed(
             "budget_max": 20000,
             "room_width_m": 4,
             "room_depth_m": 5,
+            "delivery_region": "CN-SH",
         },
     }
 

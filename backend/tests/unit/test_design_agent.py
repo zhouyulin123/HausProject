@@ -12,6 +12,7 @@ def _facts(**overrides):
         "budget_max": 20000,
         "room_width_m": 4.2,
         "room_depth_m": 5.1,
+        "delivery_region": "CN-SH",
     }
     values.update(overrides)
     return values
@@ -43,6 +44,7 @@ def test_agent_pauses_and_returns_minimal_missing_fact_questions():
     assert [item["field"] for item in result["pending_questions"]] == [
         "budget_max",
         "room_dimensions",
+        "delivery_region",
     ]
     assert result["step_count"] <= result["max_steps"]
 
@@ -80,6 +82,31 @@ def test_agent_completes_design_through_registered_tools():
     assert [event["tool"] for event in result["tool_events"]] == [
         "catalog_search",
         "design_generation",
+    ]
+
+
+@pytest.mark.unit
+def test_catalog_search_waits_for_delivery_region_before_calling_catalog():
+    calls = []
+    workflow = DesignAgentWorkflow(
+        retrieve_catalog=lambda state: calls.append(state) or {"candidate_count": 1},
+        execute_design=lambda _: {},
+        execute_scene=lambda _: {},
+    )
+
+    result = workflow.run(
+        task_id=1,
+        turn_id=5,
+        active_mode="catalog_design",
+        intent="catalog_search",
+        message="先找可配送的沙发",
+        facts={"space_type": "客厅"},
+    )
+
+    assert calls == []
+    assert result["status"] == "waiting_user"
+    assert [item["field"] for item in result["pending_questions"]] == [
+        "delivery_region"
     ]
 
 

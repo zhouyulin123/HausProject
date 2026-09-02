@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
-from app.db.models import Product
+from app.db.models import CustomQuoteRule, Product
 from app.services.catalog_service import (
     build_catalog_context,
     find_product_alternatives,
@@ -160,6 +160,28 @@ def test_alternatives_are_deterministic_and_include_reason_codes(db):
     assert "SOFA-WIDE" not in {item["sku"] for item in alternatives}
 
 
+def test_alternative_does_not_claim_dimensions_fit_without_size_constraint(db):
+    source = _product(
+        "SOFA-OLD",
+        availability_status="out_of_stock",
+        stock_quantity=0,
+    )
+    candidate = _product("SOFA-NEW")
+    db.add_all([source, candidate])
+    db.commit()
+
+    alternative = find_product_alternatives(
+        db,
+        source,
+        at=NOW,
+        region="CN-SH",
+        limit=1,
+    )[0]
+
+    assert "dimensions_fit" not in alternative["reason_codes"]
+    assert "dimensions_known" in alternative["reason_codes"]
+
+
 def test_enrichment_replaces_unavailable_sku_and_records_versioned_quote(db):
     unavailable = _product(
         "SOFA-OLD",
@@ -190,3 +212,81 @@ def test_enrichment_replaces_unavailable_sku_and_records_versioned_quote(db):
     assert quote["lineItems"][0]["unitPrice"] == 4800
     assert quote["catalogVersion"]
     assert quote["priceVersion"]
+
+
+def test_enrichment_rejects_plan_without_sku_instead_of_style_fallback(db):
+    db.add(_product("SOFA-AVAILABLE"))
+    db.commit()
+    plans = [{"id": "plan-a", "style": "现代简约", "customItems": []}]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
+
+    assert plans[0]["furnitureSuggestions"] == []
+    assert "missing_product_sku" in plans[0]["catalogValidation"]["hardErrors"]
+    assert plans[0]["shopQuote"]["furnitureTotal"] == 0
+
+
+def test_custom_quote_rule_requires_exact_project_and_grade(db):
+    db.add_all([
+        _product("SOFA-001"),
+        CustomQuoteRule(
+            project_name="定制衣柜",
+            material_grade="E0 实木多层板",
+            pricing_unit="㎡",
+            unit_price=1280,
+            is_active=True,
+        ),
+    ])
+    db.commit()
+    plans = [{
+        "id": "plan-a",
+        "furnitureSuggestions": [{"sku": "SOFA-001"}],
+        "customItems": [{
+            "project": "衣柜",
+            "grade": "E0 实木多层板",
+            "quantity": 3,
+        }],
+    }]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
+
+    validation = plans[0]["catalogValidation"]
+    assert plans[0]["customItems"] == []
+    assert "custom_quote_rule_missing" in validation["hardErrors"]
+    assert validation["customRuleErrors"][0]["reason_code"] == (
+        "custom_quote_rule_missing"
+    )
+
+
+def test_custom_quote_rule_must_be_unique(db):
+    rules = [
+        CustomQuoteRule(
+            project_name="定制衣柜",
+            material_grade="E0 实木多层板",
+            pricing_unit="㎡",
+            unit_price=price,
+            is_active=True,
+        )
+        for price in (1280, 1380)
+    ]
+    db.add_all([_product("SOFA-001"), *rules])
+    db.commit()
+    plans = [{
+        "id": "plan-a",
+        "furnitureSuggestions": [{"sku": "SOFA-001"}],
+        "customItems": [{
+            "project": "定制衣柜",
+            "grade": "E0 实木多层板",
+            "quantity": 3,
+        }],
+    }]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
+
+    validation = plans[0]["catalogValidation"]
+    assert plans[0]["customItems"] == []
+    assert "custom_quote_rule_ambiguous" in validation["hardErrors"]
+    assert validation["customRuleErrors"][0]["matching_rule_ids"] == [
+        rules[0].id,
+        rules[1].id,
+    ]
