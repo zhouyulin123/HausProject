@@ -188,6 +188,11 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "execution_deadline_at",
             "dead_lettered_at",
         } <= generation_run_columns
+        rendered_image_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("rendered_images")
+        }
+        assert "plan_version_id" in rendered_image_columns
         generation_run_constraints = {
             constraint["name"]: set(constraint["column_names"])
             for constraint in inspect(inspection_engine).get_unique_constraints(

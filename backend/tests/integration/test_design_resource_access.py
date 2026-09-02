@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes import chat, proposal, render
 from app.db.database import Base, get_db
-from app.db.models import DesignTask
+from app.db.models import DesignTask, RenderedImage
 from app.services import design_version_service
 from app.services.anonymous_session_service import (
     attach_task,
@@ -159,7 +159,7 @@ def test_proposal_uses_server_plan_snapshot(monkeypatch):
         db.add(task)
         db.flush()
         attach_task(db, owner.id, task.id)
-        design_version_service.persist_generation(
+        first_revision = design_version_service.persist_generation(
             db,
             task=task,
             plans=[
@@ -168,6 +168,20 @@ def test_proposal_uses_server_plan_snapshot(monkeypatch):
                     "name": "服务端可信方案",
                     "style": "原木风",
                     "shopQuote": {"total": 128000},
+                }
+            ],
+            generator="test",
+        )
+        first_plan_version_id = first_revision.plans[0].id
+        design_version_service.persist_generation(
+            db,
+            task=task,
+            plans=[
+                {
+                    "id": "plan-a",
+                    "name": "后续版本方案",
+                    "style": "现代风",
+                    "shopQuote": {"total": 256000},
                 }
             ],
             generator="test",
@@ -204,7 +218,7 @@ def test_proposal_uses_server_plan_snapshot(monkeypatch):
             headers={"X-Session-ID": owner_id},
             json={
                 "task_id": task_id,
-                "plan_id": "plan-a",
+                "plan_version_id": first_plan_version_id,
                 "plan": {
                     "id": "plan-a",
                     "name": "浏览器伪造方案",
@@ -218,3 +232,102 @@ def test_proposal_uses_server_plan_snapshot(monkeypatch):
     assert captured["plan"]["shopQuote"]["total"] == 128000
     for generated_file in set(artifact_dir.glob("*.pdf")) - files_before:
         generated_file.unlink()
+
+
+@pytest.mark.integration
+def test_render_and_proposal_require_exact_plan_version(monkeypatch):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    with factory() as db:
+        owner = create_anonymous_session(db)
+        task = DesignTask(status="completed", progress=100)
+        db.add(task)
+        db.flush()
+        attach_task(db, owner.id, task.id)
+        revision = design_version_service.persist_generation(
+            db,
+            task=task,
+            plans=[
+                {
+                    "id": "plan-a",
+                    "name": "版本化方案",
+                    "style": "原木风",
+                    "shopQuote": {"total": 128000},
+                }
+            ],
+            generator="test",
+        )
+        db.commit()
+        owner_id = owner.id
+        task_id = task.id
+        plan_version_id = revision.plans[0].id
+
+    artifact_dir = (
+        Path(__file__).resolve().parents[2] / ".test_artifacts" / "delivery-version"
+    )
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(render.sd_service, "is_available", lambda: True)
+    monkeypatch.setattr(
+        render.sd_service,
+        "render_effect_image",
+        lambda *_: (b"png", "text2img"),
+    )
+    monkeypatch.setattr(render.settings, "upload_dir", str(artifact_dir))
+    monkeypatch.setattr(proposal.settings, "upload_dir", str(artifact_dir))
+    monkeypatch.setattr(
+        proposal.pdf_service,
+        "build_proposal_pdf",
+        lambda *_: b"%PDF-1.4 test",
+    )
+
+    app = FastAPI()
+    app.include_router(render.router, prefix="/api/design/render")
+    app.include_router(proposal.router, prefix="/api/design")
+
+    def override_db():
+        with factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    with TestClient(app) as client:
+        missing_render = client.post(
+            "/api/design/render",
+            headers={"X-Session-ID": owner_id},
+            json={
+                "task_id": task_id,
+                "plan_id": "plan-a",
+                "style": "原木风",
+            },
+        )
+        missing_proposal = client.post(
+            "/api/design/proposal-pdf",
+            headers={"X-Session-ID": owner_id},
+            json={"task_id": task_id, "plan_id": "plan-a"},
+        )
+        rendered = client.post(
+            "/api/design/render",
+            headers={"X-Session-ID": owner_id},
+            json={
+                "task_id": task_id,
+                "plan_version_id": plan_version_id,
+                "style": "原木风",
+            },
+        )
+
+    assert missing_render.status_code == 422
+    assert missing_proposal.status_code == 422
+    assert rendered.status_code == 200
+    with factory() as db:
+        record = db.query(RenderedImage).one()
+        assert record.plan_version_id == plan_version_id
+        assert record.plan_id == "plan-a"
+
+    for generated_file in artifact_dir.iterdir():
+        if generated_file.is_file():
+            generated_file.unlink()
