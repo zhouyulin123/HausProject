@@ -148,3 +148,41 @@ def test_invalid_provider_payload_does_not_record_availability_failure(
         ("before", "primary-llm"),
         ("success", permit),
     ]
+
+
+def test_non_availability_provider_error_releases_half_open_permit(monkeypatch):
+    request = httpx.Request("POST", "https://provider.example/v1/chat")
+
+    class Completions:
+        def create(self, **kwargs):
+            raise APIStatusError(
+                "invalid",
+                response=httpx.Response(400, request=request),
+                body=None,
+            )
+
+    client = type(
+        "Client",
+        (),
+        {"chat": type("Chat", (), {"completions": Completions()})()},
+    )()
+    monkeypatch.setattr(llm_service, "get_client", lambda: client)
+    monkeypatch.setattr(llm_service.settings, "llm_provider_key", "primary-llm")
+    events = []
+    permit = object()
+    hooks = llm_service.ProviderCallHooks(
+        before_call=lambda provider_key: events.append(("before", provider_key))
+        or permit,
+        record_success=lambda value: events.append(("success", value)),
+        record_failure=lambda value, code: events.append(("failure", value, code)),
+        release_call=lambda value: events.append(("release", value)),
+    )
+
+    with llm_service.provider_call_guard(hooks):
+        with pytest.raises(llm_service.LLMUnavailable):
+            llm_service._chat_json("system", "user", max_tokens=100)
+
+    assert events == [
+        ("before", "primary-llm"),
+        ("release", permit),
+    ]

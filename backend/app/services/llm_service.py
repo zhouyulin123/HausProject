@@ -217,12 +217,11 @@ def _chat_json(
         raise
     except Exception as exc:
         failure_code = provider_failure_code(exc)
-        if (
-            provider_hooks is not None
-            and provider_permit is not None
-            and failure_code is not None
-        ):
-            provider_hooks.record_failure(provider_permit, failure_code)
+        if provider_hooks is not None and provider_permit is not None:
+            if failure_code is not None:
+                provider_hooks.record_failure(provider_permit, failure_code)
+            else:
+                provider_hooks.release_call(provider_permit)
         logger.warning("LLM 调用失败: %s", exc)
         raise LLMUnavailable(str(exc)) from exc
 

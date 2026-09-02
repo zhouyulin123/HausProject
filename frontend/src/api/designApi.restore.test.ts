@@ -224,6 +224,7 @@ describe("方案结果恢复", () => {
     ["dead_letter", "供应商调用超过硬截止时间"],
     ["cancelled", "方案生成已取消"],
     ["cost_limit_exceeded", "模型调用将超过单任务成本上限，需人工确认"],
+    ["provider_unavailable", "模型供应商暂时不可用，需要人工处理"],
   ] as const)("生成任务进入 %s 后立即停止轮询", async (status, expected) => {
     const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
     const storage = createLocalStorage({

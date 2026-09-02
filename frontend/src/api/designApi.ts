@@ -271,6 +271,7 @@ interface GenerationStatus {
     | "failed"
     | "dead_letter"
     | "cost_limit_exceeded"
+    | "provider_unavailable"
     | "cancelled";
   progress: number;
   current_node: string | null;
@@ -290,7 +291,13 @@ async function waitForGeneration(
     );
     if (generation.status === "completed") return;
     if (
-      ["failed", "dead_letter", "cost_limit_exceeded", "cancelled"].includes(
+      [
+        "failed",
+        "dead_letter",
+        "cost_limit_exceeded",
+        "provider_unavailable",
+        "cancelled",
+      ].includes(
         generation.status,
       )
     ) {
@@ -300,6 +307,8 @@ async function waitForGeneration(
           ? "方案生成超过执行限制，已停止并等待人工处理"
           : generation.status === "cost_limit_exceeded"
             ? "方案生成达到成本上限，需要人工确认"
+          : generation.status === "provider_unavailable"
+            ? "模型供应商暂时不可用，需要人工处理"
           : "方案生成失败，请稍后重试";
       throw new Error(generation.error_message || fallbackMessage);
     }
