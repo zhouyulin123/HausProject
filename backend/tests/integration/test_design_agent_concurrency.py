@@ -173,14 +173,16 @@ def test_expired_running_turn_is_recovered_once_and_never_stays_409(
     concurrent_agent_context,
 ):
     factory, task_id = concurrent_agent_context
-    payload = _payload("expired-running-001")
+    payload = _payload("expired-running-001").model_copy(
+        update={"active_mode": "custom_furniture"}
+    )
     with factory() as db:
         db.add(
             DesignAgentTurn(
                 task_id=task_id,
                 client_turn_id=payload.client_turn_id,
                 active_mode=payload.active_mode,
-                intent="design",
+                intent="custom_furniture",
                 status="running",
                 request_json=payload.model_dump(mode="json"),
                 created_at=datetime.now(timezone.utc) - timedelta(days=1),
@@ -204,6 +206,9 @@ def test_expired_running_turn_is_recovered_once_and_never_stays_409(
     assert first == second
     assert first["status"] == "needs_human"
     assert first["exit_reason"] == "turn_lease_expired"
+    assert first["active_mode"] == "custom_furniture"
+    assert first["state"]["active_mode"] == "custom_furniture"
+    assert first["state"]["intent"] == "custom_furniture"
     assert first["state"]["hard_errors"] == ["turn_lease_expired"]
     with factory() as db:
         turn = db.scalar(
@@ -219,6 +224,88 @@ def test_expired_running_turn_is_recovered_once_and_never_stays_409(
                 select(DesignAgentEvent).where(DesignAgentEvent.turn_id == turn.id)
             ).all()
         ) == 1
+        assert db.scalar(
+            select(GenerationRun).where(GenerationRun.task_id == task_id)
+        ) is None
+
+
+@pytest.mark.integration
+def test_recovered_lease_prevents_late_executor_from_committing(
+    concurrent_agent_context,
+    monkeypatch,
+):
+    factory, task_id = concurrent_agent_context
+    payload = _payload("late-executor-001")
+    first_entered = Event()
+    release_first = Event()
+    original_facts_for_turn = design_agent_service._facts_for_turn
+    outcomes: dict[str, object] = {}
+
+    def block_old_executor(db, task, current_payload, *, turn_id):
+        result = original_facts_for_turn(
+            db,
+            task,
+            current_payload,
+            turn_id=turn_id,
+        )
+        first_entered.set()
+        assert release_first.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(
+        design_agent_service,
+        "_facts_for_turn",
+        block_old_executor,
+    )
+
+    def execute_old_owner():
+        with factory() as db:
+            try:
+                outcomes["old"] = design_agent_service.run_turn(
+                    db,
+                    task=db.get(DesignTask, task_id),
+                    payload=payload,
+                )
+            except Exception as exc:  # pragma: no cover - asserted by caller
+                outcomes["old"] = exc
+
+    old_thread = Thread(target=execute_old_owner)
+    old_thread.start()
+    assert first_entered.wait(timeout=5)
+
+    with factory() as db:
+        turn = db.scalar(
+            select(DesignAgentTurn).where(
+                DesignAgentTurn.task_id == task_id,
+                DesignAgentTurn.client_turn_id == payload.client_turn_id,
+            )
+        )
+        turn.created_at = datetime.now(timezone.utc) - timedelta(days=1)
+        db.commit()
+    with factory() as db:
+        recovered = design_agent_service.run_turn(
+            db,
+            task=db.get(DesignTask, task_id),
+            payload=payload,
+        )
+
+    release_first.set()
+    old_thread.join(timeout=5)
+
+    assert not old_thread.is_alive()
+    assert outcomes["old"] == recovered
+    assert recovered["exit_reason"] == "turn_lease_expired"
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        turn = db.scalar(
+            select(DesignAgentTurn).where(
+                DesignAgentTurn.task_id == task_id,
+                DesignAgentTurn.client_turn_id == payload.client_turn_id,
+            )
+        )
+        assert task.agent_state_version == 1
+        assert task.agent_state_json["exit_reason"] == "turn_lease_expired"
+        assert turn.status == "needs_human"
         assert db.scalar(
             select(GenerationRun).where(GenerationRun.task_id == task_id)
         ) is None

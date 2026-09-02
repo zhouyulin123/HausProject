@@ -1,5 +1,17 @@
 # 项目开发状态记录
 
+## 2026-09-02 阶段 1：统一 Agent turn 并发与崩溃恢复
+
+- 同一 `DesignTask` 的 Agent turn 认领改为数据库级串行化：MySQL/PostgreSQL 锁定任务聚合根，SQLite 使用 `BEGIN IMMEDIATE` 获取写锁；不同 `client_turn_id` 的重叠请求不会同时执行工具、重复累计预算或创建冲突的 `GenerationRun`。
+- `running` turn 以服务端 `created_at` 和有边界的 `DESIGN_AGENT_TURN_LEASE_SECONDS`（默认 300 秒）形成固定执行租约；租约过期后确定性写入 `needs_human + turn_lease_expired` checkpoint、响应和审计事件，相同请求后续稳定复取，不再永久 409。
+- Agent 最终 checkpoint 使用 `agent_state_version` 条件更新；执行期间若 Worker 或其他持久化流程推进状态，本轮 GenerationRun、场景和事件事务整体回滚，turn 终态记录为 `conflict`，API 返回 `409 agent_state_conflict` 和最新状态版本。
+- 过期 turn 的旧执行器即使恢复运行，也会因状态版本/持久化响应所有权已失效而无法提交结果或重复入队；未知异常恢复继续从最新 checkpoint 保留累计步骤和重试预算。
+
+### 验证
+
+- RED `85f345b` 复现重叠 turn 双执行、过期 turn 永久 409、checkpoint 丢失和缺少租约边界；GREEN 新增真实 SQLite 文件库并发、租约恢复、旧执行器迟到提交阻断及 CAS 回滚覆盖。
+- Agent/Generation 相关回归 123 项通过；后端全量 503 项通过，Python 编译与 Alembic 单头 `6a7b8c9d0e1f` 检查通过。本次复用现有 turn 时间与状态字段，无新增迁移。
+
 ## 2026-09-02 阶段 1–2：统一 Agent 生成迁移到持久化 Worker
 
 - `design_generation` 不再于 Agent HTTP 请求中调用模型、模板降级或写入 `DesignResult`；事实与商品门禁通过后，仅以任务、当前 Agent 状态版本和规范化输入摘要派生稳定操作键并创建 `GenerationRun`。

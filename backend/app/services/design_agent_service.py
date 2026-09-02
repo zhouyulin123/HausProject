@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 from math import isclose
 import re
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -69,8 +69,22 @@ class AgentIdempotencyConflict(ValueError):
     """相同 client_turn_id 被用于语义不同的请求。"""
 
 
+class AgentStateVersionConflict(ValueError):
+    """执行期间任务 checkpoint 已被其他持久化流程推进。"""
+
+    def __init__(self, message: str, *, state_version: int) -> None:
+        super().__init__(message)
+        self.state_version = state_version
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _intent_for(payload: AgentTurnRequest) -> str:
@@ -459,11 +473,6 @@ def _design_tool(
                 "生成操作幂等输入发生冲突，已停止自动执行",
                 codes=["generation_idempotency_conflict"],
             ) from exc
-        task.confirmed_requirement_json = deepcopy(requirement)
-        task.space_type = facts.get("space_type")
-        task.style = facts.get("style")
-        task.budget_min = facts.get("budget_min")
-        task.budget_max = facts.get("budget_max")
         return {
             "run_id": run.id,
             "generation_status": run.status,
@@ -755,24 +764,306 @@ def _assert_same_turn_request(
         )
 
 
+def _turn_lease_expired(turn: DesignAgentTurn, *, now: datetime) -> bool:
+    if turn.created_at is None:
+        return True
+    deadline = _as_utc(turn.created_at) + timedelta(
+        seconds=settings.design_agent_turn_lease_seconds
+    )
+    return deadline <= _as_utc(now)
+
+
+def _lock_task_for_turn(db: Session, task_id: int) -> DesignTask:
+    """锁定聚合根；SQLite 以 RESERVED 写锁提供可解释的串行语义。"""
+    bind = db.get_bind()
+    if bind.dialect.name == "sqlite":
+        # 所有权校验已开启读事务；结束它后才能显式获取 SQLite 写锁。
+        db.commit()
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        task = db.scalar(
+            select(DesignTask)
+            .where(DesignTask.id == task_id)
+            .execution_options(populate_existing=True)
+        )
+    else:
+        task = db.scalar(
+            select(DesignTask)
+            .where(DesignTask.id == task_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    if task is None:
+        raise ValueError("DesignTask 不存在")
+    return task
+
+
+def _existing_turn_result(
+    turn: DesignAgentTurn,
+    payload: AgentTurnRequest,
+) -> dict[str, Any]:
+    _assert_same_turn_request(turn, payload)
+    if turn.status == "conflict" and isinstance(turn.response_json, dict):
+        state_version = turn.response_json.get("state_version")
+        raise AgentStateVersionConflict(
+            str(turn.response_json.get("message") or "Agent 状态版本发生冲突"),
+            state_version=state_version if isinstance(state_version, int) else 0,
+        )
+    if turn.response_json is not None:
+        return deepcopy(turn.response_json)
+    raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中")
+
+
+def _recovery_checkpoint(
+    task: DesignTask,
+    turn: DesignAgentTurn,
+) -> dict[str, Any]:
+    prior = task.agent_state_json if isinstance(task.agent_state_json, dict) else {}
+    max_steps = prior.get("max_steps", 12)
+    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
+        max_steps = 12
+    max_retries = prior.get("max_retries", 2)
+    if (
+        not isinstance(max_retries, int)
+        or isinstance(max_retries, bool)
+        or max_retries < 0
+    ):
+        max_retries = 2
+    step_count = prior.get("step_count", 0)
+    if not isinstance(step_count, int) or isinstance(step_count, bool) or step_count < 0:
+        step_count = 0
+    retry_count = prior.get("retry_count", 0)
+    if (
+        not isinstance(retry_count, int)
+        or isinstance(retry_count, bool)
+        or retry_count < 0
+    ):
+        retry_count = 0
+    return {
+        **deepcopy(prior),
+        "status": "needs_human",
+        "active_mode": turn.active_mode,
+        "active_room_id": prior.get("active_room_id"),
+        "intent": turn.intent,
+        "current_node": "turn_recovery",
+        "facts": deepcopy(prior.get("facts") or {}),
+        "fact_evidence": deepcopy(prior.get("fact_evidence") or {}),
+        "pending_questions": [],
+        "step_count": step_count,
+        "retry_count": retry_count,
+        "max_steps": max_steps,
+        "max_retries": max_retries,
+        "hard_errors": list(
+            dict.fromkeys([*(prior.get("hard_errors") or []), "turn_lease_expired"])
+        ),
+        "custom_furniture_spec": deepcopy(prior.get("custom_furniture_spec")),
+        "approval_required": True,
+        "exit_reason": "turn_lease_expired",
+        "scene_ref": deepcopy(prior.get("scene_ref")),
+        "run_id": prior.get("run_id"),
+        "result": deepcopy(prior.get("result")),
+    }
+
+
+def _recover_stale_turn(
+    db: Session,
+    *,
+    task: DesignTask,
+    turn: DesignAgentTurn,
+) -> dict[str, Any]:
+    checkpoint = _recovery_checkpoint(task, turn)
+    task.agent_state_version = (task.agent_state_version or 0) + 1
+    task.agent_state_json = checkpoint
+    task.active_mode = turn.active_mode
+    task.status = "needs_human"
+    sequence = (
+        db.scalar(
+            select(func.max(DesignAgentEvent.sequence)).where(
+                DesignAgentEvent.turn_id == turn.id
+            )
+        )
+        or 0
+    ) + 1
+    event = DesignAgentEvent(
+        task_id=task.id,
+        turn_id=turn.id,
+        sequence=sequence,
+        event_type="turn_recovered",
+        node="turn_recovery",
+        status="needs_human",
+        source="orchestrator",
+        summary="Agent turn 租约已过期，已停止旧执行并转人工恢复",
+        details_json={"code": "turn_lease_expired"},
+    )
+    db.add(event)
+    db.flush()
+    reply = "上一轮执行在完成前中断，系统已停止旧执行并转为人工恢复。"
+    response = {
+        "task_id": task.id,
+        "turn_id": turn.id,
+        "state_version": task.agent_state_version,
+        "status": "needs_human",
+        "active_mode": turn.active_mode,
+        "active_room_id": checkpoint.get("active_room_id"),
+        "intent": turn.intent,
+        "reply": reply,
+        "state": checkpoint,
+        "pending_questions": [],
+        "events": [_event_payload(event)],
+        "approval_required": True,
+        "scene_ref": checkpoint.get("scene_ref"),
+        "run_id": checkpoint.get("run_id"),
+        "exit_reason": "turn_lease_expired",
+        "result": checkpoint.get("result"),
+    }
+    turn.status = "needs_human"
+    turn.response_json = deepcopy(response)
+    turn.completed_at = _utc_now()
+    message = turn.request_json.get("message") if isinstance(turn.request_json, dict) else ""
+    db.add(ChatLog(task_id=task.id, role="user", content=str(message or "")))
+    db.add(ChatLog(task_id=task.id, role="ai", content=reply))
+    return response
+
+
+def _claim_turn(
+    db: Session,
+    *,
+    task_id: int,
+    payload: AgentTurnRequest,
+) -> tuple[DesignTask, DesignAgentTurn, dict[str, Any] | None]:
+    task = _lock_task_for_turn(db, task_id)
+    now = _utc_now()
+    running_turns = db.scalars(
+        select(DesignAgentTurn)
+        .where(
+            DesignAgentTurn.task_id == task.id,
+            DesignAgentTurn.status == "running",
+        )
+        .order_by(DesignAgentTurn.id)
+    ).all()
+    existing = next(
+        (turn for turn in running_turns if turn.client_turn_id == payload.client_turn_id),
+        None,
+    )
+    if existing is None:
+        existing = db.scalar(
+            select(DesignAgentTurn).where(
+                DesignAgentTurn.task_id == task.id,
+                DesignAgentTurn.client_turn_id == payload.client_turn_id,
+            )
+        )
+    if existing is not None:
+        _assert_same_turn_request(existing, payload)
+        if existing.response_json is not None:
+            return task, existing, _existing_turn_result(existing, payload)
+        if not _turn_lease_expired(existing, now=now):
+            raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中")
+        response = _recover_stale_turn(db, task=task, turn=existing)
+        db.commit()
+        return task, existing, response
+
+    for running in running_turns:
+        if not _turn_lease_expired(running, now=now):
+            raise AgentTurnInProgress("任务已有 Agent turn 正在处理中")
+        _recover_stale_turn(db, task=task, turn=running)
+
+    turn = DesignAgentTurn(
+        task_id=task.id,
+        client_turn_id=payload.client_turn_id,
+        active_mode=payload.active_mode,
+        intent=_intent_for(payload),
+        status="running",
+        request_json=payload.model_dump(mode="json"),
+    )
+    db.add(turn)
+    try:
+        db.commit()
+        db.refresh(turn)
+        db.refresh(task)
+    except IntegrityError as exc:
+        db.rollback()
+        existing = db.scalar(
+            select(DesignAgentTurn).where(
+                DesignAgentTurn.task_id == task.id,
+                DesignAgentTurn.client_turn_id == payload.client_turn_id,
+            )
+        )
+        if existing is not None:
+            return task, existing, _existing_turn_result(existing, payload)
+        raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中") from exc
+    return task, turn, None
+
+
+def _record_state_conflict(
+    db: Session,
+    *,
+    task_id: int,
+    payload: AgentTurnRequest,
+) -> dict[str, Any] | AgentStateVersionConflict:
+    db.rollback()
+    task = _lock_task_for_turn(db, task_id)
+    turn = db.scalar(
+        select(DesignAgentTurn).where(
+            DesignAgentTurn.task_id == task_id,
+            DesignAgentTurn.client_turn_id == payload.client_turn_id,
+        )
+    )
+    if turn is None:
+        return AgentStateVersionConflict(
+            "Agent 状态版本发生冲突",
+            state_version=task.agent_state_version or 0,
+        )
+    if turn.response_json is not None:
+        if turn.status == "conflict":
+            return AgentStateVersionConflict(
+                str(turn.response_json.get("message") or "Agent 状态版本发生冲突"),
+                state_version=task.agent_state_version or 0,
+            )
+        return deepcopy(turn.response_json)
+    message = "Agent 状态版本发生并发冲突，本轮副作用已回滚"
+    conflict = {
+        "code": "agent_state_conflict",
+        "message": message,
+        "state_version": task.agent_state_version or 0,
+    }
+    turn.status = "conflict"
+    turn.response_json = conflict
+    turn.completed_at = _utc_now()
+    db.add(
+        DesignAgentEvent(
+            task_id=task.id,
+            turn_id=turn.id,
+            sequence=1,
+            event_type="state_conflict",
+            node="checkpoint_commit",
+            status="conflict",
+            source="orchestrator",
+            summary=message,
+            details_json={
+                "code": "agent_state_conflict",
+                "state_version": task.agent_state_version or 0,
+            },
+        )
+    )
+    db.commit()
+    return AgentStateVersionConflict(
+        message,
+        state_version=task.agent_state_version or 0,
+    )
+
+
 def _run_turn(
     db: Session,
     *,
     task: DesignTask,
     payload: AgentTurnRequest,
 ) -> dict[str, Any]:
-    existing = db.scalars(
-        select(DesignAgentTurn).where(
-            DesignAgentTurn.task_id == task.id,
-            DesignAgentTurn.client_turn_id == payload.client_turn_id,
-        )
-    ).first()
-    if existing is not None:
-        _assert_same_turn_request(existing, payload)
-        if existing.response_json is not None:
-            return deepcopy(existing.response_json)
-        raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中")
-
+    task, turn, claimed_response = _claim_turn(
+        db,
+        task_id=task.id,
+        payload=payload,
+    )
+    if claimed_response is not None:
+        return claimed_response
     intent = _intent_for(payload)
     if payload.scene_id is not None:
         scene = _load_task_scene(
@@ -786,33 +1077,6 @@ def _run_turn(
             raise AgentSceneVersionConflict(
                 f"场景已经更新到版本 {scene.current_version}"
             )
-    turn = DesignAgentTurn(
-        task_id=task.id,
-        client_turn_id=payload.client_turn_id,
-        active_mode=payload.active_mode,
-        intent=intent,
-        status="running",
-        request_json=payload.model_dump(mode="json"),
-    )
-    db.add(turn)
-    try:
-        # 先占用幂等键，再执行任何模型或场景工具，阻断并发重复调用。
-        db.commit()
-        db.refresh(turn)
-    except IntegrityError as exc:
-        db.rollback()
-        existing = db.scalars(
-            select(DesignAgentTurn).where(
-                DesignAgentTurn.task_id == task.id,
-                DesignAgentTurn.client_turn_id == payload.client_turn_id,
-            )
-        ).first()
-        if existing is not None:
-            _assert_same_turn_request(existing, payload)
-            if existing.response_json is not None:
-                return deepcopy(existing.response_json)
-        raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中") from exc
-
     checkpoint = (
         task.agent_state_json if isinstance(task.agent_state_json, dict) else {}
     )
@@ -907,16 +1171,8 @@ def _run_turn(
         initial_exit_reason=initial_exit_reason,
     )
 
-    task.agent_state_version = next_state_version
-    task.active_mode = payload.active_mode
-    task.status = state["status"]
     requirement = deepcopy(task.confirmed_requirement_json or {})
     requirement.update(facts)
-    task.confirmed_requirement_json = requirement
-    task.space_type = facts.get("space_type")
-    task.style = facts.get("style")
-    task.budget_min = facts.get("budget_min")
-    task.budget_max = facts.get("budget_max")
     public_result = _public_result(state.get("result"))
     scene_ref = (public_result or {}).get("scene_ref")
     run_id = (
@@ -947,7 +1203,34 @@ def _run_turn(
         "run_id": run_id,
         "result": public_result,
     }
-    task.agent_state_json = checkpoint
+    state_update = db.execute(
+        update(DesignTask)
+        .where(
+            DesignTask.id == task.id,
+            DesignTask.agent_state_version == next_state_version - 1,
+        )
+        .values(
+            agent_state_version=next_state_version,
+            agent_state_json=checkpoint,
+            active_mode=payload.active_mode,
+            status=state["status"],
+            confirmed_requirement_json=requirement,
+            space_type=facts.get("space_type"),
+            style=facts.get("style"),
+            budget_min=facts.get("budget_min"),
+            budget_max=facts.get("budget_max"),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if state_update.rowcount != 1:
+        conflict = _record_state_conflict(
+            db,
+            task_id=task.id,
+            payload=payload,
+        )
+        if isinstance(conflict, dict):
+            return conflict
+        raise conflict
 
     events = _events_from_state(task.id, turn.id, state)
     db.add_all(events)
@@ -956,7 +1239,7 @@ def _run_turn(
     response = {
         "task_id": task.id,
         "turn_id": turn.id,
-        "state_version": task.agent_state_version,
+        "state_version": next_state_version,
         "status": state["status"],
         "active_mode": payload.active_mode,
         "active_room_id": payload.active_room_id,
@@ -988,7 +1271,7 @@ def _persist_failed_turn(
     error: Exception,
 ) -> dict[str, Any]:
     db.rollback()
-    task = db.get(DesignTask, task_id)
+    task = _lock_task_for_turn(db, task_id)
     turn = db.scalars(
         select(DesignAgentTurn).where(
             DesignAgentTurn.task_id == task_id,
@@ -1118,6 +1401,7 @@ def run_turn(
         AgentSceneVersionConflict,
         AgentIdempotencyConflict,
         AgentTurnInProgress,
+        AgentStateVersionConflict,
     ):
         raise
     except Exception as exc:

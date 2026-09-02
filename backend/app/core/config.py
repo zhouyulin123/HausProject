@@ -108,6 +108,7 @@ class Settings(BaseSettings):
     blender_allow_uploaded_models: bool = False
     generation_worker_poll_seconds: float = Field(default=1.0, ge=0.2, le=60)
     generation_worker_max_attempts: int = Field(default=3, ge=1, le=10)
+    design_agent_turn_lease_seconds: int = Field(default=300, ge=30, le=3600)
     generation_worker_lease_seconds: int = Field(default=180, ge=30, le=3600)
     generation_worker_heartbeat_seconds: int = Field(default=15, ge=5, le=300)
     generation_worker_execution_timeout_seconds: int = Field(

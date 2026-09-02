@@ -858,6 +858,43 @@ def test_agent_turn_rejects_client_turn_id_already_in_progress(
 
 
 @pytest.mark.integration
+def test_agent_turn_exposes_checkpoint_conflict_as_structured_409(
+    agent_api_context,
+    monkeypatch,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+
+    def raise_state_conflict(*_, **__):
+        raise design_agent.design_agent_service.AgentStateVersionConflict(
+            "Agent 状态版本发生并发冲突，本轮副作用已回滚",
+            state_version=7,
+        )
+
+    monkeypatch.setattr(
+        design_agent.design_agent_service,
+        "run_turn",
+        raise_state_conflict,
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "state-conflict-api-001",
+            "message": "继续设计",
+            "active_mode": "catalog_design",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "agent_state_conflict",
+        "message": "Agent 状态版本发生并发冲突，本轮副作用已回滚",
+        "state_version": 7,
+    }
+
+
+@pytest.mark.integration
 def test_agent_normalizes_current_frontend_requirement_shape(
     agent_api_context,
 ):
