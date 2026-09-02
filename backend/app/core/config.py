@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     )
     generation_worker_retry_base_seconds: int = Field(default=5, ge=1, le=600)
     generation_inline_fallback: bool = False
+    # 阶段 4 失败分诊报告验签；未配置时管理端同步接口关闭。
+    eval_report_signing_key: str = ""
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"

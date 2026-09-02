@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import require_admin
+from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import FailureCluster, User
 from app.schemas.failure_triage import (
@@ -52,8 +53,19 @@ def sync_failure_clusters(
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> FailureTriageSyncResponse:
+    if not settings.eval_report_signing_key:
+        raise HTTPException(
+            status_code=503,
+            detail="失败分诊报告验签尚未配置",
+        )
     try:
-        result = failure_triage_service.sync_verified_report(db, payload)
+        result = failure_triage_service.sync_verified_report(
+            db,
+            payload,
+            signing_key=settings.eval_report_signing_key,
+        )
+    except failure_triage_service.FailureTriageSignatureError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except failure_triage_service.FailureTriageConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return FailureTriageSyncResponse(

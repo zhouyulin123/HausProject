@@ -286,6 +286,7 @@ class FailureTriageImport(Base):
     id = Column(Integer, primary_key=True, index=True)
     report_id = Column(String(100), nullable=False, unique=True, index=True)
     payload_hash = Column(String(64), nullable=False)
+    semantic_hash = Column(String(64), nullable=False, unique=True, index=True)
     imported_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

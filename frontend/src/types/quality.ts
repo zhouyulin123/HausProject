@@ -81,10 +81,12 @@ export interface FailureClusterUpdate {
 export interface FailureTriageReport {
   schema_version: "1.0";
   report_id: string;
-  verification_status: "verified";
   taxonomy_version: string;
   data_version: string;
   candidate_version: string;
+  signature_algorithm: "hmac-sha256";
+  signature_key_id: string;
+  signature: string;
   generated_at: string;
   failures: Array<{
     failure_type: string;

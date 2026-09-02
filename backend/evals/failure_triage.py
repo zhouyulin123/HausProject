@@ -9,10 +9,12 @@ import re
 from base64 import b32encode
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from evals.real_world import RealWorldDataset
+from app.services.failure_triage_signature import sign_failure_triage_payload
 
 
 FailureType = Literal[
@@ -387,6 +389,98 @@ def build_failure_triage_report(
             case_splits=case_splits,
         ),
     }
+
+
+def build_failure_triage_sync_payload(
+    report: dict[str, Any],
+    *,
+    report_id: str,
+    candidate_version: str,
+    signing_key_id: str,
+    signing_key: str,
+    generated_at: datetime | None = None,
+) -> dict[str, Any]:
+    """把已验证匿名报告转换成可由管理 API 验签的最小载荷。"""
+    report_input = report.get("input")
+    clusters = report.get("clusters")
+    if not isinstance(report_input, dict) or not isinstance(clusters, list):
+        raise FailureTriageInputError("失败分诊报告缺少 input 或 clusters")
+
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    severity_rank = {value: index for index, value in enumerate(reversed(_SEVERITIES))}
+    for cluster in clusters:
+        if not isinstance(cluster, dict):
+            raise FailureTriageInputError("失败分诊报告包含非法聚类")
+        key = (str(cluster.get("failure_type") or ""), str(cluster.get("code") or ""))
+        severity = str(cluster.get("severity") or "")
+        aliases = cluster.get("case_ids")
+        failure_count = cluster.get("failure_count")
+        if (
+            not all(key)
+            or severity not in _SEVERITIES
+            or not isinstance(aliases, list)
+            or any(not isinstance(alias, str) for alias in aliases)
+            or not isinstance(failure_count, int)
+            or failure_count < 1
+        ):
+            raise FailureTriageInputError("失败分诊报告聚类字段不合法")
+        current = grouped.setdefault(
+            key,
+            {
+                "failure_type": key[0],
+                "code": key[1],
+                "severity": severity,
+                "occurrence_count": 0,
+                "aliases": set(),
+            },
+        )
+        current["occurrence_count"] += failure_count
+        current["aliases"].update(aliases)
+        if severity_rank[severity] > severity_rank[current["severity"]]:
+            current["severity"] = severity
+
+    timestamp = generated_at or datetime.now(timezone.utc)
+    generated_text = timestamp.astimezone(timezone.utc).isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+    payload: dict[str, Any] = {
+        "schema_version": FAILURE_TRIAGE_SCHEMA_VERSION,
+        "report_id": report_id.strip(),
+        "taxonomy_version": str(report_input.get("taxonomy_version") or "").strip(),
+        "data_version": str(report_input.get("data_version") or "").strip(),
+        "candidate_version": candidate_version.strip(),
+        "signature_algorithm": "hmac-sha256",
+        "signature_key_id": signing_key_id.strip(),
+        "generated_at": generated_text,
+        "failures": [
+            {
+                "failure_type": item["failure_type"],
+                "code": item["code"],
+                "severity": item["severity"],
+                "occurrence_count": item["occurrence_count"],
+                "affected_count": len(item["aliases"]),
+            }
+            for _, item in sorted(grouped.items())
+        ],
+    }
+    for field_name in (
+        "report_id",
+        "taxonomy_version",
+        "data_version",
+        "candidate_version",
+        "signature_key_id",
+    ):
+        if not payload[field_name]:
+            raise FailureTriageInputError(f"{field_name} 不能为空")
+    try:
+        payload["signature"] = sign_failure_triage_payload(
+            payload,
+            signing_key=signing_key,
+        )
+    except ValueError as exc:
+        raise FailureTriageInputError(str(exc)) from exc
+    return payload
 
 
 def _markdown_table(headers: tuple[str, ...], rows: list[tuple[Any, ...]]) -> list[str]:

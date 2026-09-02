@@ -68,10 +68,12 @@ describe("运营质量汇总 API", () => {
     await syncFailureTriageReport({
       schema_version: "1.0",
       report_id: "report-001",
-      verification_status: "verified",
       taxonomy_version: "taxonomy-1",
       data_version: "data-1",
       candidate_version: "candidate-1",
+      signature_algorithm: "hmac-sha256",
+      signature_key_id: "eval-key-v1",
+      signature: "a".repeat(64),
       generated_at: "2026-09-02T08:00:00Z",
       failures: [],
     });

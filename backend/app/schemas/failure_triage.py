@@ -31,10 +31,16 @@ class FailureTriageReportRequest(BaseModel):
 
     schema_version: Literal["1.0"]
     report_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$")
-    verification_status: Literal["verified"]
     taxonomy_version: str = Field(min_length=1, max_length=100)
     data_version: str = Field(min_length=1, max_length=100)
     candidate_version: str = Field(min_length=1, max_length=100)
+    signature_algorithm: Literal["hmac-sha256"]
+    signature_key_id: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    signature: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
     generated_at: datetime
     failures: list[FailureTriageItem] = Field(max_length=500)
 

@@ -174,14 +174,14 @@ def test_report_schema_rejects_case_ids_and_invalid_signatures(db):
 
 def test_same_semantic_report_cannot_be_counted_twice_under_another_id(db):
     first = sync_verified_report(db, _report("report-001"), signing_key=_SIGNING_KEY)
-    duplicate = sync_verified_report(
-        db,
-        _report("report-002"),
-        signing_key=_SIGNING_KEY,
-    )
+    with pytest.raises(FailureTriageConflict, match="相同语义证据"):
+        sync_verified_report(
+            db,
+            _report("report-002"),
+            signing_key=_SIGNING_KEY,
+        )
 
     assert first.imported is True
-    assert duplicate.imported is False
     cluster = db.scalar(select(FailureCluster))
     assert cluster is not None
     assert cluster.occurrence_count == 3

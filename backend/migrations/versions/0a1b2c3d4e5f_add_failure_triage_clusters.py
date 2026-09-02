@@ -53,15 +53,19 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("report_id", sa.String(length=100), nullable=False),
         sa.Column("payload_hash", sa.String(length=64), nullable=False),
+        sa.Column("semantic_hash", sa.String(length=64), nullable=False),
         sa.Column("imported_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("report_id"),
+        sa.UniqueConstraint("semantic_hash"),
     )
     op.create_index("ix_failure_triage_imports_id", "failure_triage_imports", ["id"])
     op.create_index("ix_failure_triage_imports_report_id", "failure_triage_imports", ["report_id"])
+    op.create_index("ix_failure_triage_imports_semantic_hash", "failure_triage_imports", ["semantic_hash"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_failure_triage_imports_semantic_hash", table_name="failure_triage_imports")
     op.drop_index("ix_failure_triage_imports_report_id", table_name="failure_triage_imports")
     op.drop_index("ix_failure_triage_imports_id", table_name="failure_triage_imports")
     op.drop_table("failure_triage_imports")

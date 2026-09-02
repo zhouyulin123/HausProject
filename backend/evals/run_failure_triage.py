@@ -10,6 +10,7 @@ from pathlib import Path
 from evals.failure_triage import (
     FailureTriageInputError,
     build_failure_triage_report,
+    build_failure_triage_sync_payload,
     load_failure_triage_evidence,
     render_failure_triage_markdown,
 )
@@ -22,6 +23,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--failures", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--asset-root", type=Path)
+    parser.add_argument("--report-id", required=True)
+    parser.add_argument("--candidate-version", required=True)
     parser.add_argument(
         "--case-id-salt-env",
         default="EVAL_CASE_ID_SALT",
@@ -32,6 +35,16 @@ def _parser() -> argparse.ArgumentParser:
         default="default",
         help="写入报告的密钥版本标识，不得包含密钥本身",
     )
+    parser.add_argument(
+        "--signing-key-env",
+        default="EVAL_REPORT_SIGNING_KEY",
+        help="提供报告 HMAC 签名密钥的环境变量名",
+    )
+    parser.add_argument(
+        "--signing-key-id",
+        required=True,
+        help="写入同步载荷的签名密钥版本，不得包含密钥本身",
+    )
     return parser
 
 
@@ -41,6 +54,11 @@ def main(argv: list[str] | None = None) -> int:
         salt = os.environ.get(args.case_id_salt_env)
         if not salt:
             raise FailureTriageInputError(f"环境变量 {args.case_id_salt_env} 未配置")
+        signing_key = os.environ.get(args.signing_key_env)
+        if not signing_key:
+            raise FailureTriageInputError(
+                f"环境变量 {args.signing_key_env} 未配置"
+            )
         dataset = load_case_manifest(args.manifest, asset_root=args.asset_root)
         if not dataset.eligible_cases():
             raise FailureTriageInputError("案例清单中没有已准入案例")
@@ -50,6 +68,13 @@ def main(argv: list[str] | None = None) -> int:
             evidence=evidence,
             anonymization_salt=salt,
             salt_id=args.salt_id,
+        )
+        report["sync_payload"] = build_failure_triage_sync_payload(
+            report,
+            report_id=args.report_id,
+            candidate_version=args.candidate_version,
+            signing_key_id=args.signing_key_id,
+            signing_key=signing_key,
         )
         markdown = render_failure_triage_markdown(report)
     except (FailureTriageInputError, DatasetValidationError) as exc:

@@ -83,16 +83,20 @@ python -m evals.run_real_world_eval `
 `low`。标识符必须使用小写字母开头，后续只允许小写字母、数字、点、
 下划线和连字符。未知字段和自由文本会被拒绝，不会参与启发式分类。
 
-先通过受控密钥配置 case_id 脱敏，再运行 CLI：
+先分别配置 case_id 脱敏密钥和报告签名密钥，再运行 CLI。两把密钥用途不同，不能复用；命令输出中的 `sync_payload` 可直接作为管理员同步接口的 JSON 请求体：
 
 ```powershell
 $env:EVAL_CASE_ID_SALT = "由评测管理员配置的至少16字符密钥"
+$env:EVAL_REPORT_SIGNING_KEY = "由评测管理员配置的至少32字节独立签名密钥"
 $env:PYTHONPATH = "backend"
 python -m evals.run_failure_triage `
   --manifest backend/evals/cases/real_world/manifest.json `
   --asset-root . `
   --failures backend/evals/cases/real_world/failure_triage.template.json `
   --salt-id eval-case-key-v1 `
+  --report-id weekly-2026-W36 `
+  --candidate-version candidate-2026-W36 `
+  --signing-key-id eval-report-key-v1 `
   --output-dir backend/evals/reports/failure_triage
 ```
 
@@ -101,3 +105,5 @@ HMAC case 别名。报告不保存原始 case_id，也不保存脱敏密钥；�
 保持相同密钥和 `salt-id`，才能跨次比较案例。退出码：`0` 表示输入有效且没有
 失败，`1` 表示输入有效且存在失败，`2` 表示版本、准入、结构、密钥或输出不合法。
 当前清单没有准入案例，CLI 会以 `2` 拒绝生成空洞的“成功”报告。
+
+后端必须通过 `EVAL_REPORT_SIGNING_KEY` 配置同一签名密钥，未配置时同步接口返回 `503`。签名不匹配返回 `422`；同一 `report_id` 对应不同内容，或同一语义证据更换 ID 重放，返回 `409`。报告只包含匿名聚合，不包含原始案例 ID、用户文本或图片。

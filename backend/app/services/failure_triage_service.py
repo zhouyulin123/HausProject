@@ -18,9 +18,14 @@ from app.schemas.failure_triage import (
     FailureTriageItem,
     FailureTriageReportRequest,
 )
+from app.services.failure_triage_signature import verify_failure_triage_signature
 
 
 class FailureTriageConflict(ValueError):
+    pass
+
+
+class FailureTriageSignatureError(FailureTriageConflict):
     pass
 
 
@@ -46,6 +51,48 @@ def _payload_hash(report: FailureTriageReportRequest) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _semantic_hash(report: FailureTriageReportRequest) -> str:
+    payload = json.dumps(
+        report.model_dump(
+            mode="json",
+            exclude={
+                "report_id",
+                "generated_at",
+                "signature_key_id",
+                "signature",
+            },
+        ),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _clusters_for_report(
+    db: Session,
+    report: FailureTriageReportRequest,
+) -> tuple[FailureCluster, ...]:
+    return tuple(
+        cluster
+        for item in report.failures
+        if (
+            cluster := db.scalar(
+                select(FailureCluster).where(
+                    FailureCluster.fingerprint
+                    == failure_fingerprint(
+                        taxonomy_version=report.taxonomy_version,
+                        data_version=report.data_version,
+                        failure_type=item.failure_type,
+                        code=item.code,
+                    )
+                )
+            )
+        )
+        is not None
+    )
 
 
 def failure_fingerprint(
@@ -119,8 +166,17 @@ def _upsert_cluster(
 def sync_verified_report(
     db: Session,
     report: FailureTriageReportRequest,
+    *,
+    signing_key: str,
 ) -> FailureTriageSyncResult:
+    serialized = report.model_dump(mode="json")
+    if not verify_failure_triage_signature(
+        serialized,
+        signing_key=signing_key,
+    ):
+        raise FailureTriageSignatureError("失败分诊报告签名无效")
     digest = _payload_hash(report)
+    semantic_digest = _semantic_hash(report)
     existing = db.scalar(
         select(FailureTriageImport).where(
             FailureTriageImport.report_id == report.report_id
@@ -129,28 +185,27 @@ def sync_verified_report(
     if existing is not None:
         if existing.payload_hash != digest:
             raise FailureTriageConflict("report_id 已用于不同报告")
-        clusters = tuple(
-            cluster
-            for item in report.failures
-            if (
-                cluster := db.scalar(
-                    select(FailureCluster).where(
-                        FailureCluster.fingerprint
-                        == failure_fingerprint(
-                            taxonomy_version=report.taxonomy_version,
-                            data_version=report.data_version,
-                            failure_type=item.failure_type,
-                            code=item.code,
-                        )
-                    )
-                )
-            )
-            is not None
+        return FailureTriageSyncResult(
+            imported=False,
+            clusters=_clusters_for_report(db, report),
         )
-        return FailureTriageSyncResult(imported=False, clusters=clusters)
+
+    replay = db.scalar(
+        select(FailureTriageImport).where(
+            FailureTriageImport.semantic_hash == semantic_digest
+        )
+    )
+    if replay is not None:
+        raise FailureTriageConflict("相同语义证据已使用其他 report_id 导入")
 
     clusters = tuple(_upsert_cluster(db, report, item) for item in report.failures)
-    db.add(FailureTriageImport(report_id=report.report_id, payload_hash=digest))
+    db.add(
+        FailureTriageImport(
+            report_id=report.report_id,
+            payload_hash=digest,
+            semantic_hash=semantic_digest,
+        )
+    )
     try:
         db.commit()
     except IntegrityError as exc:
@@ -161,7 +216,19 @@ def sync_verified_report(
             )
         )
         if existing is not None and existing.payload_hash == digest:
-            return FailureTriageSyncResult(imported=False, clusters=tuple())
+            return FailureTriageSyncResult(
+                imported=False,
+                clusters=_clusters_for_report(db, report),
+            )
+        replay = db.scalar(
+            select(FailureTriageImport).where(
+                FailureTriageImport.semantic_hash == semantic_digest
+            )
+        )
+        if replay is not None:
+            raise FailureTriageConflict(
+                "相同语义证据已使用其他 report_id 导入"
+            ) from exc
         raise FailureTriageConflict("报告同步冲突，请重试") from exc
     for cluster in clusters:
         db.refresh(cluster)
