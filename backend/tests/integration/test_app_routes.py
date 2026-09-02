@@ -45,3 +45,11 @@ def test_core_customer_routes_are_registered():
     assert ("/api/admin/users", "GET") in routes
     assert ("/api/admin/users/{user_id}/role", "PATCH") in routes
     assert ("/api/admin/quality/summary", "GET") in routes
+
+
+@pytest.mark.integration
+def test_legacy_pdf_export_is_explicitly_deprecated():
+    operation = app.openapi()["paths"]["/api/design/tasks/{task_id}/export-pdf"]["post"]
+
+    assert operation["deprecated"] is True
+    assert "/api/design/proposal-pdf" in operation["description"]

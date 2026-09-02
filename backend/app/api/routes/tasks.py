@@ -634,7 +634,14 @@ def get_design_version(
     )
 
 
-@router.post("/{task_id}/export-pdf")
+@router.post(
+    "/{task_id}/export-pdf",
+    deprecated=True,
+    description=(
+        "旧版无方案版本导出入口已停用。请改用基于服务端方案快照的 "
+        "/api/design/proposal-pdf。"
+    ),
+)
 def export_pdf(
     task_id: int,
     x_session_id: SessionIdHeader,
@@ -645,16 +652,11 @@ def export_pdf(
         session_id=x_session_id,
         task_id=task_id,
     )
-    result = db.scalars(
-        select(DesignResult)
-        .where(DesignResult.task_id == task_id)
-        .order_by(DesignResult.id.desc())
-    ).first()
-    if not result:
-        raise HTTPException(status_code=404, detail="Result not ready")
-    # mock：真实 PDF 生成留待后续接入
-    return {
-        "pdf_url": result.pdf_url,
-        "artifact_id": result.id,
-        "filename": f"design_report_{task_id}.pdf",
-    }
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "legacy_pdf_export_retired",
+            "message": "旧版导出未绑定方案快照，已停止使用",
+            "replacement": "/api/design/proposal-pdf",
+        },
+    )
