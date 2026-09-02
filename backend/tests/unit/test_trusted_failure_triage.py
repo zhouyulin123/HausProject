@@ -59,7 +59,7 @@ def _verified_evidence(*, signature_verified: bool = True):
         results=(
             CaseResult(
                 case_id="case-private-a",
-                recommended_skus=2,
+                recommended_skus=3,
                 valid_skus=1,
                 layout_checks=2,
                 layout_hard_passes=1,
@@ -108,6 +108,11 @@ def test_triage_is_derived_from_verified_metrics_and_binds_source_digests():
         "invalid_sku",
         "layout_hard_constraint_failed",
     }
+    assert len(failures.failures) == 3
+    assert report["summary"]["failure_count"] == 3
+    assert next(
+        item for item in report["clusters"] if item["code"] == "invalid_sku"
+    )["failure_count"] == 2
     assert report["input"] == {
         "schema_version": "4.0",
         "taxonomy_version": "2.0",
