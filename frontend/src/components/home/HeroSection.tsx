@@ -26,12 +26,6 @@ function HeroSceneFallback({ failed = false }: { failed?: boolean }) {
   );
 }
 
-const suggestionBySpace: Record<SpaceName, { budget: string; match: string }> = {
-  客厅: { budget: "¥86,000", match: "98.2%" },
-  卧室: { budget: "¥52,000", match: "97.6%" },
-  餐厅: { budget: "¥38,000", match: "96.9%" },
-};
-
 export default function HeroSection() {
   const [space, setSpace] = useState<SpaceName>("客厅");
   const [style, setStyle] = useState<StyleName>("奶油风");
@@ -64,10 +58,10 @@ export default function HeroSection() {
     const depth = Math.max(...zs) - Math.min(...zs);
     return [
       { value: `${width.toFixed(1)} × ${depth.toFixed(1)}m`, label: "空间尺寸" },
-      { value: suggestionBySpace[space].budget, label: "建议预算" },
-      { value: suggestionBySpace[space].match, label: "需求匹配" },
+      { value: "待确认", label: "预算状态" },
+      { value: "可编辑", label: "方案状态" },
     ];
-  }, [activeScene, space]);
+  }, [activeScene]);
 
   return (
     <section className="home-hero home-grid relative overflow-hidden bg-[#0b0f0c] text-[#f1efe7]">
@@ -118,7 +112,7 @@ export default function HeroSection() {
               下一种可能。
             </h1>
             <p className="mt-6 max-w-md text-sm leading-7 text-[#b2bbb2] sm:mt-8 sm:text-base">
-              上传真实空间，告诉 AI 你的生活方式。我们把户型、采光、动线与预算放进同一次推演，生成可以继续编辑、也能真正落地的方案。
+              上传你的空间，告诉 AI 你的生活方式。我们把户型、采光、动线与预算放进同一次推演，生成可以继续编辑和校验的方案。
             </p>
             <div className="pointer-events-auto mt-7 flex flex-wrap items-center gap-3 sm:mt-9">
               <Link
@@ -132,7 +126,7 @@ export default function HeroSection() {
                 to="/styles"
                 className="inline-flex items-center gap-2 px-3 py-3 text-sm text-[#d2d8d1] transition-colors hover:text-white"
               >
-                先看真实案例
+                先看空间方案
                 <ArrowDownRight className="h-4 w-4" />
               </Link>
             </div>

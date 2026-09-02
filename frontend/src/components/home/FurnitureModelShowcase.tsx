@@ -70,10 +70,10 @@ export default function FurnitureModelShowcase() {
               01 / Living model index
             </p>
             <h2 className="mt-6 font-display text-4xl leading-[1.02] sm:text-6xl">
-              家具不等图片，<br />先以真实尺寸存在。
+              家具不等图片，<br />先以明确尺寸存在。
             </h2>
             <p className="mt-7 max-w-md text-sm leading-7 text-[#626c64]">
-              真实尺寸、材质与结构共同构成可进入空间方案的数字家具资产。
+              目录尺寸、材质与结构共同构成可进入空间方案的数字家具资产。
             </p>
           </div>
           <div className="mt-12 flex items-end justify-between gap-6 border-t border-[#1d241f]/15 pt-6">

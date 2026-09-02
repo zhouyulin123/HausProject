@@ -16,7 +16,7 @@ const systemCapabilities = [
   ["01", "Vision", "理解照片与户型图中的空间结构"],
   ["02", "Reasoning", "综合预算、生活习惯与设计约束"],
   ["03", "Spatial", "生成并持续编辑三维家具布局"],
-  ["04", "Commerce", "关联真实商品、尺寸与分项报价"],
+  ["04", "Commerce", "关联目录商品、尺寸与分项报价"],
 ];
 
 export default function HomePage() {
@@ -31,7 +31,7 @@ export default function HomePage() {
         <div className="mx-auto flex max-w-[1400px] flex-col justify-between gap-5 text-[10px] tracking-[0.2em] text-[#5b655d] uppercase md:flex-row md:items-center">
           <span>Design Intelligence, made tangible.</span>
           <div className="flex flex-wrap gap-x-8 gap-y-2">
-            <span>户型识别</span><span>空间推演</span><span>真实商品</span><span>预算交付</span>
+            <span>户型识别</span><span>空间推演</span><span>目录商品</span><span>预算交付</span>
           </div>
         </div>
       </section>
@@ -103,7 +103,7 @@ export default function HomePage() {
 
       <section className="px-5 py-24 sm:px-8 lg:px-12 lg:py-36">
         <div className="mx-auto grid max-w-[1400px] gap-16 lg:grid-cols-[0.75fr_1.25fr]">
-          <div><p className="text-[10px] tracking-[0.24em] text-[#637064] uppercase">03 / One connected system</p><h2 className="mt-6 font-display text-4xl leading-[1.08] tracking-[-0.04em] sm:text-6xl">从一张照片，<br />到一份真实提案。</h2><p className="mt-7 max-w-md text-sm leading-7 text-[#626c64]">视觉模型、空间规则、生成式 AI 与自有商品库在同一条链路上工作，让设计不再止步于一张漂亮图片。</p></div>
+          <div><p className="text-[10px] tracking-[0.24em] text-[#637064] uppercase">03 / One connected system</p><h2 className="mt-6 font-display text-4xl leading-[1.08] tracking-[-0.04em] sm:text-6xl">从一张照片，<br />到一份可编辑提案。</h2><p className="mt-7 max-w-md text-sm leading-7 text-[#626c64]">视觉模型、空间规则、生成式 AI 与商品目录在同一条链路上工作，让设计不再止步于一张漂亮图片。</p></div>
           <div className="border-t border-[#1d241f]/20">
             {systemCapabilities.map(([index, title, description]) => <div key={index} className="group grid grid-cols-[48px_100px_1fr_auto] items-center gap-3 border-b border-[#1d241f]/20 py-6 sm:grid-cols-[70px_150px_1fr_auto]"><span className="font-mono text-[10px] text-[#778178]">{index}</span><span className="font-mono text-xs tracking-[0.12em] uppercase">{title}</span><span className="text-sm leading-6 text-[#69736b]">{description}</span><Check className="h-4 w-4 text-[#53624f] transition-transform group-hover:scale-125" /></div>)}
           </div>
