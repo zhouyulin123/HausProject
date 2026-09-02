@@ -11,6 +11,8 @@ from sqlalchemy import create_engine
 from app.api.routes import design_agent, scenes, tasks
 from app.db.database import Base, get_db
 from app.db.models import (
+    CustomFurnitureDraftMutation,
+    DesignAgentTurn,
     DesignFeedbackEvent,
     DesignRevision,
     DesignScene,
@@ -384,3 +386,128 @@ def test_custom_draft_is_versioned_idempotent_and_task_isolated(workspace_state_
     assert first.json()["state_version"] == 1
     assert checkpoint.json()["custom_furniture_draft"] == payload["custom_furniture_spec"]
     assert foreign.status_code == 404
+    with context["factory"]() as db:
+        assert db.scalar(select(func.count(DesignAgentTurn.id))) == 0
+        assert db.scalar(select(func.count(CustomFurnitureDraftMutation.id))) == 1
+
+
+@pytest.mark.integration
+def test_custom_draft_conflict_returns_authoritative_draft_after_scene_move(
+    workspace_state_context,
+):
+    context = workspace_state_context
+    headers = {"X-Session-ID": context["owner"]}
+    draft_url = f"/api/design/tasks/{context['task_id']}/custom-furniture-draft"
+    first_spec = {
+        "family": "table",
+        "name": "第一版餐桌",
+        "purpose": "dining_table",
+        "material": "实木（橡木）",
+        "dimensions": {"width_mm": 1600, "height_mm": 760, "depth_mm": 800},
+        "structure": {
+            "top_shape": "rectangle",
+            "base_style": "four_leg",
+            "support_count": 4,
+            "seat_count": 6,
+            "top_thickness_mm": 30,
+            "edge_radius_mm": 8,
+        },
+    }
+    first = context["client"].put(
+        draft_url,
+        headers=headers,
+        json={
+            "client_mutation_id": "draft-before-scene-move",
+            "base_state_version": 0,
+            "custom_furniture_spec": first_spec,
+        },
+    )
+    assert first.status_code == 200
+
+    moved = _scene_payload()
+    moved["items"][0]["transform"]["position"]["x"] = 2.0
+    moved_response = context["client"].put(
+        f"/api/design/scenes/{context['scene_id']}",
+        headers=headers,
+        json={
+            "base_version": 1,
+            "scene": moved,
+            "source": "manual",
+            "client_mutation_id": "scene-between-drafts",
+            "moved_instance_ids": ["sofa-main"],
+            "feedback_room_id": "living-room",
+        },
+    )
+    assert moved_response.status_code == 200
+
+    second_spec = {**first_spec, "name": "第二版餐桌"}
+    stale = context["client"].put(
+        draft_url,
+        headers=headers,
+        json={
+            "client_mutation_id": "draft-after-scene-move",
+            "base_state_version": 1,
+            "custom_furniture_spec": second_spec,
+        },
+    )
+
+    assert stale.status_code == 409
+    detail = stale.json()["detail"]
+    assert detail["code"] == "agent_state_conflict"
+    assert detail["state_version"] == 2
+    assert detail["custom_furniture_draft"] == first_spec
+    assert detail["scene_ref"] == {
+        "scene_id": context["scene_id"],
+        "version": 2,
+    }
+
+    retried = context["client"].put(
+        draft_url,
+        headers=headers,
+        json={
+            "client_mutation_id": "draft-after-scene-move-retry",
+            "base_state_version": detail["state_version"],
+            "custom_furniture_spec": second_spec,
+        },
+    )
+    assert retried.status_code == 200
+    assert retried.json()["state_version"] == 3
+
+
+@pytest.mark.integration
+def test_custom_draft_idempotency_key_rejects_different_payload(workspace_state_context):
+    context = workspace_state_context
+    headers = {"X-Session-ID": context["owner"]}
+    url = f"/api/design/tasks/{context['task_id']}/custom-furniture-draft"
+    payload = {
+        "client_mutation_id": "draft-same-key",
+        "base_state_version": 0,
+        "custom_furniture_spec": {
+            "family": "table",
+            "name": "原始草稿",
+            "purpose": "dining_table",
+            "material": "实木（橡木）",
+            "dimensions": {"width_mm": 1600, "height_mm": 760, "depth_mm": 800},
+            "structure": {
+                "top_shape": "rectangle",
+                "base_style": "four_leg",
+                "support_count": 4,
+                "seat_count": 6,
+                "top_thickness_mm": 30,
+                "edge_radius_mm": 8,
+            },
+        },
+    }
+    assert context["client"].put(url, headers=headers, json=payload).status_code == 200
+    changed = {
+        **payload,
+        "custom_furniture_spec": {
+            **payload["custom_furniture_spec"],
+            "name": "同键篡改草稿",
+        },
+    }
+
+    response = context["client"].put(url, headers=headers, json=changed)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "idempotency_conflict"
