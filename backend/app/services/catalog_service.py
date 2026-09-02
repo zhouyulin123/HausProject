@@ -464,8 +464,39 @@ def verify_and_enrich_plans(
                 quantity = 1
             subtotal = product.price * quantity
             if budget_max is not None and furniture_total + subtotal > budget_max:
-                rejected.append({"sku": product.sku, "reason_codes": ["budget_exceeded"]})
-                continue
+                remaining_budget = max(0, budget_max - furniture_total)
+                alternatives = find_product_alternatives(
+                    db,
+                    product,
+                    at=current,
+                    region=region,
+                    max_unit_price=remaining_budget // quantity,
+                    max_dimensions_mm=max_dimensions_mm,
+                    limit=1,
+                )
+                if not alternatives:
+                    rejected.append(
+                        {
+                            "sku": product.sku,
+                            "reason_codes": ["budget_exceeded"],
+                        }
+                    )
+                    hard_errors.append("budget_exceeded")
+                    continue
+                replacement = alternatives[0]
+                original_sku = replaced_sku or product.sku
+                product = replacement["product"]
+                replaced_sku = original_sku
+                replacement_reasons = list(
+                    dict.fromkeys(
+                        [
+                            *replacement_reasons,
+                            *replacement["reason_codes"],
+                            "budget_fit",
+                        ]
+                    )
+                )
+                subtotal = product.price * quantity
             furniture_total += subtotal
             line_item = {
                 "sku": product.sku,

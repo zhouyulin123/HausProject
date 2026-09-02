@@ -219,10 +219,11 @@ def test_enrichment_replaces_item_to_fit_remaining_total_budget(db):
     second = _product(
         "SOFA-SECOND",
         price=5000,
-        alternative_skus=["SOFA-BUDGET"],
+        alternative_skus=["SOFA-TOO-MUCH", "SOFA-BUDGET"],
     )
+    per_unit_too_expensive = _product("SOFA-TOO-MUCH", price=3000)
     budget_alternative = _product("SOFA-BUDGET", price=1900)
-    db.add_all([first, second, budget_alternative])
+    db.add_all([first, second, per_unit_too_expensive, budget_alternative])
     db.commit()
     plans = [{
         "id": "plan-a",
