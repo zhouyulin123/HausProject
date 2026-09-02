@@ -15,43 +15,38 @@ from evals.trusted_evidence import (
     evaluation_run_idempotency_key,
     RunBinding,
 )
+from tests.real_world_fixtures import write_v2_manifest
 
 
 def _dataset(tmp_path: Path, *, image_context: list[str] | None = None):
     (tmp_path / "room.png").write_bytes(b"authorized-test-room")
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        json.dumps(
+    manifest = write_v2_manifest(
+        tmp_path,
+        filename="manifest.json",
+        dataset_version="test-data-v1",
+        cases=[
             {
-                "schema_version": "1.0",
-                "dataset_version": "test-data-v1",
-                "cases": [
-                    {
-                        "id": "case-a",
-                        "name": "测试案例",
-                        "split": "regression",
-                        "origin": "private_real",
-                        "asset_path": "room.png",
-                        "consent_status": "granted",
-                        "annotation_status": "ready",
-                        "label_version": "labels-v1",
-                        "allowed_purposes": ["offline_evaluation"],
-                        "failure_tags": [],
-                        "task_input": {
-                            "raw_user_input": "需要现代客厅",
-                            "confirmed_requirement": {"style": "现代"},
-                            "space_type": "客厅",
-                            "style": "现代",
-                            "budget_min": 10000,
-                            "budget_max": 20000,
-                            "image_context": image_context or [],
-                        },
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+                "id": "case-a",
+                "name": "测试案例",
+                "split": "regression",
+                "origin": "private_real",
+                "asset_path": "room.png",
+                "consent_status": "granted",
+                "annotation_status": "ready",
+                "label_version": "labels-v1",
+                "allowed_purposes": ["offline_evaluation"],
+                "failure_tags": [],
+                "task_input": {
+                    "raw_user_input": "需要现代客厅",
+                    "confirmed_requirement": {"style": "现代"},
+                    "space_type": "客厅",
+                    "style": "现代",
+                    "budget_min": 10000,
+                    "budget_max": 20000,
+                    "image_context": image_context or [],
+                },
+            }
+        ],
     )
     return load_case_manifest(manifest)
 

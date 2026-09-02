@@ -17,6 +17,7 @@ from evals.trusted_evidence import (
     VerifiedEvaluationEvidence,
     dataset_fingerprint,
 )
+from tests.real_world_fixtures import write_v2_manifest
 
 
 def _write_json(path: Path, payload: dict) -> Path:
@@ -27,27 +28,25 @@ def _write_json(path: Path, payload: dict) -> Path:
 def _manifest(tmp_path: Path):
     (tmp_path / "room-a.png").write_bytes(b"a")
     (tmp_path / "room-b.png").write_bytes(b"b")
-    path = _write_json(
-        tmp_path / "manifest.json",
-        {
-            "schema_version": "1.0",
-            "dataset_version": "data-1",
-            "cases": [
-                {
-                    "id": case_id,
-                    "name": case_id,
-                    "split": "regression",
-                    "origin": "private_real",
-                    "asset_path": f"room-{suffix}.png",
-                    "consent_status": "granted",
-                    "annotation_status": "ready",
-                    "label_version": "labels-1",
-                    "allowed_purposes": ["offline_evaluation"],
-                    "failure_tags": [],
-                }
-                for case_id, suffix in (("case-a", "a"), ("case-b", "b"))
-            ],
-        },
+    path = write_v2_manifest(
+        tmp_path,
+        filename="manifest.json",
+        dataset_version="data-1",
+        cases=[
+            {
+                "id": case_id,
+                "name": case_id,
+                "split": "regression",
+                "origin": "private_real",
+                "asset_path": f"room-{suffix}.png",
+                "consent_status": "granted",
+                "annotation_status": "ready",
+                "label_version": "labels-1",
+                "allowed_purposes": ["offline_evaluation"],
+                "failure_tags": [],
+            }
+            for case_id, suffix in (("case-a", "a"), ("case-b", "b"))
+        ],
     )
     return load_case_manifest(path)
 
@@ -146,7 +145,7 @@ def test_manifest_with_no_eligible_cases_cannot_produce_passing_report(tmp_path)
     manifest_path = _write_json(
         tmp_path / "manifest.json",
         {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "dataset_version": "data-1",
             "cases": [
                 {

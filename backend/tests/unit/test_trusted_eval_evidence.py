@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from evals.trusted_evidence import (
     dataset_fingerprint,
     evaluation_run_idempotency_key,
 )
+from tests.real_world_fixtures import write_v2_manifest
 
 
 SIGNING_KEY = "eval-test-signing-key-that-is-at-least-32-bytes"
@@ -58,31 +60,25 @@ def db():
 
 def _dataset(tmp_path: Path):
     (tmp_path / "room.png").write_bytes(b"private-room-bytes")
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        json.dumps(
+    manifest = write_v2_manifest(
+        tmp_path,
+        filename="manifest.json",
+        dataset_version="data-2026-09-02",
+        cases=[
             {
-                "schema_version": "1.0",
-                "dataset_version": "data-2026-09-02",
-                "cases": [
-                    {
-                        "id": "private-case-alias",
-                        "name": "不应进入报告的客户别名",
-                        "split": "regression",
-                        "origin": "private_real",
-                        "asset_path": "room.png",
-                        "consent_status": "granted",
-                        "annotation_status": "ready",
-                        "label_version": "labels-3",
-                        "allowed_purposes": ["offline_evaluation"],
-                        "failure_tags": [],
-                        "task_input": _task_input(),
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+                "id": "private-case-alias",
+                "name": "不应进入报告的客户别名",
+                "split": "regression",
+                "origin": "private_real",
+                "asset_path": "room.png",
+                "consent_status": "granted",
+                "annotation_status": "ready",
+                "label_version": "labels-3",
+                "allowed_purposes": ["offline_evaluation"],
+                "failure_tags": [],
+                "task_input": _task_input(),
+            }
+        ],
     )
     return load_case_manifest(manifest)
 
@@ -90,7 +86,6 @@ def _dataset(tmp_path: Path):
 def _two_case_dataset(tmp_path: Path):
     (tmp_path / "room-a.png").write_bytes(b"private-room-a")
     (tmp_path / "room-b.png").write_bytes(b"private-room-b")
-    manifest = tmp_path / "two-cases.json"
     cases = []
     for case_id, suffix in (("private-a", "a"), ("private-b", "b")):
         cases.append(
@@ -108,18 +103,33 @@ def _two_case_dataset(tmp_path: Path):
                 "task_input": _task_input(),
             }
         )
-    manifest.write_text(
-        json.dumps(
-            {
-                "schema_version": "1.0",
-                "dataset_version": "data-2026-09-02",
-                "cases": cases,
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    manifest = write_v2_manifest(
+        tmp_path,
+        filename="two-cases.json",
+        dataset_version="data-2026-09-02",
+        cases=cases,
     )
     return load_case_manifest(manifest)
+
+
+def test_trusted_dataset_requires_manifest_v2_and_binds_annotation_semantics(tmp_path):
+    dataset = _dataset(tmp_path)
+    case = dataset.cases[0]
+    assert case.annotation is not None
+
+    with pytest.raises(EvaluationInputError, match="2.0"):
+        dataset_fingerprint(replace(dataset, schema_version="1.0"), split="regression")
+
+    original = dataset_fingerprint(dataset, split="regression")
+    changed_annotation = case.annotation.model_copy(
+        update={"style_tags": (*case.annotation.style_tags, "轻奢")}
+    )
+    changed_dataset = replace(
+        dataset,
+        cases=(replace(case, annotation=changed_annotation),),
+    )
+
+    assert dataset_fingerprint(changed_dataset, split="regression") != original
 
 
 def _completed_system_run(

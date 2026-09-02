@@ -19,6 +19,7 @@ from evals.trusted_evidence import (
     dataset_fingerprint,
     verify_trusted_evidence,
 )
+from tests.real_world_fixtures import write_v2_manifest
 
 
 SIGNING_KEY = "split-test-signing-key-that-is-longer-than-32-bytes"
@@ -62,17 +63,11 @@ def _dataset(tmp_path: Path, splits: tuple[str, ...]):
                 },
             }
         )
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "schema_version": "1.0",
-                "dataset_version": "dataset-v1",
-                "cases": cases,
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    manifest = write_v2_manifest(
+        tmp_path,
+        filename="manifest.json",
+        dataset_version="dataset-v1",
+        cases=cases,
     )
     return load_case_manifest(manifest)
 
@@ -218,7 +213,7 @@ def test_trusted_terminal_failure_is_in_generation_success_denominator(db, tmp_p
     )
 
     assert bundle["split"] == "regression"
-    assert [item["status"] for item in bundle["executions"]] == [
+    assert sorted(item["status"] for item in bundle["executions"]) == [
         "completed",
         "cost_limit_exceeded",
     ]
