@@ -44,7 +44,7 @@
 创建 GenerationRun 时，评测队列器必须调用
 `evals.trusted_evidence.bind_evaluation_run(db, dataset=..., split="regression", case_id=..., task=...)`，在同一事务中写入运行及持久化案例绑定。`evaluation_run_idempotency_key` 也必须传入 `db`、`task` 和 `split`，其身份同时包含案例、split、模型与静态制品版本；只把幂等键传给现有 `generate-async` 不构成可信绑定，服务会失败关闭。Worker 领取与证据收集都会复核任务需求、按上传顺序冻结的图片分析事实、唯一原始资产摘要和执行前版本；错误图片、额外图片、分析变化、需求变化、可变用户画像、绑定后混版、缺少 `task_input` 或历史图片没有摘要时均拒绝执行或签发。
 
-收集器不会接收 CaseResult。需求与空间事实从不可变 revision 的需求快照逐项对照；有效 SKU、商品匹配、报价复算、预算和风格从不可变方案及报价快照对照 CaseAnnotation。布局硬约束进入分母，但在确定性几何产物纳入同一输出摘要前不信任模型自报的通过标记，因此记为未命中；任何缺失事实都不能由 `output_snapshot` 补齐。
+收集器不会接收 CaseResult。revision 的需求快照是人工确认后的生成输入，不是 AI 解析或视觉预测，因此当前不会用它计算需求准确率、空间事实准确率或低置信确认率；在模型预测快照纳入证据链前，这三项保持 `NO EVIDENCE`。有效 SKU、商品匹配、报价复算、预算和风格从不可变方案及报价快照对照 CaseAnnotation。布局硬约束进入分母，但在确定性几何产物纳入同一输出摘要前不信任模型自报的通过标记，因此记为未命中；任何缺失事实都不能由 `output_snapshot` 补齐。
 
 人工满意度与修改事实只接受 `real_world_execution_review/1.0`。评审文件的案例、标签版本、文件 SHA-256 和 `output_digest` 必须全部与本次运行一致；没有匹配评审时满意度与修改率保持零分母，报告显示 `NO EVIDENCE`，不会把缺失评审计成零分。
 

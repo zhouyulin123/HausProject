@@ -480,28 +480,6 @@ def _validate_system_run(
     return run, output
 
 
-_MISSING = object()
-
-
-def _path_value(value: Any, path: str) -> Any:
-    current = value
-    for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
-            return _MISSING
-        current = current[part]
-    return current
-
-
-def _requirement_value(requirement: dict[str, Any], field: str) -> Any:
-    if field in requirement:
-        return requirement[field]
-    if field == "space_type":
-        rooms = requirement.get("rooms")
-        if isinstance(rooms, list) and rooms:
-            return rooms[0]
-    return _MISSING
-
-
 def _quote_is_consistent(quote: dict[str, Any]) -> bool:
     raw = quote.get("quote")
     if not isinstance(raw, dict):
@@ -563,31 +541,9 @@ def _runtime_result(
         return CaseResult(case_id=case.id, generation_succeeded=False)
     if output is None or case.annotation is None:
         raise EvaluationInputError(f"系统运行 {run.id} 缺少不可变输出或案例标注")
-    requirement = output.get("revision", {}).get("requirement")
     plans = output.get("plans")
-    if not isinstance(requirement, dict) or not isinstance(plans, list) or not plans:
+    if not isinstance(plans, list) or not plans:
         raise EvaluationInputError(f"系统运行 {run.id} 的不可变输出结构不完整")
-
-    requirement_total = len(case.annotation.requirements)
-    requirement_correct = sum(
-        _requirement_value(requirement, fact.field) == fact.value
-        for fact in case.annotation.requirements
-    )
-    space_fact_total = len(case.annotation.space_facts)
-    space_fact_correct = sum(
-        _path_value(requirement, fact.fact_path) == fact.value
-        for fact in case.annotation.space_facts
-    )
-    confirmation_facts = tuple(
-        fact for fact in case.annotation.space_facts if fact.requires_confirmation
-    )
-    confirmed_values = requirement.get("confirmed_space_facts")
-    if not isinstance(confirmed_values, dict):
-        confirmed_values = {}
-    low_confidence_confirmed = sum(
-        confirmed_values.get(fact.fact_path, _MISSING) == fact.value
-        for fact in confirmation_facts
-    )
 
     recommended_skus = 0
     valid_skus = 0
@@ -635,12 +591,14 @@ def _runtime_result(
     actions = [edit.action for edit in review.edit_facts] if review else []
     return CaseResult(
         case_id=case.id,
-        requirement_correct=requirement_correct,
-        requirement_total=requirement_total,
-        space_fact_correct=space_fact_correct,
-        space_fact_total=space_fact_total,
-        low_confidence_facts=len(confirmation_facts),
-        low_confidence_confirmed=low_confidence_confirmed,
+        # revision.requirement_snapshot 是人工确认后的生成输入，不是 AI 预测。
+        # 解析与视觉预测尚未冻结进证据链，因此这些指标必须保持无分母。
+        requirement_correct=0,
+        requirement_total=0,
+        space_fact_correct=0,
+        space_fact_total=0,
+        low_confidence_facts=0,
+        low_confidence_confirmed=0,
         recommended_skus=recommended_skus,
         valid_skus=valid_skus,
         product_match_checks=recommended_skus,

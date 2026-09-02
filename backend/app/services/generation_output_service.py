@@ -96,7 +96,8 @@ def revision_output_payload(
     """读取仅由不可变版本表组成的规范化业务输出。"""
     revision = _load_revision(db, revision_id)
     plans: list[dict[str, Any]] = []
-    for plan in sorted(revision.plans, key=lambda item: item.plan_key):
+    # 关系按持久化 ID 排序；该顺序就是用户看到的推荐顺序，属于输出语义。
+    for plan in revision.plans:
         quote = plan.quote_snapshot
         if quote is None:
             raise GenerationOutputValidationError(
