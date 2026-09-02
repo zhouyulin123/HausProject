@@ -70,6 +70,13 @@ def test_generation_worker_execution_timeout_must_be_positive_and_bounded():
         )
 
 
+def test_design_agent_turn_lease_must_be_positive_and_bounded():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, design_agent_turn_lease_seconds=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, design_agent_turn_lease_seconds=3601)
+
+
 def test_generation_task_cost_limit_must_be_positive_and_bounded():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, generation_task_cost_limit_cny=0)
