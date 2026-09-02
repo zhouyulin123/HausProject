@@ -145,10 +145,19 @@ def dataset_fingerprint(
     split: EvaluationSplit,
 ) -> str:
     """绑定准入治理元数据和资产字节，不把路径或名称写入证据。"""
+    if dataset.schema_version != "2.0":
+        raise EvaluationInputError("可信评测只接受带冻结标注资产的 manifest 2.0")
     normalized_split = validate_evaluation_split(split)
     eligible = dataset.eligible_cases(normalized_split)
     if not eligible:
         raise EvaluationInputError(f"split={normalized_split} 没有可评测案例")
+    for case in eligible:
+        if (
+            case.annotation is None
+            or not case.annotation_sha256
+            or case.annotation.file_sha256 != case.annotation_sha256
+        ):
+            raise EvaluationInputError(f"案例 {case.id} 缺少冻结且已验证的结构化标注")
     cases = [
         {
             "id": case.id,
@@ -157,6 +166,8 @@ def dataset_fingerprint(
             "consent_status": case.consent_status,
             "annotation_status": case.annotation_status,
             "label_version": case.label_version,
+            "annotation_sha256": case.annotation_sha256,
+            "annotation_fingerprint": case.annotation.content_fingerprint,
             "allowed_purposes": sorted(case.allowed_purposes),
             "failure_tags": sorted(case.failure_tags),
             "asset_digest": _file_digest(case),
