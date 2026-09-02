@@ -75,6 +75,46 @@ describe("运营质量看板内容", () => {
           created_at: "2026-09-02T08:00:00Z",
           updated_at: "2026-09-02T08:00:00Z",
         },
+        {
+          id: 2,
+          fingerprint: "b".repeat(64),
+          taxonomy_version: "taxonomy-1",
+          data_version: "data-1",
+          failure_type: "layout",
+          code: "item_collision",
+          severity: "high",
+          status: "in_progress",
+          owner: "quality-admin",
+          occurrence_count: 3,
+          affected_count: 2,
+          first_seen_at: "2026-09-01T08:00:00Z",
+          last_seen_at: "2026-09-02T08:00:00Z",
+          detected_version: "candidate-1",
+          fixed_version: null,
+          verified_version: null,
+          created_at: "2026-09-02T08:00:00Z",
+          updated_at: "2026-09-02T08:00:00Z",
+        },
+        {
+          id: 3,
+          fingerprint: "c".repeat(64),
+          taxonomy_version: "taxonomy-1",
+          data_version: "data-1",
+          failure_type: "requirement",
+          code: "missing_budget",
+          severity: "high",
+          status: "resolved",
+          owner: "quality-admin",
+          occurrence_count: 2,
+          affected_count: 2,
+          first_seen_at: "2026-09-01T08:00:00Z",
+          last_seen_at: "2026-09-02T08:00:00Z",
+          detected_version: "candidate-1",
+          fixed_version: "prompt-2",
+          verified_version: null,
+          created_at: "2026-09-02T08:00:00Z",
+          updated_at: "2026-09-02T08:00:00Z",
+        },
       ],
     };
     const html = renderToStaticMarkup(
@@ -93,6 +133,8 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("严重");
     expect(html).toContain("待认领");
     expect(html).toContain("认领并开始修复");
+    expect(html).toContain("标记修复");
+    expect(html).toContain("验证关闭");
     expect(html).not.toContain("case_id");
   });
 

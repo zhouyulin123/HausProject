@@ -80,6 +80,10 @@ def test_failure_triage_api_is_admin_only_strict_and_private():
             cluster_url = f"/api/admin/quality/failure-clusters/{cluster_id}"
             assert client.patch(
                 cluster_url,
+                json={"status": "in_progress", "owner": "admin", "case_id": "x"},
+            ).status_code == 422
+            assert client.patch(
+                cluster_url,
                 json={"status": "resolved", "fixed_version": "rules-2"},
             ).status_code == 409
             assert client.patch(
