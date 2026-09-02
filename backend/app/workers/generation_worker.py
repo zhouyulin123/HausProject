@@ -15,7 +15,11 @@ from app.core.config import settings
 from app.core.request_context import bind_request_id
 from app.db.database import SessionLocal
 from app.db.models import DesignTask, GenerationRun
-from app.services import generation_run_service, llm_service
+from app.services import (
+    generation_run_service,
+    llm_service,
+    provider_circuit_service,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -189,8 +193,84 @@ def process_one_run(
                     cost_limit_cny=settings.generation_task_cost_limit_cny,
                 )
 
+            def before_provider_call(provider_key: str):
+                try:
+                    return provider_circuit_service.acquire_provider_call(
+                        db,
+                        provider_key=provider_key,
+                        cooldown_seconds=(
+                            settings.provider_circuit_cooldown_seconds
+                        ),
+                        probe_lease_seconds=(
+                            settings.provider_circuit_probe_lease_seconds
+                        ),
+                    )
+                except provider_circuit_service.ProviderCircuitOpen as exc:
+                    code = (
+                        "provider_probe_in_progress"
+                        if isinstance(
+                            exc,
+                            provider_circuit_service.ProviderProbeInProgress,
+                        )
+                        else "provider_circuit_open"
+                    )
+                    raise generation_run_service.GenerationProviderGuardError(
+                        "模型供应商暂时不可用，需人工处理",
+                        code=code,
+                        provider_key=exc.provider_key,
+                        circuit_state=exc.state,
+                        consecutive_failures=exc.consecutive_failures,
+                        retry_at=exc.retry_at,
+                    ) from exc
+
+            def record_provider_success(permit) -> None:
+                provider_circuit_service.record_provider_success(
+                    db,
+                    permit=permit,
+                )
+
+            def record_provider_failure(permit, failure_code: str) -> None:
+                state = provider_circuit_service.record_provider_failure(
+                    db,
+                    permit=permit,
+                    failure_code=failure_code,
+                    failure_threshold=(
+                        settings.provider_circuit_failure_threshold
+                    ),
+                    cooldown_seconds=(
+                        settings.provider_circuit_cooldown_seconds
+                    ),
+                )
+                retry_at = (
+                    state.cooldown_until if state.state == "open" else None
+                )
+                raise generation_run_service.GenerationProviderGuardError(
+                    "模型供应商调用失败，已转人工处理",
+                    code="provider_call_unavailable",
+                    provider_key=permit.provider_key,
+                    circuit_state=state.state,
+                    consecutive_failures=state.consecutive_failures,
+                    retry_at=retry_at,
+                    failure_code=failure_code,
+                )
+
+            def release_provider_call(permit) -> None:
+                provider_circuit_service.release_provider_call(
+                    db,
+                    permit=permit,
+                )
+
+            provider_hooks = llm_service.ProviderCallHooks(
+                before_call=before_provider_call,
+                record_success=record_provider_success,
+                record_failure=record_provider_failure,
+                release_call=release_provider_call,
+            )
             with bind_request_id(run.request_id):
-                with llm_service.model_cost_guard(reserve_model_call):
+                with (
+                    llm_service.model_cost_guard(reserve_model_call),
+                    llm_service.provider_call_guard(provider_hooks),
+                ):
                     response = selected_executor(db, **executor_kwargs)
             if finalized:
                 db.commit()
@@ -205,6 +285,35 @@ def process_one_run(
                     "方案生成结果提交前已失去租约"
                 )
         logger.info("方案生成完成: run_id=%s", claimed_run_id)
+    except generation_run_service.GenerationProviderGuardError as exc:
+        logger.warning(
+            "方案生成被供应商熔断策略阻止: run_id=%s code=%s provider=%s",
+            claimed_run_id,
+            exc.code,
+            exc.provider_key,
+        )
+        with SessionLocal() as db:
+            blocked = generation_run_service.mark_provider_guard_blocked(
+                db,
+                run_id=claimed_run_id,
+                worker_id=worker_id,
+                worker_attempt=worker_attempt,
+                error=exc,
+            )
+            if not blocked:
+                cancelled = generation_run_service.mark_cancelled_by_worker(
+                    db,
+                    run_id=claimed_run_id,
+                    worker_id=worker_id,
+                    worker_attempt=worker_attempt,
+                )
+                if not cancelled:
+                    generation_run_service.recover_expired_runs(
+                        db,
+                        retry_delay_seconds=(
+                            settings.generation_worker_retry_base_seconds
+                        ),
+                    )
     except generation_run_service.GenerationCostGuardError as exc:
         logger.warning(
             "方案生成被成本策略阻止: run_id=%s code=%s",

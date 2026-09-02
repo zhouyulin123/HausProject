@@ -852,6 +852,26 @@ class GenerationRunEvent(Base):
     run = relationship("GenerationRun", back_populates="events")
 
 
+class ModelProviderCircuit(Base):
+    """跨 Worker 共享的模型供应商熔断状态。"""
+
+    __tablename__ = "model_provider_circuits"
+
+    provider_key = Column(String(100), primary_key=True)
+    state = Column(String(20), nullable=False, default="closed", index=True)
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+    opened_at = Column(DateTime(timezone=True), nullable=True)
+    cooldown_until = Column(DateTime(timezone=True), nullable=True, index=True)
+    probe_token = Column(String(36), nullable=True, unique=True)
+    probe_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_failure_code = Column(String(50), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class SmsCode(Base):
     """手机号验证码。Mock 阶段使用固定 code，生产切换到真实短信服务商。"""
 

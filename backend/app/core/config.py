@@ -33,6 +33,12 @@ class Settings(BaseSettings):
         default="deepseek-ai/DeepSeek-V3",
         validation_alias=AliasChoices("LLM_MODEL", "DEEPSEEK_MODEL"),
     )
+    llm_provider_key: str = Field(
+        default="primary-llm",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
     # 可选：每百万 token 单价（元），配置后才会估算方案生成成本并写入 generation_runs
     llm_input_price_per_mtok: float | None = Field(
         default=None, gt=0, le=1_000_000
@@ -110,6 +116,9 @@ class Settings(BaseSettings):
     generation_task_cost_limit_cny: float = Field(
         default=1.0, gt=0, le=1000
     )
+    provider_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
+    provider_circuit_cooldown_seconds: int = Field(default=60, ge=5, le=3600)
+    provider_circuit_probe_lease_seconds: int = Field(default=30, ge=5, le=300)
     generation_worker_retry_base_seconds: int = Field(default=5, ge=1, le=600)
     generation_inline_fallback: bool = False
     # 阶段 4 失败分诊报告验签；未配置时管理端同步接口关闭。

@@ -255,6 +255,7 @@ def test_worker_cost_limit_blocks_provider_without_retry_or_fake_success(monkeyp
     monkeypatch.setattr(generation_worker, "SessionLocal", factory)
     monkeypatch.setattr(generation_worker, "settings", worker_settings)
     monkeypatch.setattr(llm_service, "get_client", lambda: client)
+    monkeypatch.setattr(llm_service.settings, "llm_provider_key", "primary-llm")
     monkeypatch.setattr(llm_service.settings, "llm_input_price_per_mtok", 100.0)
     monkeypatch.setattr(llm_service.settings, "llm_output_price_per_mtok", 100.0)
 
@@ -325,6 +326,7 @@ def test_worker_opens_persistent_circuit_and_next_run_fails_fast(monkeypatch):
     monkeypatch.setattr(generation_worker, "SessionLocal", factory)
     monkeypatch.setattr(generation_worker, "settings", worker_settings)
     monkeypatch.setattr(llm_service, "get_client", lambda: client)
+    monkeypatch.setattr(llm_service.settings, "llm_provider_key", "primary-llm")
     monkeypatch.setattr(llm_service.settings, "llm_input_price_per_mtok", 2.0)
     monkeypatch.setattr(llm_service.settings, "llm_output_price_per_mtok", 8.0)
 
@@ -405,6 +407,7 @@ def test_worker_code_error_does_not_increment_provider_circuit(monkeypatch):
     monkeypatch.setattr(generation_worker, "SessionLocal", factory)
     monkeypatch.setattr(generation_worker, "settings", worker_settings)
     monkeypatch.setattr(llm_service, "get_client", lambda: client)
+    monkeypatch.setattr(llm_service.settings, "llm_provider_key", "primary-llm")
     monkeypatch.setattr(llm_service.settings, "llm_input_price_per_mtok", 2.0)
     monkeypatch.setattr(llm_service.settings, "llm_output_price_per_mtok", 8.0)
 
@@ -424,6 +427,4 @@ def test_worker_code_error_does_not_increment_provider_circuit(monkeypatch):
         state = circuit_service.get_provider_state(db, "primary-llm")
         assert failed is not None
         assert failed.status == "queued"
-        assert state is not None
-        assert state.state == "closed"
-        assert state.consecutive_failures == 0
+        assert state is None

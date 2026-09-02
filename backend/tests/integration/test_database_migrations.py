@@ -66,6 +66,24 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "confirmed_by_id",
             "confirmed_at",
         } <= room_confirmation_columns
+
+        provider_circuit_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "model_provider_circuits"
+            )
+        }
+        assert {
+            "provider_key",
+            "state",
+            "consecutive_failures",
+            "opened_at",
+            "cooldown_until",
+            "probe_token",
+            "probe_expires_at",
+            "last_failure_code",
+            "updated_at",
+        } <= provider_circuit_columns
         task_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns("design_tasks")

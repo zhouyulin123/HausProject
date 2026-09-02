@@ -48,6 +48,7 @@ class GenerationQueuedResponse(BaseModel):
         "failed",
         "dead_letter",
         "cost_limit_exceeded",
+        "provider_unavailable",
         "cancelled",
     ]
 

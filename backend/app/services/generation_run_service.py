@@ -97,6 +97,40 @@ class GenerationCostLimitExceeded(GenerationCostGuardError):
         )
 
 
+class GenerationProviderGuardError(GenerationRunOwnershipError):
+    """供应商调用被持久化熔断策略中止。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        provider_key: str,
+        circuit_state: str,
+        consecutive_failures: int,
+        retry_at: datetime | None,
+        failure_code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.provider_key = provider_key
+        self.circuit_state = circuit_state
+        self.consecutive_failures = consecutive_failures
+        self.retry_at = retry_at
+        self.failure_code = failure_code
+
+    @property
+    def details(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "provider_key": self.provider_key,
+            "circuit_state": self.circuit_state,
+            "consecutive_failures": self.consecutive_failures,
+            "retry_at": self.retry_at.isoformat() if self.retry_at else None,
+            "failure_code": self.failure_code,
+        }
+
+
 def create_run(
     db: Session,
     *,
@@ -805,6 +839,57 @@ def mark_cost_guard_blocked(
     return True
 
 
+def mark_provider_guard_blocked(
+    db: Session,
+    *,
+    run_id: int,
+    worker_id: str,
+    worker_attempt: int,
+    error: GenerationProviderGuardError,
+    now: datetime | None = None,
+) -> bool:
+    """把供应商故障收敛为显式、不重试的人工接管终态。"""
+    current = _as_utc(now or datetime.now(timezone.utc))
+    run = _owned_run(
+        db,
+        run_id=run_id,
+        worker_id=worker_id,
+        worker_attempt=worker_attempt,
+        now=current,
+        lock=True,
+    )
+    if run is None:
+        db.rollback()
+        return False
+
+    _clear_worker(run)
+    run.status = "provider_unavailable"
+    run.progress = 100
+    run.current_node = "provider_circuit"
+    run.error_message = str(error)[:2000]
+    run.next_retry_at = None
+    run.completed_at = current
+    db.add(
+        GenerationRunEvent(
+            run_id=run.id,
+            node="provider_circuit",
+            status="failed",
+            progress=100,
+            source="deterministic",
+            detail_json=error.details,
+        )
+    )
+    _set_task_state(
+        db,
+        run=run,
+        status="needs_human",
+        progress=0,
+        error_message=run.error_message,
+    )
+    db.commit()
+    return True
+
+
 def request_cancel(
     db: Session,
     *,
@@ -828,6 +913,7 @@ def request_cancel(
         "dead_letter",
         "cancelled",
         "cost_limit_exceeded",
+        "provider_unavailable",
     }:
         db.commit()
         return run.status

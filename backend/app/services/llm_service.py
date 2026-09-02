@@ -8,12 +8,19 @@ import base64
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 import json
 import logging
 import math
 from typing import Any, Dict, List, Optional
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    OpenAI,
+    RateLimitError,
+)
 
 from app.core.config import settings
 from app.core.request_context import current_request_id
@@ -43,6 +50,20 @@ def _provider_request_kwargs() -> dict[str, Any]:
     if not request_id:
         return {}
     return {"extra_headers": {"X-Client-Request-Id": request_id}}
+
+
+@dataclass(frozen=True)
+class ProviderCallHooks:
+    before_call: Callable[[str], Any]
+    record_success: Callable[[Any], None]
+    record_failure: Callable[[Any, str], None]
+    release_call: Callable[[Any], None]
+
+
+_provider_call_hooks: ContextVar[ProviderCallHooks | None] = ContextVar(
+    "provider_call_hooks",
+    default=None,
+)
 
 
 def last_generation_meta() -> Optional[Dict[str, Any]]:
@@ -99,6 +120,32 @@ def model_cost_guard(guard: ModelCostGuard) -> Iterator[None]:
         _model_cost_guard.reset(token)
 
 
+@contextmanager
+def provider_call_guard(hooks: ProviderCallHooks) -> Iterator[None]:
+    """仅在当前执行上下文注入持久化供应商熔断协调。"""
+    token = _provider_call_hooks.set(hooks)
+    try:
+        yield
+    finally:
+        _provider_call_hooks.reset(token)
+
+
+def provider_failure_code(exc: Exception) -> str | None:
+    """只将供应商可用性、限流和超时故障计入熔断。"""
+    if isinstance(exc, (APITimeoutError, TimeoutError)):
+        return "timeout"
+    if isinstance(exc, RateLimitError):
+        return "rate_limited"
+    if isinstance(exc, APIConnectionError):
+        return "connection"
+    if isinstance(exc, APIStatusError):
+        if exc.status_code == 429:
+            return "rate_limited"
+        if exc.status_code >= 500:
+            return "server_error"
+    return None
+
+
 def get_client() -> OpenAI:
     global _client
     if not settings.llm_api_key:
@@ -134,17 +181,26 @@ def _chat_json(
 ) -> Dict[str, Any]:
     """调用 DeepSeek 并解析 JSON 输出。usage_out 传入时写入 token 用量。"""
     client = get_client()
+    provider_hooks = _provider_call_hooks.get()
+    provider_permit = None
+    if provider_hooks is not None:
+        provider_permit = provider_hooks.before_call(settings.llm_provider_key)
     guard = _model_cost_guard.get()
-    if guard is not None:
-        guard(
-            estimate_model_call_cost_ceiling_cny(
-                system=system,
-                user=user,
-                max_tokens=max_tokens,
-                input_price_per_mtok=settings.llm_input_price_per_mtok,
-                output_price_per_mtok=settings.llm_output_price_per_mtok,
+    try:
+        if guard is not None:
+            guard(
+                estimate_model_call_cost_ceiling_cny(
+                    system=system,
+                    user=user,
+                    max_tokens=max_tokens,
+                    input_price_per_mtok=settings.llm_input_price_per_mtok,
+                    output_price_per_mtok=settings.llm_output_price_per_mtok,
+                )
             )
-        )
+    except Exception:
+        if provider_hooks is not None and provider_permit is not None:
+            provider_hooks.release_call(provider_permit)
+        raise
     try:
         resp = client.chat.completions.create(
             model=settings.llm_model,
@@ -157,6 +213,22 @@ def _chat_json(
             temperature=temperature,
             **_provider_request_kwargs(),
         )
+    except LLMUnavailable:
+        raise
+    except Exception as exc:
+        failure_code = provider_failure_code(exc)
+        if (
+            provider_hooks is not None
+            and provider_permit is not None
+            and failure_code is not None
+        ):
+            provider_hooks.record_failure(provider_permit, failure_code)
+        logger.warning("LLM 调用失败: %s", exc)
+        raise LLMUnavailable(str(exc)) from exc
+
+    if provider_hooks is not None and provider_permit is not None:
+        provider_hooks.record_success(provider_permit)
+    try:
         if usage_out is not None and resp.usage is not None:
             usage_out.update(
                 {
@@ -166,10 +238,8 @@ def _chat_json(
                 }
             )
         return json.loads(resp.choices[0].message.content)
-    except LLMUnavailable:
-        raise
-    except Exception as exc:  # 网络、限流、JSON 解析失败等统一降级
-        logger.warning("LLM 调用失败: %s", exc)
+    except Exception as exc:
+        logger.warning("LLM 输出解析失败: %s", exc)
         raise LLMUnavailable(str(exc)) from exc
 
 
