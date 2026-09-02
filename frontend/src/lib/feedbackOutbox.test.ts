@@ -44,9 +44,73 @@ async function settlePromises() {
 }
 
 describe("反馈 outbox", () => {
+  it("六类业务动作只以严格请求字段和固定短标签 round-trip", async () => {
+    const requests: DesignFeedbackEventRequest[] = [
+      {
+        client_event_id: "feedback-42-adopt-all",
+        action_type: "adopt",
+        plan_version_id: 8,
+        target_sku: "SOFA-NEW",
+        room_id: "living-room",
+      },
+      {
+        client_event_id: "feedback-42-remove-all",
+        action_type: "remove",
+        plan_version_id: 8,
+        source_sku: "SOFA-OLD",
+      },
+      {
+        client_event_id: "feedback-42-replace-all",
+        action_type: "replace",
+        plan_version_id: 8,
+        source_sku: "SOFA-OLD",
+        target_sku: "SOFA-NEW",
+      },
+      {
+        client_event_id: "feedback-42-move-all",
+        action_type: "move",
+        scene_id: 3,
+        scene_version: 7,
+        instance_id: "sofa-main",
+      },
+      finalSelect("feedback-42-final-all"),
+      {
+        client_event_id: "feedback-42-glb-all",
+        action_type: "glb_load_failed",
+        plan_version_id: 8,
+        scene_id: 3,
+        scene_version: 7,
+        instance_id: "sofa-main",
+        source_sku: "SOFA-OLD",
+      },
+    ];
+    const storage = createStorage();
+    const outbox = createFeedbackOutbox({
+      taskId: 42,
+      storage,
+      send: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+
+    requests.forEach((request) => outbox.submit(request, "任意调用方标签"));
+    await settlePromises();
+
+    expect(readFeedbackOutbox(storage, 42).map((entry) => entry.request)).toEqual(requests);
+    expect(readFeedbackOutbox(storage, 42).map((entry) => entry.label)).toEqual([
+      "家具采用",
+      "家具移除",
+      "家具替换",
+      "家具位置调整",
+      "确认当前方案",
+      "GLB 加载失败",
+    ]);
+  });
+
   it("发送失败后跨页面刷新恢复，并在服务端确认后删除", async () => {
     const storage = createStorage();
-    const firstSend = vi.fn().mockRejectedValue(new Error("offline"));
+    const firstSend = vi.fn(async () => {
+      expect(readFeedbackOutbox(storage, 42)).toHaveLength(1);
+      throw new Error("offline");
+    });
     const first = createFeedbackOutbox({ taskId: 42, storage, send: firstSend });
 
     first.start();
@@ -131,6 +195,14 @@ describe("反馈 outbox", () => {
           label: "确认当前方案",
         }],
       }),
+      JSON.stringify({
+        version: 1,
+        task_id: 42,
+        entries: [{
+          request: { ...finalSelect("feedback-42-invalid-id"), client_event_id: 42 },
+          label: "确认当前方案",
+        }],
+      }),
       "x".repeat(FEEDBACK_OUTBOX_MAX_BYTES + 1),
       JSON.stringify({
         version: 1,
@@ -177,5 +249,31 @@ describe("反馈 outbox", () => {
 
     outbox.stop();
     expect(onlineTarget.removeEventListener).toHaveBeenCalledWith("online", expect.any(Function));
+  });
+
+  it("StrictMode 重挂载时复用页面级在途锁，不并发同一事件", async () => {
+    const key = feedbackOutboxStorageKey(42)!;
+    const request = finalSelect("feedback-42-final-remount");
+    const storage = createStorage({
+      [key]: JSON.stringify({
+        version: 1,
+        task_id: 42,
+        entries: [{ request, label: "确认当前方案" }],
+      }),
+    });
+    let resolveSend!: () => void;
+    const send = vi.fn(() => new Promise<void>((resolve) => { resolveSend = resolve; }));
+
+    const first = createFeedbackOutbox({ taskId: 42, storage, send });
+    first.start();
+    first.stop();
+    const remounted = createFeedbackOutbox({ taskId: 42, storage, send });
+    remounted.start();
+    await settlePromises();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    resolveSend();
+    await settlePromises();
+    expect(readFeedbackOutbox(storage, 42)).toEqual([]);
   });
 });

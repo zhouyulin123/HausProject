@@ -1,50 +1,43 @@
-import { useCallback, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
 import { sendDesignFeedbackEvent } from "@/api/designApi";
+import { createFeedbackOutbox } from "@/lib/feedbackOutbox";
 import { feedbackDeliveryReducer } from "@/lib/workspaceFeedback";
 import type { DesignFeedbackEventRequest, FeedbackDelivery } from "@/types/feedback";
 
 export function useFeedbackDelivery(taskId: number) {
   const [deliveries, dispatch] = useReducer(feedbackDeliveryReducer, []);
-  const inFlight = useRef(new Set<string>());
+  const outboxRef = useRef<ReturnType<typeof createFeedbackOutbox> | null>(null);
 
-  const deliver = useCallback(async (
-    request: DesignFeedbackEventRequest,
-    label: string,
-    retrying = false,
-  ) => {
-    const clientEventId = request.client_event_id;
-    if (inFlight.current.has(clientEventId)) return;
-    inFlight.current.add(clientEventId);
-    dispatch(retrying
-      ? { type: "retrying", clientEventId }
-      : { type: "queued", request, label });
+  useEffect(() => {
+    dispatch({ type: "reset" });
+    let storage: Storage | null = null;
     try {
-      await sendDesignFeedbackEvent(taskId, request);
-      dispatch({
-        type: "sent",
-        clientEventId,
-        message: `${label}已同步`,
-      });
+      storage = typeof window === "undefined" ? null : window.localStorage;
     } catch {
-      dispatch({
-        type: "failed",
-        clientEventId,
-        message: request.action_type === "final_select"
-          ? "方案确认暂未同步，可重试"
-          : `${label}反馈暂未同步，本地操作已保留，可重试`,
-      });
-    } finally {
-      inFlight.current.delete(clientEventId);
+      storage = null;
     }
+    const outbox = createFeedbackOutbox({
+      taskId,
+      storage,
+      send: sendDesignFeedbackEvent,
+      onlineTarget: typeof window === "undefined" ? null : window,
+      onDeliveryAction: dispatch,
+    });
+    outboxRef.current = outbox;
+    outbox.start();
+    return () => {
+      outbox.stop();
+      if (outboxRef.current === outbox) outboxRef.current = null;
+    };
   }, [taskId]);
 
   const submit = useCallback((request: DesignFeedbackEventRequest, label: string) => {
-    void deliver(request, label);
-  }, [deliver]);
+    outboxRef.current?.submit(request, label);
+  }, []);
 
   const retry = useCallback((delivery: FeedbackDelivery) => {
-    void deliver(delivery.request, delivery.label, true);
-  }, [deliver]);
+    outboxRef.current?.retry(delivery.request);
+  }, []);
 
   return { deliveries, submit, retry };
 }

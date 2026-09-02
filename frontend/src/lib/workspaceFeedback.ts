@@ -175,6 +175,7 @@ export function buildMoveFeedbackEvent(
 }
 
 export type FeedbackDeliveryAction =
+  | { type: "reset" }
   | { type: "queued"; request: DesignFeedbackEventRequest; label: string }
   | { type: "retrying"; clientEventId: string }
   | { type: "sent"; clientEventId: string; message: string }
@@ -184,6 +185,7 @@ export function feedbackDeliveryReducer(
   state: FeedbackDelivery[],
   action: FeedbackDeliveryAction,
 ): FeedbackDelivery[] {
+  if (action.type === "reset") return [];
   if (action.type === "queued") {
     const delivery: FeedbackDelivery = {
       request: action.request,
