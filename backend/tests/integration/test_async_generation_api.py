@@ -105,6 +105,51 @@ def test_owner_can_queue_and_query_persistent_generation(
 
 
 @pytest.mark.integration
+def test_generate_async_requires_idempotency_key(async_generation_context):
+    client, owner_id, _, task_id, scheduled, factory = async_generation_context
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers={"X-Session-ID": owner_id},
+    )
+
+    assert response.status_code == 422
+    assert scheduled == []
+    with factory() as db:
+        assert db.scalars(select(GenerationRun)).all() == []
+
+
+@pytest.mark.integration
+def test_generation_key_reuse_rejects_changed_task_input(async_generation_context):
+    client, owner_id, _, task_id, scheduled, factory = async_generation_context
+    headers = {
+        "X-Session-ID": owner_id,
+        "Idempotency-Key": "stable-generation-001",
+    }
+    first = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers=headers,
+    )
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task is not None
+        task.confirmed_requirement_json = {"rooms": ["卧室"]}
+        db.commit()
+
+    conflict = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers=headers,
+    )
+
+    assert first.status_code == 202
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+    assert scheduled == []
+    with factory() as db:
+        assert len(db.scalars(select(GenerationRun)).all()) == 1
+
+
+@pytest.mark.integration
 def test_legacy_synchronous_generation_is_deprecated_in_openapi(
     async_generation_context,
 ):

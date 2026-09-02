@@ -212,7 +212,17 @@ describe("方案结果恢复", () => {
     expect(plans.map((item) => item.id)).toEqual(["plan-a"]);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/design/tasks/42/generate-async",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.any(Headers),
+      }),
+    );
+    const generateCall = fetchMock.mock.calls.find(
+      ([input]) => String(input) === "/api/design/tasks/42/generate-async",
+    );
+    const generateHeaders = new Headers(generateCall?.[1]?.headers);
+    expect(generateHeaders.get("Idempotency-Key")).toBe(
+      "design-generation-task-42-v1",
     );
     expect(fetchMock).not.toHaveBeenCalledWith(
       "/api/design/tasks/42/generate",

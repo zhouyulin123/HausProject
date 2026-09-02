@@ -212,6 +212,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "prompt_digest",
             "rules_digest",
             "data_digest",
+            "request_digest",
         } <= generation_run_columns
         rendered_image_columns = {
             column["name"]

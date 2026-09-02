@@ -560,6 +560,69 @@ def test_agent_turn_is_idempotent_by_client_turn_id(agent_api_context):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    "changed_fields",
+    [
+        {"message": "换一个完全不同的请求"},
+        {"active_mode": "custom_furniture"},
+        {"scene_id": 999, "base_scene_version": 1},
+        {"custom_furniture_spec": {"family": "table"}},
+    ],
+)
+def test_agent_turn_idempotency_key_rejects_different_request(
+    agent_api_context,
+    monkeypatch,
+    changed_fields,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    tool_calls: list[str] = []
+
+    def catalog_tool(_db):
+        def execute(_state):
+            tool_calls.append("catalog_search")
+            return {
+                "products": [],
+                "candidate_count": 0,
+                "contains_unverified": False,
+            }
+
+        return execute
+
+    monkeypatch.setattr(
+        design_agent.design_agent_service,
+        "_catalog_tool",
+        catalog_tool,
+    )
+    body = {
+        "client_turn_id": "conflicting-turn-001",
+        "message": "先看看商品",
+        "active_mode": "catalog_design",
+        "answers": {"budget_max": 20000, "delivery_region": "CN-SH"},
+    }
+    first = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=body,
+    )
+    conflict = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={**body, **changed_fields},
+    )
+
+    assert first.status_code == 200
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+    assert tool_calls == ["catalog_search"]
+    with factory() as db:
+        assert len(
+            db.scalars(
+                select(DesignAgentTurn).where(DesignAgentTurn.task_id == task_id)
+            ).all()
+        ) == 1
+
+
+@pytest.mark.integration
 def test_agent_scene_edit_rejects_stale_base_version(
     agent_api_context,
     monkeypatch,
@@ -978,6 +1041,68 @@ def test_unexpected_failure_is_persisted_and_idempotently_replayed(
                 )
             ).all()
         ) == 1
+
+
+@pytest.mark.integration
+def test_unexpected_failure_preserves_task_execution_budget(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task is not None
+        task.agent_state_json = {
+            "status": "waiting_user",
+            "facts": {"space_type": "客厅"},
+            "fact_evidence": {},
+            "step_count": 2,
+            "retry_count": 1,
+            "max_steps": 20,
+            "max_retries": 2,
+            "hard_errors": ["prior_failure"],
+        }
+        db.commit()
+
+    def crash(*_):
+        raise RuntimeError("供应商连接意外中断")
+
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "generate_plans",
+        crash,
+    )
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "budget-failure-001",
+            "message": "开始设计",
+            "active_mode": "catalog_design",
+            "answers": {
+                "budget_max": 20000,
+                "room_width_m": 4,
+                "room_depth_m": 5,
+                "delivery_region": "CN-SH",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["state"] | {
+        "step_count": 2,
+        "retry_count": 1,
+        "max_steps": 20,
+        "max_retries": 2,
+    } == response.json()["state"]
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task is not None
+        assert task.agent_state_json["step_count"] == 2
+        assert task.agent_state_json["retry_count"] == 1
+        assert task.agent_state_json["max_steps"] == 20
+        assert task.agent_state_json["max_retries"] == 2
 
 
 @pytest.mark.integration
