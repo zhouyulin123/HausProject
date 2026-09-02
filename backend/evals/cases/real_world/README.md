@@ -32,20 +32,23 @@
 ## 可信证据格式
 
 不能手写逐例 `CaseResult`。先让正式 Generation Worker 实际执行每个已准入案例，
-再以 `run-bindings.template.json` 记录单一 `split`、内部案例 ID、任务 ID和运行 ID。收集器只接受：
+再以 `run-bindings.template.json` 记录单一 `split`、内部案例 ID、任务 ID和运行 ID。绑定 schema `3.0` 可另外成对填写数据集根目录内的 `execution_review_path` 与原始文件 SHA-256；没有本次执行评审时两项都必须为 `null`。历史绑定 schema `2.0` 继续作为无人工评审输入读取。收集器只接受：
 
 - 状态为 `completed`、`failed`、`dead_letter`、`cost_limit_exceeded`、`provider_unavailable` 或 `cancelled`，且 task/run 归属一致的可信终态运行；其中取消运行也作为生成失败进入分母，不能用于剔除差样本；
 - `generator=llm`，不接受 template 降级、demo、mock、manual、test 或 synthetic；
 - 所有终态都必须在执行前冻结模型、静态 Prompt 契约、完整动态输入、规则制品和完整商品上下文；
-- 成功运行还必须存在输出快照和四个 Worker 节点，且 `generate_plans` 来自 LLM，报价与质量校验来自确定性节点；
+- 成功运行还必须唯一绑定同任务的不可变 `DesignRevision`，并保存由其 `DesignPlanVersion` 与 `QuoteSnapshot` 规范化业务内容计算的 `output_digest`；收集时会重算摘要，不信任 `output_snapshot` 自报；
+- 成功运行必须存在四个 Worker 节点，且 `generate_plans` 来自 LLM，报价与质量校验来自确定性节点；失败、取消、死信和人工接管终态不得携带 revision、输出摘要或输出快照；
 - 同一证据包内每个已准入案例恰好一个运行，同一 run 不得跨案例复用。
 
 创建 GenerationRun 时，评测队列器必须调用
 `evals.trusted_evidence.bind_evaluation_run(db, dataset=..., split="regression", case_id=..., task=...)`，在同一事务中写入运行及持久化案例绑定。`evaluation_run_idempotency_key` 也必须传入 `db`、`task` 和 `split`，其身份同时包含案例、split、模型与静态制品版本；只把幂等键传给现有 `generate-async` 不构成可信绑定，服务会失败关闭。Worker 领取与证据收集都会复核任务需求、按上传顺序冻结的图片分析事实、唯一原始资产摘要和执行前版本；错误图片、额外图片、分析变化、需求变化、可变用户画像、绑定后混版、缺少 `task_input` 或历史图片没有摘要时均拒绝执行或签发。
 
-收集器不会接收 CaseResult。当前可从运行事实确定性推导生成成功、有效 SKU 和报价一致性；需求、空间、布局和人工满意度在接入可追溯标注执行器前保持无证据，因此质量门禁会失败，不会用模拟值或手工值补齐。
+收集器不会接收 CaseResult。需求与空间事实从不可变 revision 的需求快照逐项对照；有效 SKU、商品匹配、报价复算、预算和风格从不可变方案及报价快照对照 CaseAnnotation。布局硬约束进入分母，但在确定性几何产物纳入同一输出摘要前不信任模型自报的通过标记，因此记为未命中；任何缺失事实都不能由 `output_snapshot` 补齐。
 
-证据包 3.0 使用独立 HMAC 密钥签名，绑定一个显式 split 的数据集内容指纹、匿名案例指纹、task/run ID、运行终态、模型及三个运行时制品摘要，以及输入、输出和结果摘要。Prompt 摘要从静态系统 Prompt、输出 Schema 和工具/调用参数契约复算；完整动态模型请求另行计算 `input_digest`，不得截断；规则摘要只绑定执行前可读取的生成与报价源码制品；数据摘要绑定模型实际接收的完整商品与定制价目上下文，不依赖成功后选出的方案。签发 CLI 不接受调用方自报版本。文件不包含案例 ID、资产路径、Prompt、输入或模型输出原文。签名密钥必须只配置在受控 Worker/CI，不应写入仓库、命令行或开发者共享环境。
+人工满意度与修改事实只接受 `real_world_execution_review/1.0`。评审文件的案例、标签版本、文件 SHA-256 和 `output_digest` 必须全部与本次运行一致；没有匹配评审时满意度与修改率保持零分母，报告显示 `NO EVIDENCE`，不会把缺失评审计成零分。
+
+证据包 4.0 使用独立 HMAC 密钥签名，绑定一个显式 split 的数据集内容指纹、匿名案例指纹、task/run ID、运行终态、模型及三个运行时制品摘要，以及输入、不可变输出和结果摘要。旧 3.0 的 `output_snapshot` 摘要不能作为 4.0 输出证据。Prompt 摘要从静态系统 Prompt、输出 Schema 和工具/调用参数契约复算；完整动态模型请求另行计算 `input_digest`，不得截断；规则摘要只绑定执行前可读取的生成与报价源码制品；数据摘要绑定模型实际接收的完整商品与定制价目上下文，不依赖成功后选出的方案。签发 CLI 不接受调用方自报版本。文件不包含案例 ID、资产路径、Prompt、输入、模型输出或人工评审原文。签名密钥必须只配置在受控 Worker/CI，不应写入仓库、命令行或开发者共享环境。
 
 终态失败会进入 `generation_success_rate` 分母并记为失败，但不会伪造 SKU、报价、布局或满意度等它没有产出的指标。`development`、`regression`、`blind` 必须分别绑定、收集、验签和比较；任何 CLI 省略 `--split`、绑定文件 split 不一致、跨 split 案例混入或所选 split 为空都会失败关闭。
 

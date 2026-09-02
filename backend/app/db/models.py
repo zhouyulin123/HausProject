@@ -835,6 +835,14 @@ class GenerationRun(Base):
     cancel_requested_at = Column(DateTime(timezone=True), nullable=True)
     idempotency_key = Column(String(100), nullable=True)
     request_digest = Column(String(71), nullable=True)
+    result_revision_id = Column(
+        Integer,
+        ForeignKey("design_revisions.id", ondelete="RESTRICT"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    output_digest = Column(String(71), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
@@ -845,6 +853,7 @@ class GenerationRun(Base):
         cascade="all, delete-orphan",
         order_by="GenerationRunEvent.id",
     )
+    result_revision = relationship("DesignRevision")
 
 
 class EvaluationRunBinding(Base):

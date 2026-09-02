@@ -391,6 +391,12 @@ class CaseResult:
     style_consistent: int = 0
     human_rating_count: int = 0
     human_rating_sum: int = 0
+    human_review_count: int = 0
+    human_edit_count: int = 0
+    human_add_count: int = 0
+    human_remove_count: int = 0
+    human_move_count: int = 0
+    human_replace_count: int = 0
     generation_succeeded: bool = False
     cross_user_access_checks: int = 0
     severe_cross_user_access: int = 0
@@ -419,6 +425,12 @@ class CaseResult:
             self.style_consistent,
             self.human_rating_count,
             self.human_rating_sum,
+            self.human_review_count,
+            self.human_edit_count,
+            self.human_add_count,
+            self.human_remove_count,
+            self.human_move_count,
+            self.human_replace_count,
             self.cross_user_access_checks,
             self.severe_cross_user_access,
             self.retry_bound_checks,
@@ -447,6 +459,18 @@ class CaseResult:
             <= self.human_rating_count * 5
         ):
             raise ValueError("人工满意度总分必须落在 1 到 5 分量表范围内")
+        if (
+            self.human_rating_count > self.human_review_count
+            or (self.human_review_count == 0 and self.human_edit_count > 0)
+            or (
+                self.human_add_count
+                + self.human_remove_count
+                + self.human_move_count
+                + self.human_replace_count
+                > self.human_edit_count
+            )
+        ):
+            raise ValueError("人工评分或修改事实缺少对应执行评审")
 
 
 @dataclass(frozen=True)
@@ -492,6 +516,12 @@ def aggregate_quality_metrics(
         "style_checks": sum(r.style_checks for r in results),
         "human_rating_sum": sum(r.human_rating_sum for r in results),
         "human_rating_count": sum(r.human_rating_count for r in results),
+        "human_review_count": sum(r.human_review_count for r in results),
+        "human_edit_count": sum(r.human_edit_count for r in results),
+        "human_add_count": sum(r.human_add_count for r in results),
+        "human_remove_count": sum(r.human_remove_count for r in results),
+        "human_move_count": sum(r.human_move_count for r in results),
+        "human_replace_count": sum(r.human_replace_count for r in results),
         "cross_user_access_checks": sum(
             r.cross_user_access_checks for r in results
         ),
@@ -527,6 +557,24 @@ def aggregate_quality_metrics(
             totals["human_rating_sum"], totals["human_rating_count"]
         ),
         "human_satisfaction_count": totals["human_rating_count"],
+        "human_modification_mean": _rate(
+            totals["human_edit_count"], totals["human_review_count"]
+        ),
+        "human_modification_review_count": totals["human_review_count"],
+        "human_add_count": (
+            totals["human_add_count"] if totals["human_review_count"] else None
+        ),
+        "human_remove_count": (
+            totals["human_remove_count"] if totals["human_review_count"] else None
+        ),
+        "human_move_count": (
+            totals["human_move_count"] if totals["human_review_count"] else None
+        ),
+        "human_replace_count": (
+            totals["human_replace_count"]
+            if totals["human_review_count"]
+            else None
+        ),
         "generation_success_rate": _rate(
             sum(1 for r in results if r.generation_succeeded), len(results)
         ),

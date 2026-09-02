@@ -28,7 +28,7 @@ from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
 )
-from app.services import generation_run_service
+from app.services import design_version_service, generation_run_service
 
 
 @pytest.fixture
@@ -526,10 +526,38 @@ def test_agent_state_refresh_reconciles_bound_worker_completion(agent_api_contex
     with factory() as db:
         run = db.get(GenerationRun, run_id)
         assert run is not None
+        task = db.get(DesignTask, task_id)
+        assert task is not None
+        revision = design_version_service.persist_generation(
+            db,
+            task=task,
+            generator="llm",
+            plans=[
+                {
+                    "id": "plan-agent",
+                    "name": "Agent 方案",
+                    "furnitureSuggestions": [{"id": "SOFA-001"}],
+                    "shopQuote": {
+                        "furnitureTotal": 1000,
+                        "customTotal": 0,
+                        "total": 1000,
+                        "lineItems": [
+                            {
+                                "sku": "SOFA-001",
+                                "unitPrice": 1000,
+                                "quantity": 1,
+                            }
+                        ],
+                        "customLineItems": [],
+                    },
+                }
+            ],
+        )
         assert generation_run_service.mark_completed(
             db,
             run=run,
             generator="llm",
+            result_revision_id=revision.id,
         )
 
     refreshed = client.get(
@@ -546,6 +574,8 @@ def test_agent_state_refresh_reconciles_bound_worker_completion(agent_api_contex
     assert payload["result"] == {
         "run_id": run_id,
         "generation_status": "completed",
+        "result_revision_id": revision.id,
+        "output_digest": run.output_digest,
     }
 
 

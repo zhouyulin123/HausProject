@@ -13,7 +13,31 @@ from app.db.models import (
     GenerationRunEvent,
     LayoutRun,
 )
-from app.services import generation_run_service
+from app.services import design_version_service, generation_run_service
+
+
+def _persist_run_output(db, task, *, generator: str = "llm"):
+    return design_version_service.persist_generation(
+        db,
+        task=task,
+        generator=generator,
+        plans=[
+            {
+                "id": "plan-run",
+                "name": "运行方案",
+                "furnitureSuggestions": [{"id": "SOFA-001"}],
+                "shopQuote": {
+                    "furnitureTotal": 1000,
+                    "customTotal": 0,
+                    "total": 1000,
+                    "lineItems": [
+                        {"sku": "SOFA-001", "unitPrice": 1000, "quantity": 1}
+                    ],
+                    "customLineItems": [],
+                },
+            }
+        ],
+    )
 
 
 @pytest.fixture
@@ -181,12 +205,14 @@ def test_worker_claim_sets_lease_and_only_owner_can_renew_or_complete(db):
         worker_attempt=1,
         generator="llm",
     )
+    revision = _persist_run_output(db, task)
     assert generation_run_service.mark_completed(
         db,
         run_id=claimed.id,
         worker_id="worker-a",
         worker_attempt=1,
         generator="llm",
+        result_revision_id=revision.id,
     )
     db.refresh(claimed)
     assert claimed.status == "completed"

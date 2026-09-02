@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 from app.db.database import SessionLocal
@@ -26,8 +27,11 @@ def _read_bindings(
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise EvaluationInputError(f"无法读取运行绑定：{exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != "2.0":
-        raise EvaluationInputError("运行绑定 schema_version 必须为 2.0")
+    if not isinstance(payload, dict) or payload.get("schema_version") not in {
+        "2.0",
+        "3.0",
+    }:
+        raise EvaluationInputError("运行绑定 schema_version 必须为 2.0 或 3.0")
     if set(payload) != {"schema_version", "split", "bindings"}:
         raise EvaluationInputError("运行绑定包含未知字段")
     if payload.get("split") != split:
@@ -37,11 +41,17 @@ def _read_bindings(
         raise EvaluationInputError("bindings 必须是数组")
     bindings: list[RunBinding] = []
     for index, raw in enumerate(raw_bindings):
-        if not isinstance(raw, dict) or set(raw) != {
+        required_fields = {
             "case_id",
             "task_id",
             "system_run_id",
-        }:
+        }
+        if payload["schema_version"] == "3.0":
+            required_fields |= {
+                "execution_review_path",
+                "execution_review_sha256",
+            }
+        if not isinstance(raw, dict) or set(raw) != required_fields:
             raise EvaluationInputError(f"第 {index + 1} 条运行绑定字段不合法")
         case_id = raw.get("case_id")
         task_id = raw.get("task_id")
@@ -57,7 +67,28 @@ def _read_bindings(
             or run_id <= 0
         ):
             raise EvaluationInputError(f"第 {index + 1} 条运行绑定 ID 不合法")
-        bindings.append(RunBinding(case_id.strip(), task_id, run_id))
+        review_path = raw.get("execution_review_path")
+        review_digest = raw.get("execution_review_sha256")
+        if (review_path is None) != (review_digest is None):
+            raise EvaluationInputError(
+                f"第 {index + 1} 条人工评审路径与摘要必须成对提供"
+            )
+        if review_path is not None and (
+            not isinstance(review_path, str)
+            or not review_path.strip()
+            or not isinstance(review_digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", review_digest)
+        ):
+            raise EvaluationInputError(f"第 {index + 1} 条人工评审引用不合法")
+        bindings.append(
+            RunBinding(
+                case_id.strip(),
+                task_id,
+                run_id,
+                review_path.strip() if isinstance(review_path, str) else None,
+                review_digest,
+            )
+        )
     return tuple(bindings)
 
 
@@ -81,6 +112,11 @@ def main(argv: list[str] | None = None) -> int:
                 "缺少签名密钥：必须配置 EVAL_EVIDENCE_HMAC_KEY 和 EVAL_EVIDENCE_KEY_ID"
             )
         dataset = load_case_manifest(args.manifest, asset_root=args.asset_root)
+        dataset_root = (
+            args.asset_root.resolve()
+            if args.asset_root is not None
+            else args.manifest.resolve().parent
+        )
         bindings = _read_bindings(args.run_bindings.resolve(), split=args.split)
         with SessionLocal() as db:
             bundle = collect_trusted_evidence(
@@ -88,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
                 dataset=dataset,
                 split=args.split,
                 bindings=bindings,
+                dataset_root=dataset_root,
                 signing_key=signing_key,
                 key_id=key_id,
             )

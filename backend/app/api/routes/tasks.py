@@ -389,7 +389,7 @@ def _execute_generation(
             pdf_url=None,
         )
         db.add(result)
-        design_version_service.persist_generation(
+        revision = design_version_service.persist_generation(
             db,
             task=task,
             plans=plans,
@@ -430,7 +430,7 @@ def _execute_generation(
         task.status = "completed"
         task.progress = 100
         if on_success is not None:
-            on_success(generator)
+            on_success(generator, revision.id)
         else:
             db.commit()
 
@@ -591,6 +591,8 @@ def get_generation_status(
         cost_cny=run.cost_cny,
         cost_reserved_cny=run.cost_reserved_cny or 0.0,
         cost_limit_cny=run.cost_limit_cny,
+        result_revision_id=run.result_revision_id,
+        output_digest=run.output_digest,
         events=[
             GenerationEventResponse(
                 node=event.node,

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.database import Base
 from app.core.config import settings
 from app.db.models import DesignTask, EvaluationRunBinding, GenerationRunEvent, UploadedImage
-from app.services import generation_run_service
+from app.services import design_version_service, generation_run_service
 from evals.real_world import EvaluationInputError, load_case_manifest
 from evals.run_real_world_eval import build_evaluation_report, compare_evaluation_reports
 from evals.trusted_evidence import (
@@ -98,16 +98,34 @@ def _task(db: Session, case) -> DesignTask:
 
 def _finish_success(db: Session, run, task: DesignTask) -> None:
     now = datetime.now(timezone.utc)
-    run.status = "completed"
-    run.current_node = "completed"
     run.attempt_count = 1
     run.started_at = now
-    run.completed_at = now
     run.output_snapshot = {
         "plan_count": 1,
         "plans": [{"furniture_count": 2}],
     }
-    task.status = "completed"
+    revision = design_version_service.persist_generation(
+        db,
+        task=task,
+        generator="llm",
+        plans=[
+            {
+                "id": "plan-eval",
+                "name": "匿名方案",
+                "style": "现代",
+                "furnitureSuggestions": [{"id": "SOFA-001"}],
+                "shopQuote": {
+                    "furnitureTotal": 10000,
+                    "customTotal": 0,
+                    "total": 10000,
+                    "lineItems": [
+                        {"sku": "SOFA-001", "unitPrice": 10000, "quantity": 1}
+                    ],
+                    "customLineItems": [],
+                },
+            }
+        ],
+    )
     for node, source in (
         ("prepare_context", None),
         ("generate_plans", "llm"),
@@ -123,7 +141,13 @@ def _finish_success(db: Session, run, task: DesignTask) -> None:
                 source=source,
             )
         )
-    db.commit()
+    assert generation_run_service.mark_completed(
+        db,
+        run=run,
+        generator="llm",
+        result_revision_id=revision.id,
+        now=now,
+    )
 
 
 def _finish_failure(db: Session, run, task: DesignTask) -> None:

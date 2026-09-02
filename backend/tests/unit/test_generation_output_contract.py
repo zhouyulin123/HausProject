@@ -44,7 +44,8 @@ def _plans(*, reverse: bool = False, total: int = 10000) -> list[dict]:
             "name": "方案 A",
             "style": "现代",
             "furnitureSuggestions": [
-                {"sku": "SOFA-001", "id": "SOFA-001", "quantity": 1}
+                {"sku": "SOFA-001", "id": "SOFA-001", "quantity": 1},
+                {"sku": "LAMP-001", "id": "LAMP-001", "quantity": 1},
             ],
             "layoutConstraintResults": [
                 {"constraintId": "inside-room", "passed": True}
@@ -55,7 +56,8 @@ def _plans(*, reverse: bool = False, total: int = 10000) -> list[dict]:
                 "customTotal": 0,
                 "total": total,
                 "lineItems": [
-                    {"sku": "SOFA-001", "quantity": 1, "unitPrice": total}
+                    {"sku": "SOFA-001", "quantity": 1, "unitPrice": total - 1},
+                    {"sku": "LAMP-001", "quantity": 1, "unitPrice": 1},
                 ],
                 "customLineItems": [],
                 "catalogVersion": "catalog-v1",
@@ -68,7 +70,8 @@ def _plans(*, reverse: bool = False, total: int = 10000) -> list[dict]:
             "name": "方案 B",
             "style": "现代",
             "furnitureSuggestions": [
-                {"quantity": 1, "id": "TABLE-001", "sku": "TABLE-001"}
+                {"quantity": 1, "id": "TABLE-001", "sku": "TABLE-001"},
+                {"quantity": 1, "id": "CHAIR-001", "sku": "CHAIR-001"},
             ],
             "layoutConstraintResults": [
                 {"passed": True, "constraintId": "inside-room"}
@@ -79,7 +82,8 @@ def _plans(*, reverse: bool = False, total: int = 10000) -> list[dict]:
                 "catalogVersion": "catalog-v1",
                 "customLineItems": [],
                 "lineItems": [
-                    {"unitPrice": total, "quantity": 1, "sku": "TABLE-001"}
+                    {"unitPrice": total - 1, "quantity": 1, "sku": "TABLE-001"},
+                    {"unitPrice": 1, "quantity": 1, "sku": "CHAIR-001"},
                 ],
                 "total": total,
                 "customTotal": 0,
@@ -88,7 +92,13 @@ def _plans(*, reverse: bool = False, total: int = 10000) -> list[dict]:
             },
         },
     ]
-    return list(reversed(plans)) if reverse else plans
+    if reverse:
+        for plan in plans:
+            plan["furnitureSuggestions"].reverse()
+            plan["layoutConstraintResults"].reverse()
+            plan["shopQuote"]["lineItems"].reverse()
+        plans.reverse()
+    return plans
 
 
 def _revision(db: Session, task: DesignTask, *, plans: list[dict]):
@@ -138,6 +148,7 @@ def test_completed_run_requires_revision_owned_by_the_same_task(db):
     claimed = generation_run_service.claim_next_run(
         db,
         worker_id="worker-output-owner",
+        lease_seconds=60,
     )
     assert claimed is not None
     wrong_revision = _revision(db, other_task, plans=_plans())
@@ -167,6 +178,7 @@ def test_completed_run_atomically_binds_revision_and_digest(db):
     claimed = generation_run_service.claim_next_run(
         db,
         worker_id="worker-output-bind",
+        lease_seconds=60,
     )
     assert claimed is not None
     revision = _revision(db, task, plans=_plans())
@@ -195,6 +207,7 @@ def test_terminal_failure_clears_untrusted_output_fields(db):
     claimed = generation_run_service.claim_next_run(
         db,
         worker_id="worker-output-failure",
+        lease_seconds=60,
     )
     assert claimed is not None
     revision = _revision(db, task, plans=_plans())

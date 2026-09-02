@@ -9,9 +9,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping
 
 from sqlalchemy.orm import Session
@@ -21,6 +23,7 @@ from app.db.models import DesignTask, GenerationRun
 from app.services import (
     catalog_service,
     evaluation_binding_service,
+    generation_output_service,
     generation_run_service,
     llm_service,
 )
@@ -29,6 +32,11 @@ from app.services.generation_provenance import (
     GENERATION_PROVENANCE_SCHEMA_VERSION,
     build_generation_provenance,
     canonical_digest,
+)
+from evals.annotations import (
+    AnnotationValidationError,
+    ExecutionReview,
+    load_execution_review,
 )
 from evals.real_world import (
     CaseResult,
@@ -41,7 +49,7 @@ from evals.real_world import (
 )
 
 
-EVIDENCE_SCHEMA_VERSION = "3.0"
+EVIDENCE_SCHEMA_VERSION = "4.0"
 EVIDENCE_TYPE = "system_execution"
 ATTESTATION_ALGORITHM = "HMAC-SHA256"
 TRUSTED_GENERATOR = "llm"
@@ -79,6 +87,8 @@ class RunBinding:
     case_id: str
     task_id: int
     system_run_id: int
+    execution_review_path: Path | str | None = None
+    execution_review_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -94,7 +104,7 @@ class ExecutionProvenance:
     rules_digest: str
     data_digest: str
     input_digest: str
-    output_digest: str
+    output_digest: str | None
     result_digest: str
 
 
@@ -361,7 +371,7 @@ def _validate_system_run(
     binding: RunBinding,
     expected_case_fingerprint: str,
     expected_split: EvaluationSplit,
-) -> GenerationRun:
+) -> tuple[GenerationRun, dict[str, Any] | None]:
     run = db.get(GenerationRun, binding.system_run_id)
     if run is None:
         raise EvaluationInputError(f"系统运行不存在：{binding.system_run_id}")
@@ -433,9 +443,22 @@ def _validate_system_run(
     if run.input_digest != canonical_digest(run.input_snapshot):
         raise EvaluationInputError(f"系统运行 {run.id} 的输入摘要与快照不一致")
     if run.status != "completed":
-        return run
-    if run.output_snapshot is None:
-        raise EvaluationInputError(f"系统运行 {run.id} 缺少完成输出快照")
+        if any(
+            value is not None
+            for value in (
+                run.result_revision_id,
+                run.output_digest,
+                run.output_snapshot,
+            )
+        ):
+            raise EvaluationInputError(f"失败运行 {run.id} 不得携带生成输出")
+        return run, None
+    try:
+        output = generation_output_service.validated_run_output(db, run=run)
+    except generation_output_service.GenerationOutputValidationError as exc:
+        raise EvaluationInputError(
+            f"系统运行 {run.id} 的不可变输出不可信：{exc}"
+        ) from exc
     completed_nodes = {
         event.node for event in run.events if event.status == "completed"
     }
@@ -454,41 +477,219 @@ def _validate_system_run(
         for node, source in REQUIRED_NODE_SOURCES.items()
     ):
         raise EvaluationInputError(f"系统运行 {run.id} 的 Worker 节点来源不可信")
-    return run
+    return run, output
 
 
-def _runtime_result(case_id: str, run: GenerationRun) -> CaseResult:
-    """只从运行事实生成指标；尚无确定性证据的指标保持无分母。"""
-    if run.status != "completed":
-        return CaseResult(case_id=case_id, generation_succeeded=False)
-    snapshot = run.output_snapshot
-    if not isinstance(snapshot, dict):
-        raise EvaluationInputError(f"系统运行 {run.id} 的输出摘要不合法")
-    plan_count = snapshot.get("plan_count")
-    plans = snapshot.get("plans")
+_MISSING = object()
+
+
+def _path_value(value: Any, path: str) -> Any:
+    current = value
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return _MISSING
+        current = current[part]
+    return current
+
+
+def _requirement_value(requirement: dict[str, Any], field: str) -> Any:
+    if field in requirement:
+        return requirement[field]
+    if field == "space_type":
+        rooms = requirement.get("rooms")
+        if isinstance(rooms, list) and rooms:
+            return rooms[0]
+    return _MISSING
+
+
+def _quote_is_consistent(quote: dict[str, Any]) -> bool:
+    raw = quote.get("quote")
+    if not isinstance(raw, dict):
+        return False
+    line_items = raw.get("lineItems")
+    custom_items = raw.get("customLineItems")
     if (
-        isinstance(plan_count, bool)
-        or not isinstance(plan_count, int)
-        or plan_count <= 0
-        or not isinstance(plans, list)
-        or len(plans) != plan_count
+        not isinstance(line_items, list)
+        or not isinstance(custom_items, list)
+        or any(not isinstance(item, dict) for item in [*line_items, *custom_items])
     ):
-        raise EvaluationInputError(f"系统运行 {run.id} 的方案摘要不完整")
-    furniture_counts: list[int] = []
-    for plan in plans:
-        count = plan.get("furniture_count") if isinstance(plan, dict) else None
-        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
-            raise EvaluationInputError(f"系统运行 {run.id} 的家具摘要不完整")
-        furniture_counts.append(count)
-    sku_count = sum(furniture_counts)
-    return CaseResult(
-        case_id=case_id,
-        recommended_skus=sku_count,
-        valid_skus=sku_count,
-        quote_checks=plan_count,
-        quote_consistent=plan_count,
-        generation_succeeded=(run.status == "completed"),
+        return False
+    try:
+        furniture_values = [
+            (item["unitPrice"], item["quantity"]) for item in line_items
+        ]
+        custom_values = [
+            (
+                item.get("subtotal"),
+                item.get("unitPrice"),
+                item.get("quantity"),
+            )
+            for item in custom_items
+        ]
+        numbers = [value for pair in furniture_values for value in pair]
+        numbers.extend(value for row in custom_values for value in row if value is not None)
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+            for value in numbers
+        ):
+            return False
+        furniture_total = sum(price * quantity for price, quantity in furniture_values)
+        custom_total = sum(
+            subtotal
+            if subtotal is not None
+            else round(unit_price * quantity)
+            for subtotal, unit_price, quantity in custom_values
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    return (
+        furniture_total == quote.get("furniture_total")
+        and custom_total == quote.get("custom_total")
+        and furniture_total + custom_total == quote.get("grand_total")
     )
+
+
+def _runtime_result(
+    case: RealWorldCase,
+    run: GenerationRun,
+    output: dict[str, Any] | None,
+    review: ExecutionReview | None,
+) -> CaseResult:
+    """从不可变业务输出和冻结标注确定性计算逐例指标。"""
+    if run.status != "completed":
+        return CaseResult(case_id=case.id, generation_succeeded=False)
+    if output is None or case.annotation is None:
+        raise EvaluationInputError(f"系统运行 {run.id} 缺少不可变输出或案例标注")
+    requirement = output.get("revision", {}).get("requirement")
+    plans = output.get("plans")
+    if not isinstance(requirement, dict) or not isinstance(plans, list) or not plans:
+        raise EvaluationInputError(f"系统运行 {run.id} 的不可变输出结构不完整")
+
+    requirement_total = len(case.annotation.requirements)
+    requirement_correct = sum(
+        _requirement_value(requirement, fact.field) == fact.value
+        for fact in case.annotation.requirements
+    )
+    space_fact_total = len(case.annotation.space_facts)
+    space_fact_correct = sum(
+        _path_value(requirement, fact.fact_path) == fact.value
+        for fact in case.annotation.space_facts
+    )
+    confirmation_facts = tuple(
+        fact for fact in case.annotation.space_facts if fact.requires_confirmation
+    )
+    confirmed_values = requirement.get("confirmed_space_facts")
+    if not isinstance(confirmed_values, dict):
+        confirmed_values = {}
+    low_confidence_confirmed = sum(
+        confirmed_values.get(fact.fact_path, _MISSING) == fact.value
+        for fact in confirmation_facts
+    )
+
+    recommended_skus = 0
+    valid_skus = 0
+    quote_consistent = 0
+    budget_within_limit = 0
+    layout_passes = 0
+    style_consistent = 0
+    allowed_skus = set(case.annotation.allowed_skus)
+    expected_constraints = {
+        constraint.constraint_id
+        for constraint in case.annotation.layout_hard_constraints
+    }
+    for record in plans:
+        if not isinstance(record, dict) or not isinstance(record.get("plan"), dict):
+            raise EvaluationInputError(f"系统运行 {run.id} 包含不合法的方案版本")
+        plan = record["plan"]
+        suggestions = plan.get("furnitureSuggestions")
+        if not isinstance(suggestions, list):
+            suggestions = []
+        recommended_skus += len(suggestions)
+        for suggestion in suggestions:
+            sku = None
+            if isinstance(suggestion, dict):
+                sku = suggestion.get("sku") or suggestion.get("id")
+            if isinstance(sku, str) and sku in allowed_skus:
+                valid_skus += 1
+        quote = record.get("quote")
+        if isinstance(quote, dict):
+            if _quote_is_consistent(quote):
+                quote_consistent += 1
+            total = quote.get("grand_total")
+            if (
+                isinstance(total, int)
+                and not isinstance(total, bool)
+                and case.annotation.budget.minimum
+                <= total
+                <= case.annotation.budget.maximum
+            ):
+                budget_within_limit += 1
+        # 当前不可变方案没有可复算的空间几何；忽略模型自报的通过标记。
+        # 约束仍进入分母，直到确定性布局产物纳入同一输出摘要。
+        if record.get("style") in set(case.annotation.style_tags):
+            style_consistent += 1
+
+    actions = [edit.action for edit in review.edit_facts] if review else []
+    return CaseResult(
+        case_id=case.id,
+        requirement_correct=requirement_correct,
+        requirement_total=requirement_total,
+        space_fact_correct=space_fact_correct,
+        space_fact_total=space_fact_total,
+        low_confidence_facts=len(confirmation_facts),
+        low_confidence_confirmed=low_confidence_confirmed,
+        recommended_skus=recommended_skus,
+        valid_skus=valid_skus,
+        product_match_checks=recommended_skus,
+        product_match_accepted=valid_skus,
+        quote_checks=len(plans),
+        quote_consistent=quote_consistent,
+        budget_checks=len(plans),
+        budget_within_limit=budget_within_limit,
+        layout_checks=len(expected_constraints) * len(plans),
+        layout_hard_passes=layout_passes,
+        style_checks=len(plans),
+        style_consistent=style_consistent,
+        human_rating_count=1 if review else 0,
+        human_rating_sum=review.overall_rating if review else 0,
+        human_review_count=1 if review else 0,
+        human_edit_count=len(actions),
+        human_add_count=actions.count("add"),
+        human_remove_count=actions.count("remove"),
+        human_move_count=actions.count("move"),
+        human_replace_count=actions.count("replace"),
+        generation_succeeded=True,
+    )
+
+
+def _execution_review(
+    *,
+    binding: RunBinding,
+    dataset: RealWorldDataset,
+    dataset_root: Path | str | None,
+    output_digest: str,
+) -> ExecutionReview | None:
+    path = binding.execution_review_path
+    file_digest = binding.execution_review_sha256
+    if path is None and file_digest is None:
+        return None
+    if path is None or file_digest is None:
+        raise EvaluationInputError("人工评审路径与文件摘要必须成对提供")
+    if dataset_root is None:
+        raise EvaluationInputError("加载人工评审必须提供数据集根目录")
+    try:
+        return load_execution_review(
+            path,
+            dataset=dataset,
+            dataset_root=dataset_root,
+            expected_output_digest=output_digest,
+            expected_sha256=file_digest,
+        )
+    except AnnotationValidationError as exc:
+        raise EvaluationInputError(f"人工评审不可信：{exc}") from exc
 
 
 def collect_trusted_evidence(
@@ -497,6 +698,7 @@ def collect_trusted_evidence(
     dataset: RealWorldDataset,
     split: EvaluationSplit,
     bindings: tuple[RunBinding, ...],
+    dataset_root: Path | str | None = None,
     signing_key: str,
     key_id: str,
 ) -> dict[str, Any]:
@@ -516,7 +718,7 @@ def collect_trusted_evidence(
     for binding in bindings:
         case = eligible[binding.case_id]
         case_digest = _case_fingerprint(dataset_digest, case.id)
-        run = _validate_system_run(
+        run, output = _validate_system_run(
             db,
             binding=binding,
             expected_case_fingerprint=case_digest,
@@ -530,7 +732,20 @@ def collect_trusted_evidence(
                 run.data_digest,
             )
         )
-        result = _runtime_result(case.id, run)
+        review = None
+        if run.status == "completed":
+            review = _execution_review(
+                binding=binding,
+                dataset=dataset,
+                dataset_root=dataset_root,
+                output_digest=run.output_digest,
+            )
+        elif (
+            binding.execution_review_path is not None
+            or binding.execution_review_sha256 is not None
+        ):
+            raise EvaluationInputError("失败运行不能绑定人工输出评审")
+        result = _runtime_result(case, run, output, review)
         result_payload = asdict(result)
         result_payload.pop("case_id")
         executions.append(
@@ -546,7 +761,7 @@ def collect_trusted_evidence(
                 "rules_digest": run.rules_digest,
                 "data_digest": run.data_digest,
                 "input_digest": run.input_digest,
-                "output_digest": _digest(run.output_snapshot),
+                "output_digest": run.output_digest,
                 "result": result_payload,
                 "result_digest": _digest(result_payload),
             }
@@ -632,6 +847,8 @@ def verify_trusted_evidence(
     if payload.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
         if payload.get("schema_version") == "1.0":
             raise EvaluationInputError("结果 schema 1.0 不接受手工结果，请使用系统证据收集器")
+        if payload.get("schema_version") == "3.0":
+            raise EvaluationInputError("结果 schema 3.0 未绑定不可变方案输出")
         raise EvaluationInputError(
             f"不支持的结果 schema_version：{payload.get('schema_version')}"
         )
@@ -755,7 +972,6 @@ def verify_trusted_evidence(
             "rules_digest",
             "data_digest",
             "input_digest",
-            "output_digest",
             "result_digest",
         ):
             digest_value = execution.get(digest_name)
@@ -765,6 +981,18 @@ def verify_trusted_evidence(
                 raise EvaluationInputError(
                     f"第 {index + 1} 条 execution 缺少 {digest_name}"
                 )
+        output_digest = execution.get("output_digest")
+        if execution.get("status") == "completed":
+            if not isinstance(output_digest, str) or not _SHA256_PATTERN.fullmatch(
+                output_digest
+            ):
+                raise EvaluationInputError(
+                    f"第 {index + 1} 条成功 execution 缺少 output_digest"
+                )
+        elif output_digest is not None:
+            raise EvaluationInputError(
+                f"第 {index + 1} 条失败 execution 不得包含 output_digest"
+            )
         result_payload = execution.get("result")
         if execution["result_digest"] != _digest(result_payload):
             raise EvaluationInputError(f"第 {index + 1} 条 result 摘要不一致")

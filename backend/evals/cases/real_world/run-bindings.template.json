@@ -1,11 +1,13 @@
 {
-  "schema_version": "2.0",
+  "schema_version": "3.0",
   "split": "regression",
   "bindings": [
     {
       "case_id": "填写已准入案例 ID",
       "task_id": 1,
-      "system_run_id": 1
+      "system_run_id": 1,
+      "execution_review_path": null,
+      "execution_review_sha256": null
     }
   ]
 }

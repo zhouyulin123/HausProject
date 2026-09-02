@@ -256,6 +256,7 @@ def test_quality_report_includes_phase_four_baseline_only_metrics():
                 style_consistent=2,
                 human_rating_count=2,
                 human_rating_sum=9,
+                human_review_count=2,
             ),
             CaseResult(
                 case_id="real-b",
@@ -269,6 +270,7 @@ def test_quality_report_includes_phase_four_baseline_only_metrics():
                 style_consistent=1,
                 human_rating_count=1,
                 human_rating_sum=3,
+                human_review_count=1,
             ),
         ],
         versions=EvaluationVersions(
@@ -293,4 +295,5 @@ def test_case_result_rejects_invalid_human_rating_aggregate():
             case_id="invalid-rating",
             human_rating_count=2,
             human_rating_sum=11,
+            human_review_count=2,
         )

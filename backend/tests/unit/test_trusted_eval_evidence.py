@@ -16,6 +16,7 @@ from app.db.models import (
     UploadedImage,
 )
 from app.services.generation_provenance import canonical_digest
+from app.services import design_version_service, generation_run_service
 from evals import collect_real_world_evidence
 from evals.real_world import load_case_manifest
 from evals.run_real_world_eval import (
@@ -167,11 +168,33 @@ def _completed_system_run(
         case_id=case_id,
         task=task,
     )
+    revision = design_version_service.persist_generation(
+        db,
+        task=task,
+        generator=generator,
+        plans=[
+            {
+                "id": "plan-eval",
+                "name": "匿名方案",
+                "style": "现代",
+                "private_output": "do not serialize",
+                "furnitureSuggestions": [
+                    {"id": "SOFA-001"},
+                    {"id": "SOFA-001"},
+                ],
+                "shopQuote": {
+                    "furnitureTotal": 10000,
+                    "customTotal": 0,
+                    "total": 10000,
+                    "lineItems": [
+                        {"sku": "SOFA-001", "unitPrice": 5000, "quantity": 2}
+                    ],
+                    "customLineItems": [],
+                },
+            }
+        ],
+    )
     now = datetime.now(timezone.utc)
-    run.status = "completed"
-    run.progress = 100
-    run.current_node = "completed"
-    run.generator = generator
     run.output_snapshot = {
         "plan_count": 1,
         "plans": [
@@ -181,12 +204,8 @@ def _completed_system_run(
             }
         ],
     }
-    run.worker_id = None
     run.attempt_count = 1
     run.started_at = now
-    run.completed_at = now
-    task.status = "completed"
-    task.progress = 100
     for index, node in enumerate(
         ("prepare_context", "generate_plans", "calculate_quote", "validate_quality"),
         start=1,
@@ -204,7 +223,13 @@ def _completed_system_run(
                 }.get(node),
             )
         )
-    db.commit()
+    assert generation_run_service.mark_completed(
+        db,
+        run=run,
+        generator=generator,
+        result_revision_id=revision.id,
+        now=now,
+    )
     db.refresh(run)
     return run
 
@@ -251,7 +276,7 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
 
     serialized = json.dumps(bundle, ensure_ascii=False)
     execution = bundle["executions"][0]
-    assert bundle["schema_version"] == "3.0"
+    assert bundle["schema_version"] == "4.0"
     assert bundle["dataset_fingerprint"] == dataset_fingerprint(
         dataset,
         split="regression",

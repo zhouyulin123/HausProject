@@ -19,7 +19,7 @@ from app.db.models import (
     EvaluationRunBinding,
     LayoutRun,
 )
-from app.services import evaluation_binding_service
+from app.services import evaluation_binding_service, generation_output_service
 from app.services.evaluation_binding_service import EvaluationBindingSpec
 
 ACTIVE_STATUSES = ("queued", "running")
@@ -334,6 +334,12 @@ def _clear_worker(run: GenerationRun) -> None:
     run.heartbeat_at = None
 
 
+def _clear_output(run: GenerationRun) -> None:
+    run.result_revision_id = None
+    run.output_digest = None
+    run.output_snapshot = None
+
+
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -371,6 +377,13 @@ def _sync_agent_checkpoint(*, task: DesignTask, run: GenerationRun) -> bool:
     updated = dict(checkpoint)
     result = dict(updated.get("result") or {})
     result.update({"run_id": run.id, "generation_status": run.status})
+    if run.status == "completed":
+        result.update(
+            {
+                "result_revision_id": run.result_revision_id,
+                "output_digest": run.output_digest,
+            }
+        )
     if run.status in ACTIVE_STATUSES:
         updated.update(
             {
@@ -456,6 +469,7 @@ def _mark_dead_letter(
     error_message: str,
 ) -> None:
     _clear_worker(run)
+    _clear_output(run)
     run.status = "dead_letter"
     run.progress = 100
     run.current_node = "dead_letter"
@@ -505,6 +519,7 @@ def recover_expired_runs(
     for run in expired:
         if run.cancel_requested_at is not None:
             _clear_worker(run)
+            _clear_output(run)
             run.status = "cancelled"
             run.current_node = "cancelled"
             run.completed_at = current
@@ -527,6 +542,7 @@ def recover_expired_runs(
         )
         if run.attempt_count < run.max_attempts and retry_before_deadline:
             _clear_worker(run)
+            _clear_output(run)
             run.status = "queued"
             run.progress = 0
             run.current_node = "queued"
@@ -873,6 +889,7 @@ def mark_completed(
     worker_id: str | None = None,
     worker_attempt: int | None = None,
     generator: str,
+    result_revision_id: int | None = None,
     now: datetime | None = None,
     commit: bool = True,
 ) -> bool:
@@ -894,6 +911,16 @@ def mark_completed(
             return False
     if run is None:
         return False
+    if result_revision_id is None:
+        raise generation_output_service.GenerationOutputValidationError(
+            "成功运行必须绑定不可变输出 revision"
+        )
+    generation_output_service.bind_run_output(
+        db,
+        run=run,
+        revision_id=result_revision_id,
+        generator=generator,
+    )
     run.status = "completed"
     run.progress = 100
     run.current_node = "completed"
@@ -974,6 +1001,7 @@ def mark_failed(
             return run.status
         run = owned
     run.error_message = error_message[:2000]
+    _clear_output(run)
     retry_at = current + timedelta(seconds=retry_delay_seconds)
     retry_before_deadline = (
         run.execution_deadline_at is None
@@ -1040,6 +1068,7 @@ def mark_cost_guard_blocked(
         return False
 
     _clear_worker(run)
+    _clear_output(run)
     run.status = "cost_limit_exceeded"
     run.progress = 100
     run.current_node = "cost_guard"
@@ -1092,6 +1121,7 @@ def mark_provider_guard_blocked(
         return False
 
     _clear_worker(run)
+    _clear_output(run)
     run.status = "provider_unavailable"
     run.progress = 100
     run.current_node = "provider_circuit"
@@ -1153,6 +1183,7 @@ def request_cancel(
         run.completed_at = current
         run.next_retry_at = None
         _clear_worker(run)
+        _clear_output(run)
         _set_task_state(db, run=run, status="cancelled", progress=0)
     db.commit()
     return run.status
@@ -1187,6 +1218,7 @@ def mark_cancelled_by_worker(
     run.completed_at = current
     run.next_retry_at = None
     _clear_worker(run)
+    _clear_output(run)
     _set_task_state(db, run=run, status="cancelled", progress=0)
     db.commit()
     return True

@@ -510,7 +510,12 @@ def _validation_message(error: ValidationError) -> str:
 
 def _resolve_annotation_path(path: Path | str, dataset_root: Path | str) -> Path:
     root = Path(dataset_root).resolve()
-    resolved = Path(path).resolve()
+    candidate = Path(path)
+    resolved = (
+        (root / candidate).resolve()
+        if not candidate.is_absolute()
+        else candidate.resolve()
+    )
     if not resolved.is_relative_to(root):
         raise AnnotationValidationError("标注文件位于数据集目录之外")
     if not resolved.is_file():

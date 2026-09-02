@@ -101,6 +101,8 @@ def test_owner_can_queue_and_query_persistent_generation(
         "cost_cny": None,
         "cost_reserved_cny": 0.0,
         "cost_limit_cny": None,
+        "result_revision_id": None,
+        "output_digest": None,
         "events": [],
     }
 

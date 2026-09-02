@@ -8,10 +8,35 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
 from app.api.routes import tasks as task_routes
-from app.db.models import DesignResult, DesignTask
+from app.db.models import DesignResult, DesignRevision, DesignTask
 from app.core.request_context import current_request_id
-from app.services import generation_run_service, llm_service
+from app.services import design_version_service, generation_run_service, llm_service
 from app.workers import generation_worker
+
+
+def _persist_worker_output(db, task, *, generator: str):
+    return design_version_service.persist_generation(
+        db,
+        task=task,
+        generator=generator,
+        plans=[
+            {
+                "id": "plan-worker",
+                "name": "Worker 方案",
+                "style": "现代",
+                "furnitureSuggestions": [{"id": "SOFA-001"}],
+                "shopQuote": {
+                    "furnitureTotal": 1000,
+                    "customTotal": 0,
+                    "total": 1000,
+                    "lineItems": [
+                        {"sku": "SOFA-001", "unitPrice": 1000, "quantity": 1}
+                    ],
+                    "customLineItems": [],
+                },
+            }
+        ],
+    )
 
 
 def test_worker_claims_and_completes_one_generation(monkeypatch):
@@ -44,7 +69,8 @@ def test_worker_claims_and_completes_one_generation(monkeypatch):
         executed.append(task.id)
         on_step({"node": "prepare_context", "status": "completed"})
         before_persist()
-        on_success("template")
+        revision = _persist_worker_output(db, task, generator="template")
+        on_success("template", revision.id)
         return type("Response", (), {"generator": "template"})()
 
     assert generation_worker.process_one_run(
@@ -56,6 +82,8 @@ def test_worker_claims_and_completes_one_generation(monkeypatch):
         completed = db.get(type(run), run_id)
         assert completed is not None
         assert completed.status == "completed"
+        assert completed.result_revision_id is not None
+        assert completed.output_digest.startswith("sha256:")
         assert completed.attempt_count == 1
         assert completed.execution_deadline_at is not None
         assert (
@@ -93,7 +121,8 @@ def test_worker_success_completes_bound_agent_checkpoint(monkeypatch):
 
     def executor(db, *, task, on_step, on_meta, before_persist, on_success):
         before_persist()
-        on_success("llm")
+        revision = _persist_worker_output(db, task, generator="llm")
+        on_success("llm", revision.id)
         return type("Response", (), {"generator": "llm"})()
 
     assert generation_worker.process_one_run(
@@ -103,7 +132,9 @@ def test_worker_success_completes_bound_agent_checkpoint(monkeypatch):
     )
     with factory() as db:
         task = db.get(DesignTask, task_id)
+        completed_run = db.get(type(run), run_id)
         assert task is not None
+        assert completed_run is not None
         assert task.agent_state_json["status"] == "completed"
         assert task.agent_state_json["current_node"] == "generation_completed"
         assert task.agent_state_json["exit_reason"] == "goal_completed"
@@ -111,6 +142,8 @@ def test_worker_success_completes_bound_agent_checkpoint(monkeypatch):
         assert task.agent_state_json["result"] == {
             "run_id": run_id,
             "generation_status": "completed",
+            "result_revision_id": completed_run.result_revision_id,
+            "output_digest": completed_run.output_digest,
         }
 
 
@@ -145,7 +178,8 @@ def test_agent_generation_run_disables_template_fallback_in_default_worker(
     ):
         allow_template_values.append(allow_template_fallback)
         before_persist()
-        on_success("llm")
+        revision = _persist_worker_output(db, task, generator="llm")
+        on_success("llm", revision.id)
         return type("Response", (), {"generator": "llm"})()
 
     monkeypatch.setattr(generation_worker, "SessionLocal", factory)
@@ -289,8 +323,9 @@ def test_worker_rolls_back_result_and_cost_when_deadline_expires(monkeypatch):
                 generator="llm",
             )
         )
+        revision = _persist_worker_output(db, task, generator="llm")
         MutableClock.current += timedelta(seconds=31)
-        on_success("llm")
+        on_success("llm", revision.id)
 
     assert generation_worker.process_one_run(
         worker_id="worker-a",
@@ -306,6 +341,7 @@ def test_worker_rolls_back_result_and_cost_when_deadline_expires(monkeypatch):
         assert expired.cost_cny is None
         assert expired.output_snapshot is None
         assert db.scalar(select(DesignResult)) is None
+        assert db.scalar(select(DesignRevision)) is None
         assert task.status == "failed"
 
 
@@ -354,6 +390,9 @@ def test_worker_reserves_model_cost_before_provider_call(monkeypatch):
 
     def executor(db, *, task, on_step, on_meta, before_persist, on_success):
         llm_service._chat_json("system", "user", max_tokens=100)
+        before_persist()
+        revision = _persist_worker_output(db, task, generator="template")
+        on_success("template", revision.id)
         return type("Response", (), {"generator": "template"})()
 
     assert generation_worker.process_one_run(

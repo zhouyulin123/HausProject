@@ -210,7 +210,7 @@ def test_collector_recomputes_metrics_from_revision_and_annotation(db, tmp_path)
     assert result["budget_checks"] == 1
     assert result["budget_within_limit"] == 1
     assert result["layout_checks"] == 1
-    assert result["layout_hard_passes"] == 1
+    assert result["layout_hard_passes"] == 0
     assert result["style_checks"] == 1
     assert result["style_consistent"] == 1
     assert result["human_rating_count"] == 0

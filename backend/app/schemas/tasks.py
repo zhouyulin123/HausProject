@@ -83,6 +83,8 @@ class GenerationStatusResponse(BaseModel):
     cost_cny: Optional[float] = None
     cost_reserved_cny: float = 0.0
     cost_limit_cny: Optional[float] = None
+    result_revision_id: Optional[int] = None
+    output_digest: Optional[str] = None
     events: List[GenerationEventResponse] = Field(default_factory=list)
 
 

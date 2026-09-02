@@ -16,6 +16,7 @@ from app.core.request_context import bind_request_id
 from app.db.database import SessionLocal
 from app.db.models import DesignTask, GenerationRun
 from app.services import (
+    generation_output_service,
     generation_run_service,
     llm_service,
     provider_circuit_service,
@@ -152,7 +153,7 @@ def process_one_run(
 
             finalized = False
 
-            def persist_success(generator: str):
+            def persist_success(generator: str, result_revision_id: int):
                 nonlocal finalized
                 finalized = generation_run_service.mark_completed(
                     db,
@@ -160,6 +161,7 @@ def process_one_run(
                     worker_id=worker_id,
                     worker_attempt=worker_attempt,
                     generator=generator,
+                    result_revision_id=result_revision_id,
                     commit=False,
                 )
                 if not finalized:
@@ -284,11 +286,29 @@ def process_one_run(
                 worker_id=worker_id,
                 worker_attempt=worker_attempt,
                 generator=response.generator,
+                result_revision_id=getattr(response, "result_revision_id", None),
             ):
                 raise generation_run_service.GenerationRunOwnershipError(
                     "方案生成结果提交前已失去租约"
                 )
         logger.info("方案生成完成: run_id=%s", claimed_run_id)
+    except generation_output_service.GenerationOutputValidationError as exc:
+        logger.error(
+            "方案生成输出不可信: run_id=%s error=%s",
+            claimed_run_id,
+            exc,
+        )
+        with SessionLocal() as db:
+            failed_run = db.get(GenerationRun, claimed_run_id)
+            if failed_run is not None:
+                generation_run_service.mark_failed(
+                    db,
+                    run=failed_run,
+                    worker_id=worker_id,
+                    worker_attempt=worker_attempt,
+                    error_message=str(exc),
+                    retryable=False,
+                )
     except generation_run_service.GenerationProviderGuardError as exc:
         logger.warning(
             "方案生成被供应商熔断策略阻止: run_id=%s code=%s provider=%s",
