@@ -123,7 +123,9 @@ def test_quality_metrics_and_gates_match_phase_four_acceptance_lines():
             layout_checks=1,
             layout_hard_passes=1,
             generation_succeeded=True,
+            cross_user_access_checks=1,
             severe_cross_user_access=0,
+            retry_bound_checks=1,
             unbounded_retry_detected=False,
         ),
         CaseResult(
@@ -139,7 +141,9 @@ def test_quality_metrics_and_gates_match_phase_four_acceptance_lines():
             layout_checks=1,
             layout_hard_passes=1,
             generation_succeeded=True,
+            cross_user_access_checks=1,
             severe_cross_user_access=0,
+            retry_bound_checks=1,
             unbounded_retry_detected=False,
         ),
     ]
@@ -165,8 +169,6 @@ def test_quality_gates_fail_closed_when_denominator_is_missing():
             CaseResult(
                 case_id="empty-evidence",
                 generation_succeeded=False,
-                severe_cross_user_access=1,
-                unbounded_retry_detected=True,
             )
         ],
         versions=EvaluationVersions(
@@ -186,8 +188,22 @@ def test_quality_gates_fail_closed_when_denominator_is_missing():
     assert by_name["layout_hard_constraint_pass_rate"].passed is False
     assert by_name["generation_success_rate"].passed is False
     assert by_name["severe_cross_user_access"].passed is False
+    assert by_name["severe_cross_user_access"].actual is None
     assert by_name["unbounded_retry_cases"].passed is False
+    assert by_name["unbounded_retry_cases"].actual is None
     assert gates.passed is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"severe_cross_user_access": 1},
+        {"unbounded_retry_detected": True},
+    ],
+)
+def test_case_result_rejects_security_or_retry_failures_without_checks(overrides):
+    with pytest.raises(ValueError, match="检查证据"):
+        CaseResult(case_id="missing-check-evidence", **overrides)
 
 
 def test_quality_report_includes_phase_four_baseline_only_metrics():

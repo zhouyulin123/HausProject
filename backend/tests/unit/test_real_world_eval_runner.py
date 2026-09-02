@@ -61,7 +61,9 @@ def _result(case_id: str) -> dict:
         "layout_checks": 1,
         "layout_hard_passes": 1,
         "generation_succeeded": True,
+        "cross_user_access_checks": 1,
         "severe_cross_user_access": 0,
+        "retry_bound_checks": 1,
         "unbounded_retry_detected": False,
     }
 
