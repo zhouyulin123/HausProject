@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.db.database import SessionLocal
-from app.db.models import GenerationRun
-from evals.real_world import EvaluationInputError, EvaluationVersions, load_case_manifest
+from evals.real_world import EvaluationInputError, load_case_manifest
 from evals.trusted_evidence import RunBinding, collect_trusted_evidence
 
 
@@ -52,26 +51,11 @@ def _read_bindings(path: Path) -> tuple[RunBinding, ...]:
     return tuple(bindings)
 
 
-def _model_version(db, bindings: tuple[RunBinding, ...]) -> str:
-    models: set[str] = set()
-    for binding in bindings:
-        run = db.get(GenerationRun, binding.system_run_id)
-        if run is None:
-            raise EvaluationInputError(f"系统运行不存在：{binding.system_run_id}")
-        if isinstance(run.model, str) and run.model.strip():
-            models.add(run.model.strip())
-    if len(models) != 1:
-        raise EvaluationInputError("证据包内系统运行必须使用同一非空模型版本")
-    return next(iter(models))
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="签发真实系统执行评测证据")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--asset-root", type=Path)
     parser.add_argument("--run-bindings", type=Path, required=True)
-    parser.add_argument("--prompt-version", required=True)
-    parser.add_argument("--rules-version", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
@@ -84,17 +68,10 @@ def main(argv: list[str] | None = None) -> int:
         dataset = load_case_manifest(args.manifest, asset_root=args.asset_root)
         bindings = _read_bindings(args.run_bindings.resolve())
         with SessionLocal() as db:
-            versions = EvaluationVersions(
-                model=_model_version(db, bindings),
-                prompt=args.prompt_version,
-                rules=args.rules_version,
-                data=dataset.dataset_version,
-            )
             bundle = collect_trusted_evidence(
                 db,
                 dataset=dataset,
                 bindings=bindings,
-                versions=versions,
                 signing_key=signing_key,
                 key_id=key_id,
             )

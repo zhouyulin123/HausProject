@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from sqlalchemy.orm import Session
 
 from app.db.models import DesignTask, GenerationRun
+from app.services.generation_provenance import canonical_digest
 from evals.real_world import (
     CaseResult,
     EvaluationInputError,
@@ -57,6 +58,8 @@ class ExecutionProvenance:
     generator: str
     model: str
     prompt_digest: str
+    rules_digest: str
+    data_digest: str
     input_digest: str
     output_digest: str
     result_digest: str
@@ -157,15 +160,11 @@ def _signature(payload: Mapping[str, Any], signing_key: str) -> str:
     ).hexdigest()
 
 
-def _validate_versions(
-    versions: EvaluationVersions,
-    *,
-    dataset: RealWorldDataset,
-) -> None:
-    if versions.data != dataset.dataset_version:
-        raise EvaluationInputError(
-            f"数据版本不一致：证据={versions.data}，清单={dataset.dataset_version}"
-        )
+def _validate_versions(versions: EvaluationVersions) -> None:
+    for field_name in ("prompt", "rules", "data"):
+        value = getattr(versions, field_name)
+        if not _SHA256_PATTERN.fullmatch(value):
+            raise EvaluationInputError(f"{field_name} 版本必须是实际制品 SHA-256 摘要")
 
 
 def _validate_binding_sets(
@@ -197,7 +196,6 @@ def _validate_system_run(
     db: Session,
     *,
     binding: RunBinding,
-    versions: EvaluationVersions,
     expected_case_fingerprint: str,
 ) -> GenerationRun:
     run = db.get(GenerationRun, binding.system_run_id)
@@ -221,10 +219,6 @@ def _validate_system_run(
         raise EvaluationInputError(
             f"系统运行 {run.id} 使用不可信的执行来源：{run.generator or 'unknown'}"
         )
-    if run.model != versions.model:
-        raise EvaluationInputError(
-            f"系统运行 {run.id} 模型版本不一致：{run.model or 'unknown'}"
-        )
     if (
         run.attempt_count < 1
         or run.started_at is None
@@ -234,6 +228,19 @@ def _validate_system_run(
         or run.output_snapshot is None
     ):
         raise EvaluationInputError(f"系统运行 {run.id} 缺少完整执行快照")
+    version_values = (
+        run.model,
+        run.prompt_digest,
+        run.rules_digest,
+        run.data_digest,
+    )
+    if any(not isinstance(value, str) or not value.strip() for value in version_values):
+        raise EvaluationInputError(f"系统运行 {run.id} 缺少可信版本摘要")
+    for digest_name in ("prompt_digest", "rules_digest", "data_digest"):
+        if not _SHA256_PATTERN.fullmatch(getattr(run, digest_name)):
+            raise EvaluationInputError(f"系统运行 {run.id} 的 {digest_name} 不合法")
+    if run.prompt_digest != canonical_digest(run.prompt_snapshot):
+        raise EvaluationInputError(f"系统运行 {run.id} 的 Prompt 摘要与快照不一致")
     completed_nodes = {
         event.node for event in run.events if event.status == "completed"
     }
@@ -292,7 +299,6 @@ def collect_trusted_evidence(
     *,
     dataset: RealWorldDataset,
     bindings: tuple[RunBinding, ...],
-    versions: EvaluationVersions,
     signing_key: str,
     key_id: str,
 ) -> dict[str, Any]:
@@ -300,18 +306,25 @@ def collect_trusted_evidence(
     _normalized_key(signing_key)
     if not isinstance(key_id, str) or not key_id.strip():
         raise EvaluationInputError("评测证据 key_id 不能为空")
-    _validate_versions(versions, dataset=dataset)
     eligible = _validate_binding_sets(bindings=bindings, dataset=dataset)
     dataset_digest = dataset_fingerprint(dataset)
     executions: list[dict[str, Any]] = []
+    version_candidates: set[tuple[str, str, str, str]] = set()
     for binding in bindings:
         case = eligible[binding.case_id]
         case_digest = _case_fingerprint(dataset_digest, case.id)
         run = _validate_system_run(
             db,
             binding=binding,
-            versions=versions,
             expected_case_fingerprint=case_digest,
+        )
+        version_candidates.add(
+            (
+                run.model,
+                run.prompt_digest,
+                run.rules_digest,
+                run.data_digest,
+            )
         )
         result = _runtime_result(case.id, run)
         result_payload = asdict(result)
@@ -325,13 +338,27 @@ def collect_trusted_evidence(
                 "generator": run.generator,
                 "status": run.status,
                 "model": run.model,
-                "prompt_digest": _digest(run.prompt_snapshot),
+                "prompt_digest": run.prompt_digest,
+                "rules_digest": run.rules_digest,
+                "data_digest": run.data_digest,
                 "input_digest": _digest(run.input_snapshot),
                 "output_digest": _digest(run.output_snapshot),
                 "result": result_payload,
                 "result_digest": _digest(result_payload),
             }
         )
+    if len(version_candidates) != 1:
+        raise EvaluationInputError("证据包内系统运行的模型或制品版本不一致")
+    model, prompt_digest, rules_digest, data_digest = next(
+        iter(version_candidates)
+    )
+    versions = EvaluationVersions(
+        model=model,
+        prompt=prompt_digest,
+        rules=rules_digest,
+        data=data_digest,
+    )
+    _validate_versions(versions)
     unsigned: dict[str, Any] = {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "evidence_type": EVIDENCE_TYPE,
@@ -445,7 +472,7 @@ def verify_trusted_evidence(
         raise EvaluationInputError("证据签名无效，内容可能已被篡改")
 
     versions = _parse_versions(payload.get("versions"))
-    _validate_versions(versions, dataset=dataset)
+    _validate_versions(versions)
     expected_dataset_digest = dataset_fingerprint(dataset)
     if payload.get("dataset_fingerprint") != expected_dataset_digest:
         raise EvaluationInputError("证据绑定的数据集指纹与当前清单不一致")
@@ -469,6 +496,8 @@ def verify_trusted_evidence(
         "status",
         "model",
         "prompt_digest",
+        "rules_digest",
+        "data_digest",
         "input_digest",
         "output_digest",
         "result",
@@ -503,10 +532,15 @@ def verify_trusted_evidence(
             or execution.get("generator") != TRUSTED_GENERATOR
             or execution.get("status") != "completed"
             or execution.get("model") != versions.model
+            or execution.get("prompt_digest") != versions.prompt
+            or execution.get("rules_digest") != versions.rules
+            or execution.get("data_digest") != versions.data
         ):
             raise EvaluationInputError(f"第 {index + 1} 条 execution 不是可信完成运行")
         for digest_name in (
             "prompt_digest",
+            "rules_digest",
+            "data_digest",
             "input_digest",
             "output_digest",
             "result_digest",
@@ -532,6 +566,8 @@ def verify_trusted_evidence(
                 generator=execution["generator"],
                 model=execution["model"],
                 prompt_digest=execution["prompt_digest"],
+                rules_digest=execution["rules_digest"],
+                data_digest=execution["data_digest"],
                 input_digest=execution["input_digest"],
                 output_digest=execution["output_digest"],
                 result_digest=execution["result_digest"],

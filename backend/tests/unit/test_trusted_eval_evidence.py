@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.database import Base
 from app.db.models import DesignTask, GenerationRun, GenerationRunEvent
 from app.services import generation_run_service
+from app.services.generation_provenance import canonical_digest
 from evals import collect_real_world_evidence
 from evals.real_world import load_case_manifest
 from evals.run_real_world_eval import (
@@ -121,7 +122,7 @@ def _completed_system_run(
         generator=generator,
         model="model-prod-7",
         prompt_snapshot="private prompt content",
-        prompt_digest="sha256:" + "1" * 64,
+        prompt_digest=canonical_digest("private prompt content"),
         rules_digest="sha256:" + "2" * 64,
         data_digest="sha256:" + "3" * 64,
         input_snapshot={"private_requirement": "do not serialize"},
@@ -368,7 +369,7 @@ def test_collector_rejects_historical_missing_or_mixed_runtime_versions(db, tmp_
             key_id="quality-ci-1",
         )
 
-    run_a.prompt_digest = "sha256:" + "1" * 64
+    run_a.prompt_digest = canonical_digest(run_a.prompt_snapshot)
     run_b.rules_digest = "sha256:" + "9" * 64
     db.commit()
     with pytest.raises(EvaluationInputError, match="版本不一致"):
@@ -572,3 +573,23 @@ def test_collector_and_evaluator_cli_use_the_same_fail_closed_contract(
     assert report["evidence"]["signature_verified"] is True
     assert report["evidence"]["execution_count"] == 1
     assert report["gate_passed"] is False
+
+
+def test_collector_cli_no_longer_accepts_self_reported_versions():
+    with pytest.raises(SystemExit) as error:
+        collect_real_world_evidence.main(
+            [
+                "--manifest",
+                "manifest.json",
+                "--run-bindings",
+                "bindings.json",
+                "--prompt-version",
+                "self-reported",
+                "--rules-version",
+                "self-reported",
+                "--output",
+                "evidence.json",
+            ]
+        )
+
+    assert error.value.code == 2

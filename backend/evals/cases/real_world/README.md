@@ -42,7 +42,7 @@
 
 收集器不会接收 CaseResult。当前可从运行事实确定性推导生成成功、有效 SKU 和报价一致性；需求、空间、布局和人工满意度在接入可追溯标注执行器前保持无证据，因此质量门禁会失败，不会用模拟值或手工值补齐。
 
-证据包 2.0 使用独立 HMAC 密钥签名，绑定数据集内容指纹、匿名案例指纹、task/run ID、模型/Prompt/规则/数据版本，以及输入、输出和结果摘要。文件不包含案例 ID、资产路径、Prompt、输入或模型输出原文。签名密钥必须只配置在受控 Worker/CI，不应写入仓库、命令行或开发者共享环境。
+证据包 2.0 使用独立 HMAC 密钥签名，绑定数据集内容指纹、匿名案例指纹、task/run ID、模型及三个运行时制品摘要，以及输入、输出和结果摘要。Prompt 摘要从实际落库的 Prompt 快照复算；规则摘要绑定生成/报价源码与服务端报价规则版本；数据摘要绑定实际商品上下文与目录版本。签发 CLI 不接受调用方自报版本。文件不包含案例 ID、资产路径、Prompt、输入或模型输出原文。签名密钥必须只配置在受控 Worker/CI，不应写入仓库、命令行或开发者共享环境。
 
 跨用户访问和重试边界不能依靠默认零值证明安全。每个逐例结果必须分别填写实际执行的 `cross_user_access_checks` 和 `retry_bound_checks`；检查次数为 0 时，对应安全门禁输出 `NO EVIDENCE` 并失败。若记录了严重跨用户问题或无限重试，却没有对应检查证据，输入会被直接拒绝。
 
@@ -56,8 +56,6 @@ python -m evals.collect_real_world_evidence `
   --manifest backend/evals/cases/real_world/manifest.json `
   --asset-root . `
   --run-bindings backend/evals/cases/real_world/run-bindings.json `
-  --prompt-version prompt-2026-09-02 `
-  --rules-version rules-2026-09-02 `
   --output backend/evals/reports/evidence/real_world_eval.evidence.json
 
 python -m evals.run_real_world_eval `
@@ -68,9 +66,9 @@ python -m evals.run_real_world_eval `
   --output-dir backend/evals/reports/real_world
 ```
 
-`--establish-baseline` 只用于人工批准的首次基线建立。只要清单中存在准入案例，后续运行若未提供 `--baseline-report`，会以输入错误退出；因此模型、Prompt、规则或数据变更不能静默跳过版本比较。无准入案例时仍会生成失败报告，用于展示缺少哪些授权与标注证据。
+`--establish-baseline` 只用于人工批准的首次可信基线。只要清单中存在准入案例，后续运行若未提供 `--baseline-results`，会以输入错误退出；因此模型、Prompt、规则或商品数据制品变更不能静默跳过版本比较。无准入案例时不会签发可信证据。
 
-模型、Prompt 或规则发生变化时，必须额外传入同一数据版本、同一案例集合生成的基线报告：
+模型、Prompt、规则或商品数据制品发生变化时，必须额外传入同一评测数据集、同一案例集合生成的签名基线证据：
 
 ```powershell
 python -m evals.run_real_world_eval `
@@ -81,7 +79,7 @@ python -m evals.run_real_world_eval `
   --output-dir backend/evals/reports/candidate
 ```
 
-基线和候选的数据版本或准入案例 ID 不一致时拒绝比较。即使候选仍达到绝对门禁，只要比例指标下降、跨用户访问或无限重试计数增加，版本回归也会失败。
+基线和候选的评测数据集指纹或匿名案例指纹集合不一致时拒绝比较。即使候选仍达到绝对门禁，只要比例指标下降、跨用户访问或无限重试计数增加，版本回归也会失败。
 
 报告和签名证据会绑定准入案例的资产 SHA-256、标签版本、来源和分组。基线与候选即使沿用相同数据版本，只要实际资产、标签或分组发生变化，也会拒绝伪装成同一案例集比较。
 

@@ -7,6 +7,7 @@ from app.api.routes import tasks as task_routes
 from app.db.database import Base
 from app.db.models import DesignTask
 from app.services.design_version_service import get_latest_revision
+from app.services.generation_provenance import build_generation_provenance
 from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
@@ -118,3 +119,79 @@ def test_generate_design_persists_langgraph_node_trace(monkeypatch):
         assert response.generator == "llm"
         assert revision is not None
         assert revision.workflow_trace_snapshot[0]["node"] == "validate_quality"
+
+
+@pytest.mark.integration
+def test_generation_emits_provenance_from_actual_prompt_rules_and_catalog(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    with session_factory() as db:
+        task = DesignTask(
+            status="confirmed",
+            progress=50,
+            confirmed_requirement_json={"rooms": ["客厅"]},
+        )
+        db.add(task)
+        db.commit()
+        plans = [
+            {
+                "id": "plan-a",
+                "name": "方案 A",
+                "style": "现代简约",
+                "furnitureSuggestions": [{"id": "SOFA-001"}],
+                "shopQuote": {
+                    "furnitureTotal": 5000,
+                    "customTotal": 0,
+                    "total": 5000,
+                    "catalogVersion": "catalog-runtime-v7",
+                    "ruleVersion": "rules-runtime-v4",
+                },
+            }
+        ]
+
+        class FakeWorkflow:
+            def run(self, **_):
+                return {
+                    "plans": plans,
+                    "generator": "llm",
+                    "node_trace": [],
+                }
+
+        catalog_context = "actual runtime catalog context"
+        prompt_snapshot = "actual runtime prompt snapshot"
+        monkeypatch.setattr(task_routes, "DesignWorkflow", lambda **_: FakeWorkflow())
+        monkeypatch.setattr(
+            task_routes.catalog_service,
+            "build_catalog_context",
+            lambda _: catalog_context,
+        )
+        monkeypatch.setattr(
+            task_routes.llm_service,
+            "last_generation_meta",
+            lambda: {
+                "model": "model-runtime-v3",
+                "prompt_snapshot": prompt_snapshot,
+                "input_snapshot": {"requirement": {"rooms": ["客厅"]}},
+                "usage": None,
+                "cost_cny": None,
+            },
+        )
+        emitted = []
+
+        task_routes._execute_generation(db, task=task, on_meta=emitted.append)
+
+        expected = build_generation_provenance(
+            prompt_snapshot=prompt_snapshot,
+            catalog_context=catalog_context,
+            plans=plans,
+        )
+        assert emitted[0]["meta"] == {
+            "model": "model-runtime-v3",
+            "prompt_snapshot": prompt_snapshot,
+            "input_snapshot": {"requirement": {"rooms": ["客厅"]}},
+            "usage": None,
+            "cost_cny": None,
+            **expected,
+        }

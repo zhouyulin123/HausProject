@@ -91,6 +91,8 @@ def _evidence(dataset, *, model: str, results: tuple[CaseResult, ...]):
             generator="llm",
             model=model,
             prompt_digest="sha256:" + "1" * 64,
+            rules_digest="sha256:" + "2" * 64,
+            data_digest="sha256:" + "3" * 64,
             input_digest="sha256:" + "2" * 64,
             output_digest="sha256:" + "3" * 64,
             result_digest="sha256:" + "4" * 64,

@@ -44,6 +44,7 @@ from app.services import (
     anonymous_session_service,
     catalog_service,
     design_version_service,
+    generation_provenance,
     generation_run_service,
     llm_service,
     plan_refine_service,
@@ -304,9 +305,14 @@ def _execute_generation(
         if on_meta is not None and generator == "llm":
             meta = llm_service.last_generation_meta()
             if meta:
+                provenance = generation_provenance.build_generation_provenance(
+                    prompt_snapshot=str(meta.get("prompt_snapshot") or ""),
+                    catalog_context=catalog_context,
+                    plans=plans,
+                )
                 on_meta(
                     {
-                        "meta": meta,
+                        "meta": {**meta, **provenance},
                         "output_snapshot": {
                             "plan_count": len(plans),
                             "plans": [

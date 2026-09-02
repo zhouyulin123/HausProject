@@ -671,6 +671,9 @@ def record_generation_meta(
         return False
     run.model = meta.get("model")
     run.prompt_snapshot = meta.get("prompt_snapshot")
+    run.prompt_digest = meta.get("prompt_digest")
+    run.rules_digest = meta.get("rules_digest")
+    run.data_digest = meta.get("data_digest")
     run.input_snapshot = meta.get("input_snapshot")
     run.output_snapshot = output_snapshot
     run.usage_json = meta.get("usage")

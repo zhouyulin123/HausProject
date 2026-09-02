@@ -793,6 +793,9 @@ class GenerationRun(Base):
     # ---- 生成元数据（M3：换模型/改 Prompt 后量化质量与成本） ----
     model = Column(String(100), nullable=True)
     prompt_snapshot = Column(Text, nullable=True)  # 截断后的完整 Prompt
+    prompt_digest = Column(String(71), nullable=True)
+    rules_digest = Column(String(71), nullable=True)
+    data_digest = Column(String(71), nullable=True)
     input_snapshot = Column(JSON, nullable=True)  # 需求 + 图片上下文摘要
     output_snapshot = Column(JSON, nullable=True)  # 方案摘要（名称/风格/预算/评分/家具数）
     usage_json = Column(JSON, nullable=True)  # token 用量（prompt/completion/total）
