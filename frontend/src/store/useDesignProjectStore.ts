@@ -57,6 +57,7 @@ interface DesignProjectState {
       customFurnitureSpec?: CustomFurnitureSpecPatch | null;
       customFurnitureResult?: CustomFurniturePreviewResult | null;
       approvalRequired?: boolean;
+      generationRunId?: number | null;
     },
   ) => void;
 }
@@ -174,7 +175,9 @@ export const useDesignProjectStore = create<DesignProjectState>()(
             activePlanId: plan?.id ?? project.activePlanId,
             activePlanVersionId:
               plan?.planVersionId ?? project.activePlanVersionId,
-            status: plan ? "ready" : "running",
+            status: plan
+              ? project.status === "completed" ? "completed" : "ready"
+              : "running",
           })),
         ),
       applyAgentState: (projectId, checkpoint) =>
@@ -207,6 +210,10 @@ export const useDesignProjectStore = create<DesignProjectState>()(
                 : checkpoint.customFurnitureResult,
             approvalRequired:
               checkpoint.approvalRequired ?? project.approvalRequired,
+            generationRunId:
+              checkpoint.generationRunId === undefined
+                ? project.generationRunId
+                : checkpoint.generationRunId,
           })),
         ),
     }),
@@ -225,6 +232,7 @@ export const useDesignProjectStore = create<DesignProjectState>()(
                 customFurnitureSpec: null,
                 customFurnitureResult: null,
                 approvalRequired: false,
+                generationRunId: null,
               },
             ]),
           ),
@@ -241,6 +249,7 @@ export const useDesignProjectStore = create<DesignProjectState>()(
               customFurnitureSpec: null,
               customFurnitureResult: null,
               approvalRequired: false,
+              generationRunId: project.generationRunId,
             },
           ]),
         ),

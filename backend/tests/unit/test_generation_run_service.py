@@ -105,6 +105,29 @@ def test_generation_run_idempotency_key_reuses_terminal_run(db):
 
 
 @pytest.mark.unit
+def test_different_key_cannot_attach_changed_input_to_active_run(db):
+    task = DesignTask(status="confirmed", progress=50)
+    db.add(task)
+    db.commit()
+    generation_run_service.create_run(
+        db,
+        task=task,
+        idempotency_key="agent-generation:1:first",
+        request_digest="sha256:" + "a" * 64,
+    )
+
+    with pytest.raises(generation_run_service.GenerationIdempotencyConflict):
+        generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key="agent-generation:1:second",
+            request_digest="sha256:" + "b" * 64,
+        )
+
+    assert len(db.scalars(select(GenerationRun)).all()) == 1
+
+
+@pytest.mark.unit
 def test_worker_claim_sets_lease_and_only_owner_can_renew_or_complete(db):
     task = DesignTask(status="confirmed", progress=50)
     db.add(task)

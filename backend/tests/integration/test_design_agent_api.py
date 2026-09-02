@@ -28,6 +28,7 @@ from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
 )
+from app.services import generation_run_service
 
 
 @pytest.fixture
@@ -317,12 +318,13 @@ def test_agent_turn_resumes_from_structured_answers(agent_api_context):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["exit_reason"] == "goal_completed"
+    assert payload["exit_reason"] == "generation_queued"
     assert payload["state"]["facts"]["budget_max"] == 20000
     assert payload["state"]["facts"]["room_width_m"] == 4
     assert payload["state"]["facts"]["delivery_region"] == "CN-SH"
     assert payload["intent"] == "design"
-    assert payload["result"]["plan_count"] == 3
+    assert payload["result"]["generation_status"] == "queued"
+    assert payload["run_id"] == payload["result"]["run_id"]
     catalog_event = next(
         event for event in payload["events"] if event["node"] == "catalog_search"
     )
@@ -346,7 +348,7 @@ def test_agent_api_persists_construction_safety_block_before_tools(
     monkeypatch.setattr(
         design_agent.design_agent_service,
         "_design_tool",
-        lambda *_: lambda _: calls.append("design") or {},
+        lambda *_, **__: lambda _: calls.append("design") or {},
     )
     monkeypatch.setattr(
         design_agent.design_agent_service,
@@ -500,6 +502,51 @@ def test_agent_design_queues_one_worker_run_without_sync_generation_side_effects
         assert db.scalars(
             select(DesignResult).where(DesignResult.task_id == task_id)
         ).all() == []
+
+
+@pytest.mark.integration
+def test_agent_state_refresh_reconciles_bound_worker_completion(agent_api_context):
+    client, factory, owner_id, _, task_id = agent_api_context
+    queued = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "agent-worker-refresh-001",
+            "message": "开始生成家具搭配方案",
+            "active_mode": "catalog_design",
+            "answers": {
+                "budget_max": 20000,
+                "room_width_m": 4,
+                "room_depth_m": 5,
+                "delivery_region": "CN-SH",
+            },
+        },
+    )
+    run_id = queued.json()["run_id"]
+    with factory() as db:
+        run = db.get(GenerationRun, run_id)
+        assert run is not None
+        assert generation_run_service.mark_completed(
+            db,
+            run=run,
+            generator="llm",
+        )
+
+    refreshed = client.get(
+        f"/api/design/tasks/{task_id}/agent-state",
+        headers={"X-Session-ID": owner_id},
+    )
+
+    assert refreshed.status_code == 200
+    payload = refreshed.json()
+    assert payload["status"] == "completed"
+    assert payload["current_node"] == "generation_completed"
+    assert payload["exit_reason"] == "goal_completed"
+    assert payload["run_id"] == run_id
+    assert payload["result"] == {
+        "run_id": run_id,
+        "generation_status": "completed",
+    }
 
 
 @pytest.mark.integration
@@ -857,15 +904,16 @@ def test_agent_normalizes_current_frontend_requirement_shape(
 
 
 @pytest.mark.integration
-def test_agent_invalid_sku_never_creates_completed_revision(
+def test_generated_sku_validation_is_deferred_to_worker_without_sync_llm(
     agent_api_context,
     monkeypatch,
 ):
     client, factory, owner_id, _, task_id = agent_api_context
+    calls: list[str] = []
     monkeypatch.setattr(
         design_agent.design_agent_service.llm_service,
         "generate_plans",
-        lambda *_: [
+        lambda *_: calls.append("called") or [
             {
                 "id": "plan-a",
                 "name": "包含无效商品的方案",
@@ -893,9 +941,9 @@ def test_agent_invalid_sku_never_creates_completed_revision(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "needs_human"
-    assert payload["exit_reason"] == "retry_exhausted"
-    assert "invalid_sku" in payload["state"]["hard_errors"]
+    assert payload["status"] == "running"
+    assert payload["exit_reason"] == "generation_queued"
+    assert calls == []
     with factory() as db:
         revision_count = len(
             db.scalars(
@@ -910,7 +958,7 @@ def test_retry_budget_cannot_be_reset_by_starting_a_new_turn(
     agent_api_context,
     monkeypatch,
 ):
-    client, _, owner_id, _, task_id = agent_api_context
+    client, factory, owner_id, _, task_id = agent_api_context
     attempts: list[int] = []
 
     def invalid_plan(*_):
@@ -924,11 +972,11 @@ def test_retry_budget_cannot_be_reset_by_starting_a_new_turn(
             }
         ]
 
-    monkeypatch.setattr(
-        design_agent.design_agent_service.llm_service,
-        "generate_plans",
-        invalid_plan,
-    )
+    with factory() as db:
+        product = db.scalar(select(Product).where(Product.sku == "SOFA-001"))
+        assert product is not None
+        product.is_active = False
+        db.commit()
     body = {
         "message": "开始设计",
         "active_mode": "catalog_design",
@@ -958,7 +1006,7 @@ def test_retry_budget_cannot_be_reset_by_starting_a_new_turn(
     assert second.json()["exit_reason"] == "retry_exhausted"
     assert second.json()["state"]["retry_count"] == 2
     assert second.json()["state"]["step_count"] == first.json()["state"]["step_count"]
-    assert len(attempts) == 3
+    assert attempts == []
 
 
 @pytest.mark.integration
@@ -1021,15 +1069,16 @@ def test_step_budget_cannot_be_reset_by_starting_a_new_turn(
 
 
 @pytest.mark.integration
-def test_agent_missing_sku_retries_then_hands_off_without_quote(
+def test_agent_does_not_validate_worker_generated_missing_sku_in_http_request(
     agent_api_context,
     monkeypatch,
 ):
     client, factory, owner_id, _, task_id = agent_api_context
+    calls: list[str] = []
     monkeypatch.setattr(
         design_agent.design_agent_service.llm_service,
         "generate_plans",
-        lambda *_: [{
+        lambda *_: calls.append("called") or [{
             "id": "plan-a",
             "name": "未绑定商品的方案",
             "style": "现代简约",
@@ -1055,9 +1104,9 @@ def test_agent_missing_sku_retries_then_hands_off_without_quote(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "needs_human"
-    assert payload["exit_reason"] == "retry_exhausted"
-    assert "missing_product_sku" in payload["state"]["hard_errors"]
+    assert payload["status"] == "running"
+    assert payload["exit_reason"] == "generation_queued"
+    assert calls == []
     with factory() as db:
         assert not db.scalars(
             select(DesignRevision).where(DesignRevision.task_id == task_id)
@@ -1077,9 +1126,9 @@ def test_unexpected_failure_is_persisted_and_idempotently_replayed(
         raise RuntimeError("供应商连接意外中断")
 
     monkeypatch.setattr(
-        design_agent.design_agent_service.llm_service,
-        "generate_plans",
-        crash,
+        design_agent.design_agent_service,
+        "_design_tool",
+        lambda *_, **__: lambda _state: crash(),
     )
     body = {
         "client_turn_id": "failed-turn-001",
@@ -1155,9 +1204,9 @@ def test_unexpected_failure_preserves_task_execution_budget(
         raise RuntimeError("供应商连接意外中断")
 
     monkeypatch.setattr(
-        design_agent.design_agent_service.llm_service,
-        "generate_plans",
-        crash,
+        design_agent.design_agent_service,
+        "_design_tool",
+        lambda *_, **__: lambda _state: crash(),
     )
     response = client.post(
         f"/api/design/tasks/{task_id}/agent-turns",

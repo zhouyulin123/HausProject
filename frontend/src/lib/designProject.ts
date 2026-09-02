@@ -49,6 +49,7 @@ export interface DesignProject {
   customFurnitureSpec: CustomFurnitureSpecPatch | null;
   customFurnitureResult: CustomFurniturePreviewResult | null;
   approvalRequired: boolean;
+  generationRunId: number | null;
   activePlanId: string | null;
   activePlanVersionId: number | null;
 }
@@ -136,6 +137,7 @@ export function createDesignProject(
     customFurnitureSpec: null,
     customFurnitureResult: null,
     approvalRequired: false,
+    generationRunId: null,
     activePlanId: null,
     activePlanVersionId: null,
   };

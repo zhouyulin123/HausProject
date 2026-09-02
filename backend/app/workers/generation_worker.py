@@ -180,6 +180,10 @@ def process_one_run(
                 "on_meta": persist_meta,
                 "before_persist": before_persist,
             }
+            if executor is None:
+                executor_kwargs["allow_template_fallback"] = not (
+                    generation_run_service.is_agent_generation_run(run)
+                )
             if "on_success" in inspect.signature(selected_executor).parameters:
                 executor_kwargs["on_success"] = persist_success
 

@@ -45,6 +45,7 @@ from app.services import (
     catalog_service,
     design_version_service,
     generation_provenance,
+    generation_request_service,
     generation_run_service,
     llm_service,
     plan_refine_service,
@@ -219,6 +220,7 @@ def _execute_generation(
     on_meta=None,
     before_persist=None,
     on_success=None,
+    allow_template_fallback: bool = True,
 ) -> GenerateResponse:
     task_id = task.id
     task.status = "generating"
@@ -254,9 +256,16 @@ def _execute_generation(
         # 商品库上下文：家具与定制报价只能从自家库里选
         catalog_context = catalog_service.build_catalog_context(db)
 
+        def build_template_plans(requirement_payload):
+            if not allow_template_fallback:
+                raise llm_service.LLMUnavailable(
+                    "Agent 生成必须由真实模型完成，不允许模板降级"
+                )
+            return task_service.build_template_plans(requirement_payload)
+
         workflow = DesignWorkflow(
             generate_plans=llm_service.generate_plans,
-            build_template_plans=task_service.build_template_plans,
+            build_template_plans=build_template_plans,
             enrich_plans=lambda plans: catalog_service.verify_and_enrich_plans(
                 db,
                 plans,
@@ -361,39 +370,7 @@ def _execute_generation(
 
 
 def _generation_request_digest(db: Session, task: DesignTask) -> str:
-    """摘要覆盖生成读取的任务事实、用户画像、图片分析和商品上下文。"""
-    requirement = task.confirmed_requirement_json or task_service.parse_requirement(
-        task.raw_user_input or ""
-    )
-    profile_context = None
-    if task.user_id:
-        profile = profile_service.get_or_create_profile(db, user_id=task.user_id)
-        profile_context = profile_service.build_profile_context(profile) or None
-    images = db.scalars(
-        select(UploadedImage)
-        .where(UploadedImage.task_id == task.id)
-        .order_by(UploadedImage.id)
-    ).all()
-    return generation_provenance.canonical_digest(
-        {
-            "schema_version": 1,
-            "task_id": task.id,
-            "agent_state_version": task.agent_state_version or 0,
-            "active_mode": task.active_mode,
-            "requirement": requirement,
-            "profile_context": profile_context,
-            "images": [
-                {
-                    "id": image.id,
-                    "image_type": image.image_type,
-                    "file_url": image.file_url,
-                    "analysis": image.analysis_json,
-                }
-                for image in images
-            ],
-            "catalog_context": catalog_service.build_catalog_context(db),
-        }
-    )
+    return generation_request_service.build_request_digest(db, task)
 
 
 @router.post(

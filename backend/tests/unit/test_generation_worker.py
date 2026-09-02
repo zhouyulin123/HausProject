@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
+from app.api.routes import tasks as task_routes
 from app.db.models import DesignResult, DesignTask
 from app.core.request_context import current_request_id
 from app.services import generation_run_service, llm_service
@@ -111,6 +112,50 @@ def test_worker_success_completes_bound_agent_checkpoint(monkeypatch):
             "run_id": run_id,
             "generation_status": "completed",
         }
+
+
+def test_agent_generation_run_disables_template_fallback_in_default_worker(
+    monkeypatch,
+):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(status="running", progress=50)
+        db.add(task)
+        db.commit()
+        generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key="agent-generation:1:no-template",
+            request_digest="sha256:" + "c" * 64,
+        )
+
+    allow_template_values: list[bool] = []
+
+    def executor(
+        db,
+        *,
+        task,
+        on_step,
+        on_meta,
+        before_persist,
+        on_success,
+        allow_template_fallback,
+    ):
+        allow_template_values.append(allow_template_fallback)
+        before_persist()
+        on_success("llm")
+        return type("Response", (), {"generator": "llm"})()
+
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+    monkeypatch.setattr(task_routes, "_execute_generation", executor)
+
+    assert generation_worker.process_one_run(
+        worker_id="agent-worker-no-template",
+        start_heartbeat=False,
+    )
+    assert allow_template_values == [False]
 
 
 def test_worker_dead_letter_moves_bound_agent_checkpoint_to_needs_human(monkeypatch):

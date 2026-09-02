@@ -206,4 +206,32 @@ describe("useDesignProjectStore", () => {
       approvalRequired: true,
     });
   });
+
+  it("恢复 Worker 运行引用并在挂载方案后保留 Agent 完成态", () => {
+    useDesignProjectStore.getState().registerProject(45, "catalog_design", {
+      requirement: emptyRequirement,
+      roomModel: null,
+    });
+    useDesignProjectStore.getState().applyAgentState(45, {
+      stateVersion: 3,
+      status: "completed",
+      activeMode: "catalog_design",
+      pendingQuestions: [],
+      sceneRef: null,
+      exitReason: "goal_completed",
+      generationRunId: 7,
+    });
+
+    useDesignProjectStore.getState().attachPlan(45, {
+      id: "worker-plan",
+      planVersionId: 11,
+    });
+
+    expect(useDesignProjectStore.getState().projects[45]).toMatchObject({
+      status: "completed",
+      generationRunId: 7,
+      activePlanId: "worker-plan",
+      activePlanVersionId: 11,
+    });
+  });
 });

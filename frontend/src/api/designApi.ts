@@ -264,6 +264,7 @@ async function doGenerateDesigns(
 }
 
 interface GenerationStatus {
+  run_id: number;
   status:
     | "queued"
     | "running"
@@ -283,13 +284,17 @@ interface GenerationStatus {
 async function waitForGeneration(
   taskId: number,
   timeoutMs = 180_000,
-): Promise<void> {
+  expectedRunId?: number,
+): Promise<GenerationStatus> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     const generation = await request<GenerationStatus>(
       `/api/design/tasks/${taskId}/generation`,
     );
-    if (generation.status === "completed") return;
+    if (expectedRunId !== undefined && generation.run_id !== expectedRunId) {
+      throw new Error("生成任务引用已变化，已停止自动恢复");
+    }
+    if (generation.status === "completed") return generation;
     if (
       [
         "failed",
@@ -1137,11 +1142,13 @@ export interface AgentTurnResponse {
     custom_furniture_spec: CustomFurnitureSpecPatch | null;
     approval_required: boolean;
     exit_reason: AgentExitReason;
+    run_id: number | null;
   };
   pending_questions: AgentPendingQuestion[];
   events: AgentEvent[];
   approval_required: boolean;
   scene_ref: AgentSceneReference | null;
+  run_id: number | null;
   exit_reason: AgentExitReason;
   result: CustomFurniturePreviewResult | Record<string, unknown> | null;
 }
@@ -1165,6 +1172,7 @@ export interface DesignAgentStateResponse {
   custom_furniture_spec: CustomFurnitureSpecPatch | null;
   approval_required: boolean;
   scene_ref: AgentSceneReference | null;
+  run_id: number | null;
   exit_reason: AgentExitReason;
   result: CustomFurniturePreviewResult | Record<string, unknown> | null;
   /** 服务端持久化历史；刷新时覆盖本地瞬时消息缓存。 */
@@ -1189,6 +1197,35 @@ export async function fetchDesignAgentState(
   return request<DesignAgentStateResponse>(
     `/api/design/tasks/${taskId}/agent-state`,
   );
+}
+
+export async function resumeAgentGeneration(
+  taskId: number,
+  runId: number,
+): Promise<{
+  checkpoint: DesignAgentStateResponse;
+  plans: DesignPlan[];
+}> {
+  try {
+    await waitForGeneration(taskId, 180_000, runId);
+  } catch (error) {
+    const checkpoint = await fetchDesignAgentState(taskId);
+    if (
+      checkpoint.run_id === runId
+      && ["needs_human", "cancelled"].includes(checkpoint.status)
+    ) {
+      return { checkpoint, plans: [] };
+    }
+    throw error;
+  }
+  const [checkpoint, plans] = await Promise.all([
+    fetchDesignAgentState(taskId),
+    fetchDesignTaskPlans(taskId),
+  ]);
+  if (checkpoint.run_id !== runId) {
+    throw new Error("Agent 状态与生成任务引用不一致");
+  }
+  return { checkpoint, plans };
 }
 
 /** 记录任务级结构化反馈；调用方负责持有 client_event_id 以安全重试。 */

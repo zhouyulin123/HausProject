@@ -19,14 +19,14 @@ from app.agents.design_agent import (
     DesignAgentToolRegistry,
     DesignAgentWorkflow,
 )
-from app.agents.design_workflow import DesignWorkflow, WorkflowQualityError
 from app.agents.scene_agent import SceneAgentSafetyError, SceneAgentWorkflow
+from app.core.config import settings
+from app.core.request_context import current_request_id
 from app.db.models import (
     DesignAgentEvent,
     DesignAgentTurn,
     ChatLog,
     DesignPlanVersion,
-    DesignResult,
     DesignRevision,
     DesignScene,
     DesignTask,
@@ -41,11 +41,11 @@ from app.schemas.scenes import SceneDocument
 from app.services import (
     catalog_service,
     custom_furniture_service,
-    design_version_service,
+    generation_request_service,
+    generation_run_service,
     llm_service,
     scene_service,
     scene_tools,
-    task_service,
 )
 from app.services.llm_service import LLMUnavailable
 
@@ -405,7 +405,12 @@ def _catalog_tool(db: Session):
     return execute
 
 
-def _design_tool(db: Session, task: DesignTask):
+def _design_tool(
+    db: Session,
+    task: DesignTask,
+    *,
+    next_state_version: int,
+):
     def execute(state: dict[str, Any]) -> dict[str, Any]:
         if state["intent"] != "design":
             raise AgentToolRejected(
@@ -415,14 +420,6 @@ def _design_tool(db: Session, task: DesignTask):
         requirement = deepcopy(task.confirmed_requirement_json or {})
         requirement.update(state.get("facts", {}))
         requirement["agent_instruction"] = state["message"]
-        image_context: list[str] = []
-        for image in db.scalars(
-            select(UploadedImage).where(UploadedImage.task_id == task.id)
-        ):
-            findings = (image.analysis_json or {}).get("findings")
-            if isinstance(findings, list):
-                image_context.extend(str(item) for item in findings)
-
         facts = state.get("facts", {})
         region = facts.get("delivery_region")
         if not region:
@@ -430,62 +427,46 @@ def _design_tool(db: Session, task: DesignTask):
                 "缺少配送地区，禁止生成商用方案",
                 codes=["delivery_region_required"],
             )
-        budget = facts.get("budget_max")
-        max_dimensions_mm = _max_dimensions_from_facts(facts)
-
-        def strict_enrich(plans: list[dict[str, Any]]) -> None:
-            catalog_service.verify_and_enrich_plans(
-                db,
-                plans,
-                region=region,
-                budget_max=budget if isinstance(budget, int) else None,
-                max_dimensions_mm=max_dimensions_mm,
+        catalog_result = state.get("result") or {}
+        if not catalog_result.get("candidate_count"):
+            raise AgentToolRejected(
+                "当前约束下没有可用于生成方案的已验证商品",
+                codes=["catalog_empty"],
             )
-
-        workflow = DesignWorkflow(
-            generate_plans=llm_service.generate_plans,
-            build_template_plans=task_service.build_template_plans,
-            enrich_plans=strict_enrich,
+        request_digest = generation_request_service.build_request_digest(
+            db,
+            task,
+            requirement=requirement,
+            agent_state_version=next_state_version,
+            active_mode=state["active_mode"],
+        )
+        operation_key = generation_request_service.build_agent_operation_key(
+            task_id=task.id,
+            request_digest=request_digest,
         )
         try:
-            result = workflow.run(
-                requirement=requirement,
-                image_context=image_context,
-                catalog_context=catalog_service.build_catalog_context(
-                    db,
-                    region=region,
-                    max_unit_price=budget if isinstance(budget, int) else None,
-                    max_dimensions_mm=max_dimensions_mm,
-                ),
+            run = generation_run_service.create_run(
+                db,
+                task=task,
+                idempotency_key=operation_key,
+                max_attempts=settings.generation_worker_max_attempts,
+                request_id=current_request_id(),
+                request_digest=request_digest,
+                commit=False,
             )
-        except WorkflowQualityError as exc:
-            codes = list(exc.codes)
-            message = str(exc)
-            if not codes and ("SKU" in message or "商品" in message):
-                codes.append("invalid_sku")
-            if not codes and "报价" in message:
-                codes.append("invalid_quote")
+        except generation_run_service.GenerationIdempotencyConflict as exc:
             raise AgentToolRejected(
-                message,
-                codes=codes or ["quality_gate_failed"],
+                "生成操作幂等输入发生冲突，已停止自动执行",
+                codes=["generation_idempotency_conflict"],
             ) from exc
-
-        plans = result["plans"]
-        quotes = [plan["shopQuote"]["total"] for plan in plans]
+        task.confirmed_requirement_json = deepcopy(requirement)
+        task.space_type = facts.get("space_type")
+        task.style = facts.get("style")
+        task.budget_min = facts.get("budget_min")
+        task.budget_max = facts.get("budget_max")
         return {
-            "plan_count": len(plans),
-            "generator": result["generator"],
-            "quotes": quotes,
-            "quote_consistent": all(
-                plan["shopQuote"]["furnitureTotal"]
-                + plan["shopQuote"]["customTotal"]
-                == plan["shopQuote"]["total"]
-                for plan in plans
-            ),
-            "invalid_skus": [],
-            "_plans": plans,
-            "_image_context": image_context,
-            "_workflow_trace": result["node_trace"],
+            "run_id": run.id,
+            "generation_status": run.status,
         }
 
     return execute
@@ -625,6 +606,8 @@ def _reply(state: dict[str, Any]) -> str:
         if state.get("approval_required"):
             return "参数化预览已生成，但当前没有唯一可复算报价，需要人工确认价格。"
         return "本轮未通过确定性质量门禁，已停止自动执行并建议人工确认。"
+    if state.get("exit_reason") == "generation_queued":
+        return "方案生成任务已进入后台队列，可以继续留在当前工作台等待结果。"
     result = state.get("result") or {}
     if state["intent"] == "catalog_search":
         return f"已找到 {result.get('candidate_count', 0)} 件符合当前硬约束的商品。"
@@ -683,12 +666,19 @@ def _events_from_state(
         sequence += 1
     for raw in state.get("tool_events", []):
         completed = raw["status"] == "completed"
+        generation_queued = (
+            raw["tool"] == "design_generation" and raw["status"] == "queued"
+        )
         events.append(
             DesignAgentEvent(
                 task_id=task_id,
                 turn_id=turn_id,
                 sequence=sequence,
-                event_type="tool_completed" if completed else "validation_failed",
+                event_type=(
+                    "generation_queued"
+                    if generation_queued
+                    else "tool_completed" if completed else "validation_failed"
+                ),
                 node=raw["tool"],
                 status=raw["status"],
                 source=(
@@ -701,7 +691,9 @@ def _events_from_state(
                     else "agent"
                 ),
                 summary=(
-                    f"工具 {raw['tool']} 执行完成"
+                    "方案生成任务已进入持久化队列"
+                    if generation_queued
+                    else f"工具 {raw['tool']} 执行完成"
                     if completed
                     else f"工具 {raw['tool']} 未通过质量门禁"
                 ),
@@ -864,9 +856,13 @@ def _run_turn(
         )
         initial_exit_reason = "retry_exhausted"
 
+    next_state_version = (task.agent_state_version or 0) + 1
     registry = DesignAgentToolRegistry()
     registry.register("catalog_search", _catalog_tool(db))
-    registry.register("design_generation", _design_tool(db, task))
+    registry.register(
+        "design_generation",
+        _design_tool(db, task, next_state_version=next_state_version),
+    )
     registry.register("scene_edit", _scene_tool(db, task, payload))
     registry.register("custom_furniture_preview", _custom_furniture_tool(db))
     workflow = DesignAgentWorkflow(
@@ -911,27 +907,7 @@ def _run_turn(
         initial_exit_reason=initial_exit_reason,
     )
 
-    if state["status"] == "completed" and intent == "design":
-        result = state.get("result") or {}
-        plans = result.get("_plans") or []
-        revision = design_version_service.persist_generation(
-            db,
-            task=task,
-            plans=plans,
-            generator=result.get("generator") or "agent",
-            image_context=result.get("_image_context") or [],
-            workflow_trace=result.get("_workflow_trace") or [],
-        )
-        db.add(
-            DesignResult(
-                task_id=task.id,
-                plans_json=plans,
-                generator=result.get("generator") or "agent",
-            )
-        )
-        state["result"]["revision_version"] = revision.version
-
-    task.agent_state_version = (task.agent_state_version or 0) + 1
+    task.agent_state_version = next_state_version
     task.active_mode = payload.active_mode
     task.status = state["status"]
     requirement = deepcopy(task.confirmed_requirement_json or {})
@@ -943,6 +919,11 @@ def _run_turn(
     task.budget_max = facts.get("budget_max")
     public_result = _public_result(state.get("result"))
     scene_ref = (public_result or {}).get("scene_ref")
+    run_id = (
+        public_result.get("run_id")
+        if intent == "design" and isinstance(public_result, dict)
+        else None
+    )
     checkpoint = {
         "status": state["status"],
         "active_mode": payload.active_mode,
@@ -963,6 +944,7 @@ def _run_turn(
         "approval_required": state.get("approval_required", False),
         "exit_reason": state["exit_reason"],
         "scene_ref": scene_ref,
+        "run_id": run_id,
         "result": public_result,
     }
     task.agent_state_json = checkpoint
@@ -985,6 +967,7 @@ def _run_turn(
         "events": [_event_payload(event) for event in events],
         "approval_required": state.get("approval_required", False),
         "scene_ref": scene_ref,
+        "run_id": run_id,
         "exit_reason": state["exit_reason"],
         "result": public_result,
     }
@@ -1077,6 +1060,7 @@ def _persist_failed_turn(
         "approval_required": False,
         "exit_reason": "tool_failed",
         "scene_ref": None,
+        "run_id": None,
         "result": None,
     }
     task.agent_state_json = checkpoint
@@ -1108,6 +1092,7 @@ def _persist_failed_turn(
         "events": [_event_payload(event)],
         "approval_required": False,
         "scene_ref": None,
+        "run_id": None,
         "exit_reason": "tool_failed",
         "result": None,
     }
@@ -1150,6 +1135,7 @@ def run_turn(
 
 
 def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
+    generation_run_service.synchronize_agent_checkpoint(db, task=task)
     state = deepcopy(task.agent_state_json or {})
     if not state:
         state = {
@@ -1172,6 +1158,7 @@ def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
             "approval_required": False,
             "exit_reason": "missing_facts",
             "scene_ref": None,
+            "run_id": None,
             "result": None,
         }
     messages = db.scalars(

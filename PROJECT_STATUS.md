@@ -1,5 +1,18 @@
 # 项目开发状态记录
 
+## 2026-09-02 阶段 1–2：统一 Agent 生成迁移到持久化 Worker
+
+- `design_generation` 不再于 Agent HTTP 请求中调用模型、模板降级或写入 `DesignResult`；事实与商品门禁通过后，仅以任务、当前 Agent 状态版本和规范化输入摘要派生稳定操作键并创建 `GenerationRun`。
+- Agent turn 返回 `running + generation_queued`，响应、checkpoint 和事件均公开同一 `run_id`；相同 `client_turn_id` 复取不会重复入队，不同输入不能附着到已有活跃运行。
+- Generation Worker 成为模型调用、成本门禁、供应商熔断、deadline、质量校验和不可变方案版本的唯一生成路径；Agent 来源运行禁止模板假成功。
+- Worker 成功、取消或终态失败会同步绑定的 Agent checkpoint；刷新读取时也会按 `run_id` 收敛状态，失败明确进入 `needs_human + generation_failed`。
+- 工作台持久化运行引用并轮询现有 generation 状态；成功后恢复服务端方案与最新 Agent 状态，失败显示人工处理状态，轮询过程不创建新 turn。
+
+### 验证
+
+- RED `817ee79` 证明同步模型调用、checkpoint 失联和前端恢复缺口；分支验证后端相关 107 项、前端相关 18 项及后端 490 项、前端 164 项通过。
+- TypeScript 类型检查、Python 编译通过；主线集成后继续以当前 Alembic 单头和全量回归为最终验收依据。本次复用现有字段，无新增迁移。
+
 ## 2026-09-02 用户工作台：修复 3D 场景恢复重渲染循环
 
 - 浏览器验收发现正式方案异步恢复前，本地等价 `plan` 对象会因引用变化反复重启 `useSceneEditor`，最终触发 React 最大更新深度错误。

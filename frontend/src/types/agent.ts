@@ -17,4 +17,6 @@ export type AgentExitReason =
   | "retry_exhausted"
   | "safety_blocked"
   | "tool_failed"
+  | "generation_queued"
+  | "generation_failed"
   | "cancelled";

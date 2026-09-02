@@ -102,6 +102,7 @@ class AgentStateResponse(BaseModel):
     custom_furniture_spec: dict[str, Any] | None = None
     approval_required: bool = False
     exit_reason: str
+    run_id: int | None = None
 
 
 class AgentTurnResponse(BaseModel):
@@ -119,6 +120,7 @@ class AgentTurnResponse(BaseModel):
     approval_required: bool = False
     exit_reason: str
     scene_ref: dict[str, Any] | None = None
+    run_id: int | None = None
     result: dict[str, Any] | None = None
 
 
@@ -142,5 +144,6 @@ class AgentCheckpointResponse(BaseModel):
     approval_required: bool = False
     exit_reason: str
     scene_ref: dict[str, Any] | None = None
+    run_id: int | None = None
     result: dict[str, Any] | None = None
     messages: list[AgentMessageResponse] = Field(default_factory=list)

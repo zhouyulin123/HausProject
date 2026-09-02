@@ -561,6 +561,12 @@ class DesignAgentWorkflow:
                     codes=["tool_not_available"],
                 )
             result = callback(state)
+            tool_status = (
+                "queued"
+                if tool_name == "design_generation"
+                and result.get("generation_status") in {"queued", "running"}
+                else "completed"
+            )
             return {
                 **update,
                 "result": result,
@@ -569,7 +575,7 @@ class DesignAgentWorkflow:
                 "tool_events": [
                     {
                         "tool": tool_name,
-                        "status": "completed",
+                        "status": tool_status,
                         "payload": {
                             key: value
                             for key, value in result.items()
@@ -602,6 +608,12 @@ class DesignAgentWorkflow:
         if result is None:
             errors = errors or ["tool_failed"]
         elif state["intent"] == "design":
+            if result.get("generation_status") in {"queued", "running"}:
+                return {
+                    **update,
+                    "hard_errors": [],
+                    "quality_outcome": "queued",
+                }
             if not isinstance(result.get("plan_count"), int) or result["plan_count"] < 1:
                 errors.append("empty_plan")
             quotes = result.get("quotes")
@@ -655,6 +667,7 @@ class DesignAgentWorkflow:
     def _route_after_verify(state: DesignAgentState) -> str:
         return {
             "passed": "finalize",
+            "queued": "finalize",
             "retry": "replan",
             "approval": "approval",
         }.get(state.get("quality_outcome", "escalate"), "escalate")
@@ -679,8 +692,20 @@ class DesignAgentWorkflow:
             return update
         return {
             **update,
-            "status": "completed",
-            "exit_reason": "goal_completed",
+            "status": (
+                "running"
+                if state["intent"] == "design"
+                and (state.get("result") or {}).get("generation_status")
+                in {"queued", "running"}
+                else "completed"
+            ),
+            "exit_reason": (
+                "generation_queued"
+                if state["intent"] == "design"
+                and (state.get("result") or {}).get("generation_status")
+                in {"queued", "running"}
+                else "goal_completed"
+            ),
             "pending_questions": [],
             "approval_required": False,
         }

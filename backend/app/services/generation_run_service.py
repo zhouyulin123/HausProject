@@ -147,6 +147,7 @@ def create_run(
     request_id: str | None = None,
     request_digest: str | None = None,
     evaluation_binding: EvaluationBindingSpec | None = None,
+    commit: bool = True,
 ) -> GenerationRun:
     """创建持久化运行；同一幂等键在终态后也返回原记录。"""
     normalized_key = (idempotency_key or "").strip() or None
@@ -203,6 +204,10 @@ def create_run(
             raise evaluation_binding_service.EvaluationBindingError(
                 "任务已有其他活动运行，不能创建评测绑定"
             )
+        if normalized_key and active.request_digest != request_digest:
+            raise GenerationIdempotencyConflict(
+                "任务已有不同输入的生成操作正在执行"
+            )
         return active
 
     latest_attempt = db.scalar(
@@ -234,8 +239,10 @@ def create_run(
                     task_input_digest=evaluation_binding.task_input_digest,
                 )
             )
-        db.commit()
-        db.refresh(run)
+            db.flush()
+        if commit:
+            db.commit()
+            db.refresh(run)
         return run
     except IntegrityError:
         db.rollback()
@@ -269,6 +276,10 @@ def create_run(
             if evaluation_binding is not None:
                 raise evaluation_binding_service.EvaluationBindingError(
                     "任务已有其他活动运行，不能返回未绑定的评测运行"
+                )
+            if normalized_key and active.request_digest != request_digest:
+                raise GenerationIdempotencyConflict(
+                    "任务已有不同输入的生成操作正在执行"
                 )
             return active
         raise
@@ -315,6 +326,91 @@ def _set_task_state(
     task.status = status
     task.progress = progress
     task.error_message = error_message
+    _sync_agent_checkpoint(task=task, run=run)
+
+
+def _sync_agent_checkpoint(*, task: DesignTask, run: GenerationRun) -> bool:
+    checkpoint = task.agent_state_json
+    if not isinstance(checkpoint, dict) or checkpoint.get("run_id") != run.id:
+        return False
+    updated = dict(checkpoint)
+    result = dict(updated.get("result") or {})
+    result.update({"run_id": run.id, "generation_status": run.status})
+    if run.status in ACTIVE_STATUSES:
+        updated.update(
+            {
+                "status": "running",
+                "current_node": "generation_queued",
+                "exit_reason": "generation_queued",
+                "approval_required": False,
+                "result": result,
+            }
+        )
+    elif run.status == "completed":
+        updated.update(
+            {
+                "status": "completed",
+                "current_node": "generation_completed",
+                "exit_reason": "goal_completed",
+                "approval_required": False,
+                "result": result,
+            }
+        )
+    elif run.status == "cancelled":
+        updated.update(
+            {
+                "status": "cancelled",
+                "current_node": "generation_cancelled",
+                "exit_reason": "cancelled",
+                "approval_required": False,
+                "result": result,
+            }
+        )
+    else:
+        updated.update(
+            {
+                "status": "needs_human",
+                "current_node": "generation_failed",
+                "exit_reason": "generation_failed",
+                "approval_required": True,
+                "hard_errors": list(
+                    dict.fromkeys(
+                        [
+                            *(updated.get("hard_errors") or []),
+                            f"generation_{run.status}",
+                        ]
+                    )
+                ),
+                "result": result,
+            }
+        )
+    if updated == checkpoint:
+        return False
+    task.agent_state_json = updated
+    task.agent_state_version = (task.agent_state_version or 0) + 1
+    return True
+
+
+def synchronize_agent_checkpoint(db: Session, *, task: DesignTask) -> bool:
+    """刷新读取时以绑定的 GenerationRun 终态修复 Agent checkpoint。"""
+    checkpoint = task.agent_state_json
+    run_id = checkpoint.get("run_id") if isinstance(checkpoint, dict) else None
+    if not isinstance(run_id, int):
+        return False
+    run = db.get(GenerationRun, run_id)
+    if run is None or run.task_id != task.id:
+        return False
+    changed = _sync_agent_checkpoint(task=task, run=run)
+    if changed:
+        db.commit()
+    return changed
+
+
+def is_agent_generation_run(run: GenerationRun) -> bool:
+    return bool(
+        run.idempotency_key
+        and run.idempotency_key.startswith("agent-generation:")
+    )
 
 
 def _mark_dead_letter(
@@ -766,6 +862,7 @@ def mark_completed(
     run.completed_at = current
     run.next_retry_at = None
     _clear_worker(run)
+    _set_task_state(db, run=run, status="completed", progress=100)
     if commit:
         db.commit()
     else:

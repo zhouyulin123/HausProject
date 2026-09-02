@@ -52,6 +52,45 @@ def test_generate_design_persists_failed_status(monkeypatch):
 
 
 @pytest.mark.integration
+def test_agent_worker_generation_does_not_turn_llm_failure_into_template_success(
+    monkeypatch,
+):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    with session_factory() as db:
+        task = DesignTask(
+            status="running",
+            progress=50,
+            confirmed_requirement_json={"rooms": ["客厅"]},
+        )
+        db.add(task)
+        db.commit()
+        monkeypatch.setattr(
+            task_routes.llm_service,
+            "generate_plans",
+            lambda *_: (_ for _ in ()).throw(
+                task_routes.llm_service.LLMUnavailable("provider timeout")
+            ),
+        )
+        monkeypatch.setattr(
+            task_routes.catalog_service,
+            "build_catalog_context",
+            lambda _: "",
+        )
+
+        with pytest.raises(HTTPException):
+            task_routes._execute_generation(
+                db,
+                task=task,
+                allow_template_fallback=False,
+            )
+
+        assert get_latest_revision(db, task_id=task.id) is None
+
+
+@pytest.mark.integration
 def test_generate_design_persists_langgraph_node_trace(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

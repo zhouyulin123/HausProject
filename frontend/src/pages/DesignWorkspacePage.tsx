@@ -18,6 +18,7 @@ import {
   fetchDesignAgentState,
   fetchDesignTaskPlans,
   fetchFurnitureCatalog,
+  resumeAgentGeneration,
   type AgentTurnResponse,
 } from "@/api/designApi";
 import { parseCustomFurniturePreview } from "@/lib/customFurnitureWorkspace";
@@ -104,6 +105,7 @@ export default function DesignWorkspacePage() {
       customFurnitureSpec: response.state.custom_furniture_spec,
       customFurnitureResult: parseCustomFurniturePreview(response.result),
       approvalRequired: response.approval_required,
+      generationRunId: response.run_id,
     });
     if (response.status === "completed" && response.intent === "design") {
       void restoreServerPlans(projectId);
@@ -142,6 +144,7 @@ export default function DesignWorkspacePage() {
           customFurnitureSpec: checkpoint.custom_furniture_spec,
           customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
           approvalRequired: checkpoint.approval_required,
+          generationRunId: checkpoint.run_id,
         });
         setMessages(
           project.id,
@@ -163,6 +166,73 @@ export default function DesignWorkspacePage() {
       cancelled = true;
     };
   }, [applyAgentState, project?.id, restoreServerPlans, setMessages]);
+
+  useEffect(() => {
+    if (
+      !project
+      || project.status !== "running"
+      || project.exitReason !== "generation_queued"
+      || !project.generationRunId
+    ) return;
+    let cancelled = false;
+    void resumeAgentGeneration(project.id, project.generationRunId)
+      .then(({ checkpoint, plans }) => {
+        if (cancelled) return;
+        applyAgentState(project.id, {
+          stateVersion: checkpoint.state_version,
+          status: checkpoint.status,
+          activeMode: checkpoint.active_mode,
+          pendingQuestions: checkpoint.pending_questions,
+          sceneRef: checkpoint.scene_ref,
+          exitReason: checkpoint.exit_reason,
+          activeRoomId: checkpoint.active_room_id,
+          customFurnitureSpec: checkpoint.custom_furniture_spec,
+          customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
+          approvalRequired: checkpoint.approval_required,
+          generationRunId: checkpoint.run_id,
+        });
+        setMessages(
+          project.id,
+          checkpoint.messages.map((message) => ({
+            id: `server-${message.id}`,
+            role: message.role,
+            content: message.content,
+          })),
+        );
+        if (plans.length) {
+          const existingPlans = useDesignStore.getState().generatedPlans;
+          const incomingIds = new Set(plans.map((item) => item.id));
+          setGeneratedPlans([
+            ...existingPlans.filter(
+              (item) => item.task_id !== project.id && !incomingIds.has(item.id),
+            ),
+            ...plans,
+          ]);
+          const activePlan = plans[0];
+          if (activePlan.planVersionId) {
+            attachPlan(project.id, {
+              id: activePlan.id,
+              planVersionId: activePlan.planVersionId,
+            });
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAgentConnection("unavailable");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    applyAgentState,
+    attachPlan,
+    project?.exitReason,
+    project?.generationRunId,
+    project?.id,
+    project?.status,
+    setGeneratedPlans,
+    setMessages,
+  ]);
 
   useEffect(() => {
     if (project?.mode === "custom_furniture") {
@@ -333,6 +403,18 @@ export default function DesignWorkspacePage() {
 
         {project.mode !== "custom_furniture" && catalogError && (
           <p role="alert" className="mb-3 border border-[#8f7040] bg-[#2b2718] px-4 py-3 text-xs text-[#f0d39e]">{catalogError}</p>
+        )}
+
+        {project.exitReason === "generation_queued" && project.status === "running" && (
+          <p role="status" className="mb-3 border border-[#52613d] bg-[#1b2519] px-4 py-3 text-xs text-[#d5ff67]">
+            方案正在后台生成，完成后会自动恢复到当前工作台。
+          </p>
+        )}
+
+        {project.exitReason === "generation_failed" && project.status === "needs_human" && (
+          <p role="alert" className="mb-3 border border-[#8f7040] bg-[#2b2718] px-4 py-3 text-xs text-[#f0d39e]">
+            方案生成未完成，已停止自动执行并转入人工处理。
+          </p>
         )}
 
         <nav aria-label="移动端工作台视图" className="mb-3 grid grid-cols-3 border border-[#293229] bg-[#171e18] xl:hidden">
