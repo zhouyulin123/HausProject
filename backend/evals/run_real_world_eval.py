@@ -294,7 +294,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "| 项目 | 值 |",
         "| --- | --- |",
-        f"| 整体门禁 | {'PASS' if report['gate_passed'] else 'FAIL'} |",
+        f"| 整体门禁 | {'PASS' if report.get('overall_passed', report['gate_passed']) else 'FAIL'} |",
+        f"| 绝对质量门禁 | {'PASS' if report['gate_passed'] else 'FAIL'} |",
         f"| 模型版本 | {versions['model']} |",
         f"| Prompt 版本 | {versions['prompt']} |",
         f"| 规则版本 | {versions['rules']} |",
@@ -312,6 +313,26 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"{gate['operator']} | {_format_metric(gate['target'])} | "
             f"{'PASS' if gate['passed'] else 'FAIL'} |"
         )
+    comparison = report.get("regression_comparison")
+    if comparison is not None:
+        lines.extend(
+            [
+                "",
+                "## 版本回归",
+                "",
+                f"版本回归 | {'PASS' if comparison['passed'] else 'FAIL'}",
+                "",
+                "| 指标 | 基线 | 候选 | 变化 | 结果 |",
+                "| --- | ---: | ---: | ---: | :---: |",
+            ]
+        )
+        for item in comparison["items"]:
+            lines.append(
+                f"| {item['metric']} | {_format_metric(item['baseline'])} | "
+                f"{_format_metric(item['candidate'])} | "
+                f"{_format_metric(item['delta'])} | "
+                f"{'FAIL' if item['regressed'] else 'PASS'} |"
+            )
     if dataset["ineligible_cases"]:
         lines.extend(["", "## 未进入评测的案例", ""])
         for case_id, reasons in dataset["ineligible_cases"].items():
@@ -323,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="运行真实案例离线质量门禁")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
+    parser.add_argument("--baseline-report", type=Path)
     parser.add_argument("--asset-root", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -330,6 +352,15 @@ def main(argv: list[str] | None = None) -> int:
         dataset = load_case_manifest(args.manifest, asset_root=args.asset_root)
         evidence = load_case_results(args.results, dataset=dataset)
         report = build_evaluation_report(dataset=dataset, evidence=evidence)
+        comparison = None
+        if args.baseline_report is not None:
+            baseline_report = _read_json(args.baseline_report.resolve())
+            comparison = compare_evaluation_reports(report, baseline_report)
+        report["regression_comparison"] = comparison
+        report["overall_passed"] = bool(
+            report["gate_passed"]
+            and (comparison is None or comparison["passed"])
+        )
     except (EvaluationInputError, ValueError) as exc:
         print(f"EVAL_INPUT_ERROR: {exc}")
         return 2
@@ -341,11 +372,11 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     markdown_path.write_text(render_markdown(report), encoding="utf-8")
-    status = "PASS" if report["gate_passed"] else "FAIL"
+    status = "PASS" if report["overall_passed"] else "FAIL"
     print(f"REAL_WORLD_EVAL={status}")
     print(f"REPORT_JSON={json_path.resolve()}")
     print(f"REPORT_MARKDOWN={markdown_path.resolve()}")
-    return 0 if report["gate_passed"] else 1
+    return 0 if report["overall_passed"] else 1
 
 
 if __name__ == "__main__":

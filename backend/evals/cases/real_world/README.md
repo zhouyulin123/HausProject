@@ -39,6 +39,19 @@ python -m evals.run_real_world_eval `
   --output-dir backend/evals/reports/real_world
 ```
 
+模型、Prompt 或规则发生变化时，必须额外传入同一数据版本、同一案例集合生成的基线报告：
+
+```powershell
+python -m evals.run_real_world_eval `
+  --manifest backend/evals/cases/real_world/manifest.json `
+  --asset-root . `
+  --results backend/evals/cases/real_world/results.template.json `
+  --baseline-report backend/evals/reports/baseline/real_world_eval.json `
+  --output-dir backend/evals/reports/candidate
+```
+
+基线和候选的数据版本或准入案例 ID 不一致时拒绝比较。即使候选仍达到绝对门禁，只要比例指标下降、跨用户访问或无限重试计数增加，版本回归也会失败。
+
 退出码：`0` 表示全部门禁通过，`1` 表示证据完整但质量未达标，`2` 表示清单或结果输入不合法。当前模板没有准入案例，因此预期退出码为 `1`，不能在 CI 中当作成功。
 
 ## 人工标注最小内容
