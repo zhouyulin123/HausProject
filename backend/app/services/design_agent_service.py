@@ -937,6 +937,8 @@ def _claim_turn(
         .where(
             DesignAgentTurn.task_id == task.id,
             DesignAgentTurn.status == "running",
+            DesignAgentTurn.response_json.is_(None),
+            DesignAgentTurn.completed_at.is_(None),
         )
         .order_by(DesignAgentTurn.id)
     ).all()
