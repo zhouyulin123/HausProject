@@ -340,3 +340,71 @@ def test_cli_baseline_report_fails_candidate_that_regresses_above_absolute_gate(
     markdown = (output_dir / "real_world_eval.md").read_text(encoding="utf-8")
     assert "版本回归 | FAIL" in markdown
     assert "requirement_accuracy" in markdown
+
+
+def test_cli_requires_explicit_baseline_mode_for_eligible_cases(tmp_path):
+    _manifest(tmp_path)
+    results_path = _write_json(
+        tmp_path / "results.json",
+        {
+            "schema_version": "1.0",
+            "versions": {
+                "model": "m1",
+                "prompt": "p1",
+                "rules": "r1",
+                "data": "data-1",
+            },
+            "results": [_result("case-a"), _result("case-b")],
+        },
+    )
+
+    exit_code = run_eval_main(
+        [
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--results",
+            str(results_path),
+            "--output-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+
+    assert exit_code == 2
+    assert not (tmp_path / "reports" / "real_world_eval.json").exists()
+
+
+def test_cli_establish_baseline_is_explicit_and_still_requires_gates(tmp_path):
+    _manifest(tmp_path)
+    results_path = _write_json(
+        tmp_path / "results.json",
+        {
+            "schema_version": "1.0",
+            "versions": {
+                "model": "m1",
+                "prompt": "p1",
+                "rules": "r1",
+                "data": "data-1",
+            },
+            "results": [_result("case-a"), _result("case-b")],
+        },
+    )
+    output_dir = tmp_path / "baseline"
+
+    exit_code = run_eval_main(
+        [
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--results",
+            str(results_path),
+            "--establish-baseline",
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    report = json.loads(
+        (output_dir / "real_world_eval.json").read_text(encoding="utf-8")
+    )
+    assert exit_code == 0
+    assert report["baseline_mode"] == "established"
+    assert report["overall_passed"] is True
