@@ -79,7 +79,7 @@ def _trusted_bundle(dataset, *, failing: bool = True) -> dict:
         "data": "sha256:" + "3" * 64,
     }
     unsigned = {
-        "schema_version": "4.0",
+        "schema_version": "5.0",
         "evidence_type": "system_execution",
         "issued_at": datetime.now(timezone.utc).isoformat(),
         "dataset_fingerprint": manifest_digest,
@@ -100,6 +100,7 @@ def _trusted_bundle(dataset, *, failing: bool = True) -> dict:
                 "rules_digest": versions["rules"],
                 "data_digest": versions["data"],
                 "input_digest": "sha256:" + "5" * 64,
+                "prediction_digest": "sha256:" + "7" * 64,
                 "output_digest": "sha256:" + "6" * 64,
                 "result": result_payload,
                 "result_digest": _digest(result_payload),
