@@ -80,6 +80,59 @@ describe("方案结果恢复", () => {
     );
   });
 
+  it("创建项目时把入口模式写入服务端任务", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const path = String(input);
+      if (path === `/api/sessions/${sessionId}`) {
+        return jsonResponse({ session_id: sessionId });
+      }
+      if (path === "/api/design/tasks") {
+        return jsonResponse({ task_id: 42, status: "confirmed" });
+      }
+      throw new Error(`未处理的请求: ${path}`);
+    });
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { createDesignTask } = await import("./designApi");
+    await createDesignTask(
+      {
+        rooms: ["书房"],
+        area: 12,
+        houseType: "两室一厅",
+        city: "杭州",
+        renovationType: "局部改造",
+        budgetRange: "3-5 万",
+        familySize: 2,
+        hasChildren: false,
+        hasPets: false,
+        hasElderly: false,
+        workFromHome: true,
+        cookingOften: false,
+        needStorage: true,
+        ecoFriendly: true,
+        smartHome: false,
+        styles: ["现代简约"],
+        colors: [],
+        dislikedColors: [],
+        materials: ["实木"],
+        extraNotes: "定制书桌",
+      },
+      "custom_furniture",
+    );
+
+    const [, taskInit] = fetchMock.mock.calls.find(
+      ([input]) => String(input) === "/api/design/tasks",
+    ) ?? [];
+    expect(JSON.parse(String(taskInit?.body))).toMatchObject({
+      active_mode: "custom_furniture",
+    });
+  });
+
   it("通过后台任务生成并在完成后读取方案", async () => {
     const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
     const storage = createLocalStorage({});

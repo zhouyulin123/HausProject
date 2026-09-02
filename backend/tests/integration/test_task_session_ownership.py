@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.api.routes.tasks import create_task
 from app.db.database import Base
-from app.db.models import UploadedImage
+from app.db.models import DesignTask, UploadedImage
 from app.schemas.tasks import TaskCreate
 from app.services.anonymous_session_service import (
     attach_image,
@@ -44,6 +44,25 @@ def test_create_task_links_owned_images_to_anonymous_session(db):
     db.refresh(image)
     assert image.task_id == response.task_id
     assert session_owns_task(db, session.id, response.task_id)
+
+
+@pytest.mark.integration
+def test_create_task_persists_requested_agent_mode(db):
+    session = create_anonymous_session(db)
+
+    response = create_task(
+        TaskCreate(
+            session_id=session.id,
+            active_mode="custom_furniture",
+            requirement={"rooms": ["书房"], "styles": ["现代简约"]},
+        ),
+        session.id,
+        db,
+    )
+
+    task = db.get(DesignTask, response.task_id)
+    assert task is not None
+    assert task.active_mode == "custom_furniture"
 
 
 @pytest.mark.integration
