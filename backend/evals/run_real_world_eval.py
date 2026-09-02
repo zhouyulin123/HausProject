@@ -349,7 +349,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="运行真实案例离线质量门禁")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
-    parser.add_argument("--baseline-report", type=Path)
+    baseline_group = parser.add_mutually_exclusive_group()
+    baseline_group.add_argument("--baseline-report", type=Path)
+    baseline_group.add_argument(
+        "--establish-baseline",
+        action="store_true",
+        help="显式建立首个基线；后续候选必须使用 --baseline-report 比较",
+    )
     parser.add_argument("--asset-root", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -357,10 +363,24 @@ def main(argv: list[str] | None = None) -> int:
         dataset = load_case_manifest(args.manifest, asset_root=args.asset_root)
         evidence = load_case_results(args.results, dataset=dataset)
         report = build_evaluation_report(dataset=dataset, evidence=evidence)
+        if dataset.eligible_cases() and (
+            args.baseline_report is None and not args.establish_baseline
+        ):
+            raise EvaluationInputError(
+                "存在准入案例时必须提供 --baseline-report，"
+                "首次建基线需显式使用 --establish-baseline"
+            )
         comparison = None
         if args.baseline_report is not None:
             baseline_report = _read_json(args.baseline_report.resolve())
             comparison = compare_evaluation_reports(report, baseline_report)
+        report["baseline_mode"] = (
+            "compared"
+            if comparison is not None
+            else "established"
+            if args.establish_baseline
+            else "no_eligible_cases"
+        )
         report["regression_comparison"] = comparison
         report["overall_passed"] = bool(
             report["gate_passed"]

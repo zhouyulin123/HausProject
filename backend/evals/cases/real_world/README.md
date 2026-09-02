@@ -38,8 +38,11 @@ python -m evals.run_real_world_eval `
   --manifest backend/evals/cases/real_world/manifest.json `
   --asset-root . `
   --results backend/evals/cases/real_world/results.template.json `
+  --establish-baseline `
   --output-dir backend/evals/reports/real_world
 ```
+
+`--establish-baseline` 只用于人工批准的首次基线建立。只要清单中存在准入案例，后续运行若未提供 `--baseline-report`，会以输入错误退出；因此模型、Prompt、规则或数据变更不能静默跳过版本比较。无准入案例时仍会生成失败报告，用于展示缺少哪些授权与标注证据。
 
 模型、Prompt 或规则发生变化时，必须额外传入同一数据版本、同一案例集合生成的基线报告：
 
