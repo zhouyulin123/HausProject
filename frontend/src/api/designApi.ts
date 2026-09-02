@@ -264,10 +264,18 @@ async function doGenerateDesigns(
 }
 
 interface GenerationStatus {
-  status: "queued" | "running" | "completed" | "failed";
+  status:
+    | "queued"
+    | "running"
+    | "completed"
+    | "failed"
+    | "dead_letter"
+    | "cancelled";
   progress: number;
   current_node: string | null;
   error_message: string | null;
+  execution_deadline_at?: string | null;
+  dead_lettered_at?: string | null;
 }
 
 async function waitForGeneration(
@@ -280,8 +288,13 @@ async function waitForGeneration(
       `/api/design/tasks/${taskId}/generation`,
     );
     if (generation.status === "completed") return;
-    if (generation.status === "failed") {
-      throw new Error(generation.error_message || "方案生成失败，请稍后重试");
+    if (["failed", "dead_letter", "cancelled"].includes(generation.status)) {
+      const fallbackMessage = generation.status === "cancelled"
+        ? "方案生成已取消"
+        : generation.status === "dead_letter"
+          ? "方案生成超过执行限制，已停止并等待人工处理"
+          : "方案生成失败，请稍后重试";
+      throw new Error(generation.error_message || fallbackMessage);
     }
     await delay(1000);
   }
