@@ -230,6 +230,42 @@ def test_expired_running_turn_is_recovered_once_and_never_stays_409(
 
 
 @pytest.mark.integration
+def test_completed_business_running_turn_does_not_hold_execution_lease(
+    concurrent_agent_context,
+):
+    factory, task_id = concurrent_agent_context
+    previous_payload = _payload("queued-response-001")
+    with factory() as db:
+        db.add(
+            DesignAgentTurn(
+                task_id=task_id,
+                client_turn_id=previous_payload.client_turn_id,
+                active_mode=previous_payload.active_mode,
+                intent="design",
+                status="running",
+                request_json=previous_payload.model_dump(mode="json"),
+                response_json={"exit_reason": "generation_queued"},
+                completed_at=datetime.now(timezone.utc),
+            )
+        )
+        db.commit()
+
+    with factory() as db:
+        response = design_agent_service.run_turn(
+            db,
+            task=db.get(DesignTask, task_id),
+            payload=_payload("after-queued-response-002"),
+        )
+
+    assert response["turn_id"] > 0
+    with factory() as db:
+        turns = db.scalars(
+            select(DesignAgentTurn).where(DesignAgentTurn.task_id == task_id)
+        ).all()
+        assert len(turns) == 2
+
+
+@pytest.mark.integration
 def test_recovered_lease_prevents_late_executor_from_committing(
     concurrent_agent_context,
     monkeypatch,
