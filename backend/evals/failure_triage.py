@@ -75,6 +75,7 @@ class FailureRecord:
     severity: FailureSeverity
     tags: tuple[str, ...]
     metrics: tuple[str, ...]
+    occurrence_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -201,7 +202,8 @@ def _derived_failures(
             )
             continue
         for numerator, denominator, code, failure_type, severity, metric in _METRIC_FAILURES:
-            if getattr(result, denominator) > getattr(result, numerator):
+            missing_count = getattr(result, denominator) - getattr(result, numerator)
+            if missing_count > 0:
                 failures.append(
                     FailureRecord(
                         **common,
@@ -210,6 +212,7 @@ def _derived_failures(
                         severity=severity,
                         tags=(failure_type,),
                         metrics=(metric,),
+                        occurrence_count=missing_count,
                     )
                 )
         if result.severe_cross_user_access:
@@ -356,7 +359,7 @@ def _aggregate_dimension(
     return [
         {
             field: value,
-            "failure_count": len(grouped[value]),
+            "failure_count": sum(item.occurrence_count for item in grouped[value]),
             "affected_case_count": len({failure.case_id for failure in grouped[value]}),
             "case_ids": sorted(
                 {aliases[failure.case_id] for failure in grouped[value]}
@@ -391,7 +394,7 @@ def _clusters(
                 "failure_type": failure_type,
                 "severity": severity,
                 "code": code,
-                "failure_count": len(records),
+                "failure_count": sum(item.occurrence_count for item in records),
                 "affected_case_count": len({item.case_id for item in records}),
                 "splits": sorted(
                     {case_splits[item.case_id] for item in records},
@@ -429,7 +432,7 @@ def _aggregate_tokens(
     return [
         {
             output_field: token,
-            "failure_count": len(grouped[token]),
+            "failure_count": sum(item.occurrence_count for item in grouped[token]),
             "affected_case_count": len({failure.case_id for failure in grouped[token]}),
             "case_ids": sorted(
                 {aliases[failure.case_id] for failure in grouped[token]}
@@ -480,7 +483,9 @@ def build_failure_triage_report(
     split_items = [
         {
             "split": split,
-            "failure_count": len(by_split[split]),
+            "failure_count": sum(
+                item.occurrence_count for item in by_split[split]
+            ),
             "affected_case_count": len(
                 {failure.case_id for failure in by_split[split]}
             ),
@@ -507,7 +512,7 @@ def build_failure_triage_report(
         },
         "summary": {
             "eligible_case_count": len(eligible),
-            "failure_count": len(failures),
+            "failure_count": sum(item.occurrence_count for item in failures),
             "affected_case_count": len({failure.case_id for failure in failures}),
         },
         "by_failure_type": _aggregate_dimension(

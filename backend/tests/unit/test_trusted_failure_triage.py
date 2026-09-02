@@ -108,7 +108,7 @@ def test_triage_is_derived_from_verified_metrics_and_binds_source_digests():
         "invalid_sku",
         "layout_hard_constraint_failed",
     }
-    assert len(failures.failures) == 3
+    assert sum(item.occurrence_count for item in failures.failures) == 3
     assert report["summary"]["failure_count"] == 3
     assert next(
         item for item in report["clusters"] if item["code"] == "invalid_sku"
