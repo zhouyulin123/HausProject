@@ -1092,6 +1092,7 @@ export interface AgentTurnResponse {
     current_node: string;
     active_room_id: string | null;
     facts: Record<string, unknown>;
+    fact_evidence: Record<string, Record<string, unknown>>;
     step_count: number;
     retry_count: number;
     max_steps: number;
@@ -1119,6 +1120,7 @@ export interface DesignAgentStateResponse {
   intent: string;
   current_node: string;
   facts: Record<string, unknown>;
+  fact_evidence: Record<string, Record<string, unknown>>;
   pending_questions: AgentPendingQuestion[];
   step_count: number;
   retry_count: number;

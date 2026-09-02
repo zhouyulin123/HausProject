@@ -56,6 +56,7 @@ class DesignAgentState(TypedDict, total=False):
     intent: str
     message: str
     facts: dict[str, Any]
+    fact_evidence: dict[str, dict[str, Any]]
     scene_context: dict[str, Any]
     custom_furniture_spec: dict[str, Any]
     custom_spec_invalid: bool
@@ -715,6 +716,7 @@ class DesignAgentWorkflow:
         intent: str,
         message: str,
         facts: dict[str, Any],
+        fact_evidence: dict[str, dict[str, Any]] | None = None,
         scene_context: dict[str, Any] | None = None,
         custom_furniture_spec: dict[str, Any] | None = None,
         initial_step_count: int = 0,
@@ -736,6 +738,7 @@ class DesignAgentWorkflow:
                 "intent": effective_intent,
                 "message": message,
                 "facts": deepcopy(facts),
+                "fact_evidence": deepcopy(fact_evidence or {}),
                 "scene_context": deepcopy(scene_context or {}),
                 "custom_furniture_spec": deepcopy(custom_furniture_spec or {}),
                 "custom_spec_invalid": False,

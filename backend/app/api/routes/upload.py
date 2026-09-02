@@ -142,13 +142,16 @@ def calibrate_image_room_model(
         )
 
     room_model = RoomModel.model_validate(room_model_data)
-    calibrated = room_model_service.apply_calibration(
-        room_model,
-        room_id=payload.room_id,
-        width_m=payload.width_m,
-        depth_m=payload.depth_m,
-        ceiling_height=payload.ceiling_height_m,
-    )
+    try:
+        calibrated = room_model_service.apply_calibration(
+            room_model,
+            room_id=payload.room_id,
+            width_m=payload.width_m,
+            depth_m=payload.depth_m,
+            ceiling_height=payload.ceiling_height_m,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     calibrated_dict = calibrated.model_dump(by_alias=True, mode="json")
 
     analysis = dict(image.analysis_json or {})
@@ -161,6 +164,14 @@ def calibrate_image_room_model(
         "suggestions", []
     )
     image.analysis_json = analysis
+    room_model_service.record_calibration_confirmations(
+        db,
+        image=image,
+        original=room_model,
+        calibrated=calibrated,
+        confirmed_by_session_id=str(x_session_id),
+        room_id=payload.room_id,
+    )
     db.commit()
 
     return {"image_id": image.id, "room_model": calibrated_dict}

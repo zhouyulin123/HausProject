@@ -106,6 +106,38 @@ class UploadedImage(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class RoomFactConfirmation(Base):
+    """空间事实的追加式用户确认记录，保留原图、原值与确认者。"""
+
+    __tablename__ = "room_fact_confirmations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    image_id = Column(
+        Integer,
+        ForeignKey("uploaded_images.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    fact_path = Column(String(255), nullable=False, index=True)
+    previous_value_json = Column(JSON, nullable=True)
+    confirmed_value_json = Column(JSON, nullable=False)
+    previous_confidence = Column(Float, nullable=True)
+    confirmed_by_type = Column(String(30), nullable=False)
+    confirmed_by_id = Column(String(100), nullable=False, index=True)
+    confirmed_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+
+
 class RequirementParseResult(Base):
     __tablename__ = "requirement_parse_results"
     id = Column(Integer, primary_key=True, index=True)

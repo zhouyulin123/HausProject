@@ -46,7 +46,25 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "design_agent_events",
             "failure_clusters",
             "failure_triage_imports",
+            "room_fact_confirmations",
         } <= tables
+        room_confirmation_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "room_fact_confirmations"
+            )
+        }
+        assert {
+            "image_id",
+            "task_id",
+            "fact_path",
+            "previous_value_json",
+            "confirmed_value_json",
+            "previous_confidence",
+            "confirmed_by_type",
+            "confirmed_by_id",
+            "confirmed_at",
+        } <= room_confirmation_columns
         task_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns("design_tasks")

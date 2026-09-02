@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from math import hypot
 
+from sqlalchemy.orm import Session
+
+from app.db.models import RoomFactConfirmation, UploadedImage
 from app.schemas.room_model import RoomModel
 from app.schemas.scenes import (
     Opening,
@@ -185,20 +188,76 @@ def apply_calibration(
     房间尺寸一旦由用户确认，就从 requires_confirmation 中移除相关项；
     门窗宽度等仍保留待确认。
     """
-    room = (
-        next((r for r in room_model.rooms if r.id == room_id), room_model.rooms[0])
-        if room_id
-        else room_model.rooms[0]
-    )
+    calibrated = room_model.model_copy(deep=True)
+    if room_id is not None:
+        room = next((r for r in calibrated.rooms if r.id == room_id), None)
+        if room is None:
+            raise ValueError(f"房间不存在：{room_id}")
+    else:
+        room = calibrated.rooms[0]
     room.width_m = width_m
     room.depth_m = depth_m
     if ceiling_height is not None:
         room.ceiling_height = ceiling_height
-    room_model.scale.source = "user"
-    room_model.scale.confidence = 1.0
-    room_model.requires_confirmation = [
+    calibrated.scale.source = "user"
+    calibrated.scale.confidence = 1.0
+    calibrated.requires_confirmation = [
         item
-        for item in room_model.requires_confirmation
+        for item in calibrated.requires_confirmation
         if item not in _DIMENSION_CONFIRMATION_KEYS
     ]
-    return room_model
+    return calibrated
+
+
+def _room_by_id(room_model: RoomModel, room_id: str):
+    room = next((item for item in room_model.rooms if item.id == room_id), None)
+    if room is None:
+        raise ValueError(f"房间不存在：{room_id}")
+    return room
+
+
+def record_calibration_confirmations(
+    db: Session,
+    *,
+    image: UploadedImage,
+    original: RoomModel,
+    calibrated: RoomModel,
+    confirmed_by_session_id: str,
+    room_id: str | None = None,
+) -> list[RoomFactConfirmation]:
+    """追加尺寸确认事实；事务提交由调用方与 RoomModel 写回统一控制。"""
+    actor = confirmed_by_session_id.strip()
+    if not actor:
+        raise ValueError("确认者不能为空")
+    target = (
+        _room_by_id(calibrated, room_id)
+        if room_id is not None
+        else calibrated.rooms[0]
+    )
+    if target.width_m is None or target.depth_m is None:
+        raise ValueError("校准结果没有可记录的房间尺寸")
+
+    records: list[RoomFactConfirmation] = []
+    prior = _room_by_id(original, target.id)
+    dimensions = (
+        ("width_m", prior.width_m, target.width_m),
+        ("depth_m", prior.depth_m, target.depth_m),
+        ("ceiling_height", prior.ceiling_height, target.ceiling_height),
+    )
+    for field_name, previous, confirmed in dimensions:
+        if confirmed is None:
+            continue
+        record = RoomFactConfirmation(
+            image_id=image.id,
+            task_id=image.task_id,
+            fact_path=f"rooms.{target.id}.{field_name}",
+            previous_value_json=previous,
+            confirmed_value_json=confirmed,
+            previous_confidence=original.scale.confidence,
+            confirmed_by_type="anonymous_session",
+            confirmed_by_id=actor,
+        )
+        db.add(record)
+        records.append(record)
+    db.flush()
+    return records

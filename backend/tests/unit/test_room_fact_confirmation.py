@@ -54,8 +54,11 @@ def _model() -> RoomModel:
 
 @pytest.mark.unit
 def test_calibration_is_pure_and_records_append_only_fact_evidence(db):
+    task = DesignTask(status="confirmed", confirmed_requirement_json={})
+    db.add(task)
+    db.commit()
     image = UploadedImage(
-        task_id=7,
+        task_id=task.id,
         file_url="/uploads/private-room.png",
         analysis_json={},
     )
@@ -84,7 +87,7 @@ def test_calibration_is_pure_and_records_append_only_fact_evidence(db):
     assert len(first) == 3
     width = next(item for item in first if item.fact_path.endswith(".width_m"))
     assert width.image_id == image.id
-    assert width.task_id == 7
+    assert width.task_id == task.id
     assert width.previous_value_json == 3.8
     assert width.confirmed_value_json == 4.2
     assert width.previous_confidence == 0.42

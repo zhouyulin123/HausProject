@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import logging
+from math import isclose
 import re
 from typing import Any
 
@@ -28,6 +29,7 @@ from app.db.models import (
     DesignRevision,
     DesignScene,
     DesignTask,
+    RoomFactConfirmation,
     UploadedImage,
 )
 from app.schemas.design_agent import AgentTurnRequest
@@ -47,6 +49,7 @@ from app.services import (
 from app.services.llm_service import LLMUnavailable
 
 logger = logging.getLogger(__name__)
+ROOM_FACT_CONFIDENCE_THRESHOLD = 0.8
 
 
 class AgentSceneNotFound(ValueError):
@@ -137,7 +140,10 @@ def _parse_budget_range(value: Any) -> tuple[int | None, int | None]:
     return None, amount
 
 
-def _room_facts(db: Session, task_id: int) -> dict[str, Any]:
+def _room_facts(
+    db: Session,
+    task_id: int,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     images = db.scalars(
         select(UploadedImage)
         .where(UploadedImage.task_id == task_id)
@@ -153,40 +159,144 @@ def _room_facts(db: Session, task_id: int) -> dict[str, Any]:
             continue
         room = model.rooms[0]
         facts: dict[str, Any] = {}
+        evidence: dict[str, dict[str, Any]] = {}
         if model.space_type:
-            facts["space_type"] = model.space_type
-        # 只有用户校准的绝对尺寸可直接跨过事实门禁。
-        if model.scale.source == "user" and room.width_m and room.depth_m:
-            facts["room_width_m"] = room.width_m
-            facts["room_depth_m"] = room.depth_m
-            if room.ceiling_height:
+            needs_confirmation = (
+                model.confidence < ROOM_FACT_CONFIDENCE_THRESHOLD
+                or "spaceType" in model.requires_confirmation
+            )
+            evidence["space_type"] = {
+                "source": "room_model",
+                "confidence": model.confidence,
+                "image_id": image.id,
+                "accepted": not needs_confirmation,
+                "confirmation_required": needs_confirmation,
+            }
+            if not needs_confirmation:
+                facts["space_type"] = model.space_type
+
+        confirmations = db.scalars(
+            select(RoomFactConfirmation)
+            .where(RoomFactConfirmation.image_id == image.id)
+            .order_by(RoomFactConfirmation.id.desc())
+        ).all()
+        latest_by_path: dict[str, RoomFactConfirmation] = {}
+        for item in confirmations:
+            latest_by_path.setdefault(item.fact_path, item)
+
+        def confirmed_dimension(field: str, value: float | None):
+            path = f"rooms.{room.id}.{field}"
+            confirmation = latest_by_path.get(path)
+            if confirmation is None or value is None:
+                return None
+            confirmed = confirmation.confirmed_value_json
+            if (
+                isinstance(confirmed, (int, float))
+                and not isinstance(confirmed, bool)
+                and isclose(float(confirmed), float(value), rel_tol=0, abs_tol=1e-9)
+            ):
+                return confirmation
+            return None
+
+        width_confirmation = confirmed_dimension("width_m", room.width_m)
+        depth_confirmation = confirmed_dimension("depth_m", room.depth_m)
+        dimensions_confirmed = (
+            model.scale.source == "user"
+            and width_confirmation is not None
+            and depth_confirmation is not None
+        )
+        for fact_name, value, confirmation in (
+            ("room_width_m", room.width_m, width_confirmation),
+            ("room_depth_m", room.depth_m, depth_confirmation),
+        ):
+            evidence[fact_name] = {
+                "source": (
+                    "user_confirmation" if dimensions_confirmed else "room_model"
+                ),
+                "confidence": 1.0 if dimensions_confirmed else model.scale.confidence,
+                "image_id": image.id,
+                "accepted": dimensions_confirmed,
+                "confirmation_required": not dimensions_confirmed,
+            }
+            if dimensions_confirmed and confirmation is not None:
+                evidence[fact_name]["confirmation_id"] = confirmation.id
+                facts[fact_name] = value
+        if dimensions_confirmed:
+            height_confirmation = confirmed_dimension(
+                "ceiling_height",
+                room.ceiling_height,
+            )
+            if room.ceiling_height and height_confirmation is not None:
                 facts["ceiling_height_m"] = room.ceiling_height
-        return facts
-    return {}
+                evidence["ceiling_height_m"] = {
+                    "source": "user_confirmation",
+                    "confidence": 1.0,
+                    "image_id": image.id,
+                    "confirmation_id": height_confirmation.id,
+                    "accepted": True,
+                    "confirmation_required": False,
+                }
+        return facts, evidence
+    return {}, {}
 
 
 def _facts_for_turn(
     db: Session,
     task: DesignTask,
     payload: AgentTurnRequest,
-) -> dict[str, Any]:
+    *,
+    turn_id: int,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     checkpoint = task.agent_state_json or {}
-    facts = deepcopy(checkpoint.get("facts") or {})
-    facts.update(
-        _normalize_requirement_facts(task.confirmed_requirement_json or {})
+    prior_facts = checkpoint.get("facts") or {}
+    prior_evidence = checkpoint.get("fact_evidence") or {}
+    facts, evidence = _room_facts(db, task.id)
+
+    def apply_confirmed(values: dict[str, Any], source: str) -> None:
+        for field_name, value in values.items():
+            facts[field_name] = value
+            preserved = prior_evidence.get(field_name)
+            if (
+                prior_facts.get(field_name) == value
+                and isinstance(preserved, dict)
+                and preserved.get("accepted") is True
+            ):
+                evidence[field_name] = deepcopy(preserved)
+            else:
+                evidence[field_name] = {
+                    "source": source,
+                    "confidence": 1.0,
+                    "accepted": True,
+                    "confirmation_required": False,
+                }
+
+    apply_confirmed(
+        _normalize_requirement_facts(task.confirmed_requirement_json or {}),
+        "confirmed_requirement",
     )
+    task_values: dict[str, Any] = {}
     if task.space_type:
-        facts["space_type"] = task.space_type
+        task_values["space_type"] = task.space_type
     if task.style:
-        facts["style"] = task.style
+        task_values["style"] = task.style
     if task.budget_min:
-        facts["budget_min"] = task.budget_min
+        task_values["budget_min"] = task.budget_min
     if task.budget_max:
-        facts["budget_max"] = task.budget_max
-    facts.update(_room_facts(db, task.id))
+        task_values["budget_max"] = task.budget_max
+    apply_confirmed(task_values, "task_confirmation")
     if payload.answers is not None:
-        facts.update(payload.answers.model_dump(exclude_none=True))
-    return facts
+        for field_name, value in payload.answers.model_dump(
+            exclude_none=True
+        ).items():
+            facts[field_name] = value
+            evidence[field_name] = {
+                "source": "user_turn",
+                "confidence": 1.0,
+                "turn_id": turn_id,
+                "accepted": True,
+                "confirmation_required": False,
+            }
+    return facts, evidence
 
 
 def _merge_nested_dict(
@@ -532,6 +642,18 @@ def _events_from_state(
     events: list[DesignAgentEvent] = []
     sequence = 1
     if state.get("pending_questions"):
+        pending_fields = [q["field"] for q in state["pending_questions"]]
+        fact_evidence = state.get("fact_evidence") or {}
+        pending_evidence: dict[str, Any] = {}
+        for field in pending_fields:
+            if field == "room_dimensions":
+                pending_evidence[field] = {
+                    key: deepcopy(fact_evidence[key])
+                    for key in ("room_width_m", "room_depth_m")
+                    if key in fact_evidence
+                }
+            elif field in fact_evidence:
+                pending_evidence[field] = deepcopy(fact_evidence[field])
         events.append(
             DesignAgentEvent(
                 task_id=task_id,
@@ -542,7 +664,10 @@ def _events_from_state(
                 status="waiting_user",
                 source="deterministic",
                 summary="需要用户确认关键事实",
-                details_json={"fields": [q["field"] for q in state["pending_questions"]]},
+                details_json={
+                    "fields": pending_fields,
+                    "fact_evidence": pending_evidence,
+                },
             )
         )
         sequence += 1
@@ -721,7 +846,12 @@ def _run_turn(
         max_steps=max_steps,
         max_retries=max_retries,
     )
-    facts = _facts_for_turn(db, task, payload)
+    facts, fact_evidence = _facts_for_turn(
+        db,
+        task,
+        payload,
+        turn_id=turn.id,
+    )
     custom_furniture_spec = _custom_spec_for_turn(task, payload)
     scene_context = (
         {
@@ -740,6 +870,7 @@ def _run_turn(
         intent=intent,
         message=payload.message,
         facts=facts,
+        fact_evidence=fact_evidence,
         scene_context=scene_context,
         custom_furniture_spec=custom_furniture_spec,
         initial_step_count=initial_step_count,
@@ -788,6 +919,7 @@ def _run_turn(
         "intent": intent,
         "current_node": state["current_node"],
         "facts": facts,
+        "fact_evidence": state.get("fact_evidence", fact_evidence),
         "pending_questions": state.get("pending_questions", []),
         "step_count": state["step_count"],
         "retry_count": state["retry_count"],
@@ -858,6 +990,7 @@ def _persist_failed_turn(
     task.active_mode = payload.active_mode
     task.status = "failed"
     prior_facts = (task.agent_state_json or {}).get("facts") or {}
+    prior_fact_evidence = (task.agent_state_json or {}).get("fact_evidence") or {}
     checkpoint = {
         "status": "failed",
         "active_mode": payload.active_mode,
@@ -865,6 +998,7 @@ def _persist_failed_turn(
         "intent": turn.intent,
         "current_node": "failed",
         "facts": deepcopy(prior_facts),
+        "fact_evidence": deepcopy(prior_fact_evidence),
         "pending_questions": [],
         "step_count": 0,
         "retry_count": 0,
@@ -960,6 +1094,7 @@ def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
             "facts": _normalize_requirement_facts(
                 task.confirmed_requirement_json or {}
             ),
+            "fact_evidence": {},
             "pending_questions": [],
             "step_count": 0,
             "retry_count": 0,

@@ -92,6 +92,7 @@ class AgentStateResponse(BaseModel):
     current_node: str
     active_room_id: str | None = None
     facts: dict[str, Any] = Field(default_factory=dict)
+    fact_evidence: dict[str, dict[str, Any]] = Field(default_factory=dict)
     step_count: int = 0
     retry_count: int = 0
     max_steps: int = 12
@@ -130,6 +131,7 @@ class AgentCheckpointResponse(BaseModel):
     intent: str
     current_node: str
     facts: dict[str, Any] = Field(default_factory=dict)
+    fact_evidence: dict[str, dict[str, Any]] = Field(default_factory=dict)
     pending_questions: list[AgentPendingQuestion] = Field(default_factory=list)
     step_count: int = 0
     retry_count: int = 0

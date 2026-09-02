@@ -18,9 +18,11 @@ from app.db.models import (
     DesignRevision,
     DesignTask,
     Product,
+    RoomFactConfirmation,
     UploadedImage,
 )
 from app.services.anonymous_session_service import (
+    attach_image,
     attach_task,
     create_anonymous_session,
 )
@@ -176,6 +178,119 @@ def test_agent_turn_pauses_persists_checkpoint_and_task_bound_chat(
         assert task.agent_state_version == 1
         assert [log.role for log in logs] == ["user", "ai"]
         assert events
+
+
+@pytest.mark.integration
+def test_low_confidence_room_facts_require_audited_confirmation(
+    agent_api_context,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    room_model = {
+        "schemaVersion": "1.0",
+        "imageKind": "floor_plan",
+        "spaceType": "客厅",
+        "rooms": [
+            {
+                "id": "living",
+                "name": "客厅",
+                "floorPolygon": [
+                    {"x": 0, "z": 0},
+                    {"x": 1, "z": 0},
+                    {"x": 1, "z": 1},
+                    {"x": 0, "z": 1},
+                ],
+                "widthM": 3.8,
+                "depthM": 4.6,
+                "confidence": 0.42,
+            }
+        ],
+        "scale": {"source": "vl", "confidence": 0.42},
+        "confidence": 0.42,
+        "requiresConfirmation": ["roomDimensions", "spaceType"],
+    }
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        task.confirmed_requirement_json = {}
+        task.space_type = None
+        image = UploadedImage(
+            task_id=task_id,
+            file_url="/uploads/private-room.png",
+            analysis_json={"room_model": room_model},
+        )
+        db.add(image)
+        db.commit()
+        image_id = image.id
+        attach_image(db, owner_id, image_id)
+
+    first = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "turn-low-confidence-api-001",
+            "message": "继续设计",
+            "active_mode": "catalog_design",
+            "answers": {
+                "budget_max": 20000,
+                "delivery_region": "CN-SH",
+            },
+        },
+    )
+
+    assert first.status_code == 200
+    payload = first.json()
+    assert payload["status"] == "waiting_user"
+    assert payload["state"]["fact_evidence"]["space_type"] == {
+        "source": "room_model",
+        "confidence": 0.42,
+        "image_id": image_id,
+        "accepted": False,
+        "confirmation_required": True,
+    }
+    question_event = next(
+        event for event in payload["events"]
+        if event["type"] == "question_created"
+    )
+    assert question_event["details"]["fact_evidence"]["space_type"][
+        "confirmation_required"
+    ] is True
+
+    calibration = client.put(
+        f"/api/upload/images/{image_id}/room-model",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "room_id": "living",
+            "width_m": 4.2,
+            "depth_m": 5.1,
+            "ceiling_height_m": 2.9,
+        },
+    )
+    assert calibration.status_code == 200
+
+    second = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "turn-low-confidence-api-002",
+            "message": "确认这是客厅",
+            "active_mode": "catalog_design",
+            "answers": {"space_type": "客厅"},
+        },
+    )
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload["state"]["facts"]["room_width_m"] == 4.2
+    assert second_payload["state"]["fact_evidence"]["room_width_m"][
+        "source"
+    ] == "user_confirmation"
+
+    with factory() as db:
+        confirmations = db.scalars(
+            select(RoomFactConfirmation).where(
+                RoomFactConfirmation.image_id == image_id
+            )
+        ).all()
+        assert len(confirmations) == 3
+        assert {item.confirmed_by_id for item in confirmations} == {owner_id}
 
 
 @pytest.mark.integration
