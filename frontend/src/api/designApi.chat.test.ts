@@ -52,4 +52,44 @@ describe("项目级智能体轮次", () => {
     });
     expect(String(request?.[0])).toBe("/api/design/tasks/42/agent-turns");
   });
+
+  it("自定义家具规格仍通过统一 agent-turns 提交", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(jsonResponse({ reply: "参数已接收" }));
+    vi.stubGlobal("window", { localStorage: createLocalStorage({}) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { sendAgentTurn } = await import("./designApi");
+    await sendAgentTurn(42, {
+      client_turn_id: "custom-turn-001",
+      message: "提交结构化定制参数",
+      active_mode: "custom_furniture",
+      custom_furniture_spec: {
+        family: "table",
+        name: "六人位餐桌",
+        purpose: "dining_table",
+        material: "实木（橡木）",
+        dimensions: { width_mm: 1600, height_mm: 750, depth_mm: 800 },
+        structure: {
+          top_shape: "rectangle",
+          base_style: "four_leg",
+          support_count: 4,
+          seat_count: 6,
+          top_thickness_mm: 36,
+          edge_radius_mm: 12,
+        },
+      },
+    });
+
+    const [path, init] = fetchMock.mock.calls[1]!;
+    expect(String(path)).toBe("/api/design/tasks/42/agent-turns");
+    expect(String(path)).not.toContain("custom-furniture-previews");
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      active_mode: "custom_furniture",
+      custom_furniture_spec: { family: "table", purpose: "dining_table" },
+    });
+  });
 });

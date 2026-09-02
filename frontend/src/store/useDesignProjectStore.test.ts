@@ -70,4 +70,75 @@ describe("useDesignProjectStore", () => {
       useDesignProjectStore.getState().projects[42]?.pendingQuestions[0]?.prompt,
     ).toBe("客厅实际宽度是多少？");
   });
+
+  it("从 checkpoint 恢复自定义家具规格、预览与审批状态", () => {
+    useDesignProjectStore.getState().registerProject(43, "custom_furniture", {
+      requirement: emptyRequirement,
+      roomModel: null,
+    });
+    const customFurnitureSpec = {
+      family: "table" as const,
+      name: "六人位餐桌",
+      purpose: "dining_table" as const,
+      material: "实木（橡木）" as const,
+      dimensions: { width_mm: 1600, height_mm: 750, depth_mm: 800 },
+      structure: {
+        top_shape: "rectangle" as const,
+        base_style: "four_leg" as const,
+        support_count: 4,
+        seat_count: 6,
+        top_thickness_mm: 36,
+        edge_radius_mm: 12,
+      },
+    };
+    const customFurnitureResult = {
+      status: "needs_human" as const,
+      spec: customFurnitureSpec,
+      model_spec: {
+        家具类型: "定制餐桌",
+        确定性建模规则: {
+          规则版本: "1.0.0",
+          规则状态: "ready",
+          模型ID: "CUSTOM-TABLE-001",
+          生成器: "table_v2",
+          包围尺寸_mm: { 宽: 1600, 高: 750, 深: 800 },
+          外观规则: {},
+          材质槽: [],
+          部件: [],
+        },
+      },
+      quote_preview: {
+        status: "needs_human" as const,
+        reason_code: "quote_rule_missing" as const,
+        rule_id: null,
+        project_name: "定制餐桌",
+        material_grade: "实木（橡木）",
+        pricing_unit: null,
+        unit_price: null,
+        quantity: null,
+        estimated_amount: null,
+        currency: "CNY" as const,
+        description: null,
+      },
+      warnings: ["投产前仍需工程复核。"],
+    };
+
+    useDesignProjectStore.getState().applyAgentState(43, {
+      stateVersion: 2,
+      status: "needs_human",
+      activeMode: "custom_furniture",
+      pendingQuestions: [],
+      sceneRef: null,
+      exitReason: "approval_required",
+      customFurnitureSpec,
+      customFurnitureResult,
+      approvalRequired: true,
+    });
+
+    expect(useDesignProjectStore.getState().projects[43]).toMatchObject({
+      customFurnitureSpec,
+      customFurnitureResult,
+      approvalRequired: true,
+    });
+  });
 });
