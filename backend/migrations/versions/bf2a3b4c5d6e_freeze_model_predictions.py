@@ -1,7 +1,7 @@
 """冻结真实模型确认前预测证据。
 
 Revision ID: bf2a3b4c5d6e
-Revises: ae1f2a3b4c5d
+Revises: ad0e1f2a3b4c
 Create Date: 2026-09-02 23:40:00.000000
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision: str = "bf2a3b4c5d6e"
-down_revision: Union[str, Sequence[str], None] = "ae1f2a3b4c5d"
+down_revision: Union[str, Sequence[str], None] = "ad0e1f2a3b4c"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -24,7 +24,15 @@ def upgrade() -> None:
             sa.Column("original_prediction_source", sa.String(length=30), nullable=True)
         )
         batch_op.add_column(
+            sa.Column("original_prediction_model", sa.String(length=100), nullable=True)
+        )
+        batch_op.add_column(
             sa.Column("original_prediction_digest", sa.String(length=71), nullable=True)
+        )
+
+    with op.batch_alter_table("requirement_parse_results") as batch_op:
+        batch_op.add_column(
+            sa.Column("parser_model", sa.String(length=100), nullable=True)
         )
 
     with op.batch_alter_table("evaluation_run_bindings") as batch_op:
@@ -77,5 +85,9 @@ def downgrade() -> None:
 
     with op.batch_alter_table("uploaded_images") as batch_op:
         batch_op.drop_column("original_prediction_digest")
+        batch_op.drop_column("original_prediction_model")
         batch_op.drop_column("original_prediction_source")
         batch_op.drop_column("original_prediction_json")
+
+    with op.batch_alter_table("requirement_parse_results") as batch_op:
+        batch_op.drop_column("parser_model")

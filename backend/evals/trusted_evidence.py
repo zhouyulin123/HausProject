@@ -713,7 +713,24 @@ def _runtime_result(
 ) -> CaseResult:
     """从不可变业务输出和冻结标注确定性计算逐例指标。"""
     if run.status != "completed":
-        return CaseResult(case_id=case.id, generation_succeeded=False)
+        (
+            requirement_correct,
+            requirement_total,
+            space_fact_correct,
+            space_fact_total,
+            low_confidence_confirmed,
+            low_confidence_facts,
+        ) = _prediction_metrics(case, prediction)
+        return CaseResult(
+            case_id=case.id,
+            requirement_correct=requirement_correct,
+            requirement_total=requirement_total,
+            space_fact_correct=space_fact_correct,
+            space_fact_total=space_fact_total,
+            low_confidence_facts=low_confidence_facts,
+            low_confidence_confirmed=low_confidence_confirmed,
+            generation_succeeded=False,
+        )
     if output is None or case.annotation is None:
         raise EvaluationInputError(f"系统运行 {run.id} 缺少不可变输出或案例标注")
     plans = output.get("plans")

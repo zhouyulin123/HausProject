@@ -44,19 +44,30 @@ def capture_uploaded_prediction(
     *,
     raw_room_model: dict[str, Any] | None,
     source: str,
+    model: str | None,
 ) -> None:
     """保存上传时的原始预测；重复调用不得覆盖已有快照。"""
     normalized_source = source.strip()
     if image.original_prediction_source is not None:
         raise PredictionEvidenceError("上传图片的原始预测已经写入，不能覆盖")
     image.original_prediction_source = normalized_source
+    normalized_model = model.strip() if isinstance(model, str) and model.strip() else None
+    image.original_prediction_model = (
+        normalized_model if normalized_source == "vl" else None
+    )
     if normalized_source != "vl" or raw_room_model is None:
         image.original_prediction_json = None
         image.original_prediction_digest = None
         return
     normalized = normalize_room_prediction(raw_room_model)
     image.original_prediction_json = normalized
-    image.original_prediction_digest = canonical_digest(normalized)
+    image.original_prediction_digest = canonical_digest(
+        {
+            "source": normalized_source,
+            "model": normalized_model,
+            "room_model": normalized,
+        }
+    )
 
 
 def _requirement_prediction(
@@ -74,11 +85,33 @@ def _requirement_prediction(
         .order_by(RequirementParseResult.id.desc())
     ).first()
     if result is None or not isinstance(result.parsed_json, dict):
-        return {"available": False, "source": None, "parsed": None}, None
+        return {
+            "available": False,
+            "source": None,
+            "model": None,
+            "parsed": None,
+        }, None
+    model = (
+        result.parser_model.strip()
+        if isinstance(result.parser_model, str) and result.parser_model.strip()
+        else None
+    )
+    if model is None:
+        return (
+            {
+                "available": False,
+                "source": "llm",
+                "model": None,
+                "parse_result_id": result.id,
+                "parsed": None,
+            },
+            result.id,
+        )
     return (
         {
             "available": True,
             "source": "llm",
+            "model": model,
             "parse_result_id": result.id,
             "raw_input": result.raw_input,
             "parsed": result.parsed_json,
@@ -95,13 +128,20 @@ def _space_prediction(
         return {
             "available": False,
             "source": source,
+            "model": None,
             "image_id": image.id,
             "room_model": None,
         }
     if (
         not isinstance(image.original_prediction_json, dict)
         or not isinstance(image.original_prediction_digest, str)
-        or canonical_digest(image.original_prediction_json)
+        or canonical_digest(
+            {
+                "source": source,
+                "model": image.original_prediction_model,
+                "room_model": image.original_prediction_json,
+            }
+        )
         != image.original_prediction_digest
     ):
         raise PredictionEvidenceError("上传图片的原始 VL 预测摘要不一致")
@@ -121,9 +161,24 @@ def _space_prediction(
         raise PredictionEvidenceError("上传图片的原始 VL 预测结构不合法") from exc
     if normalized != raw:
         raise PredictionEvidenceError("上传图片的原始 VL 预测规范化结果不一致")
+    model = (
+        image.original_prediction_model.strip()
+        if isinstance(image.original_prediction_model, str)
+        and image.original_prediction_model.strip()
+        else None
+    )
+    if model is None:
+        return {
+            "available": False,
+            "source": "vl",
+            "model": None,
+            "image_id": image.id,
+            "room_model": None,
+        }
     return {
         "available": True,
         "source": "vl",
+        "model": model,
         "image_id": image.id,
         "room_model": raw,
     }

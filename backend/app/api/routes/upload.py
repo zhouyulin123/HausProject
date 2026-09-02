@@ -96,6 +96,7 @@ async def upload_image(
             "room_model": room_model,
         }
     else:
+        source = "placeholder"
         analysis = llm_service.placeholder_image_analysis()
 
     # VL 判断的类型更准，覆盖按文件名的粗猜
@@ -107,6 +108,7 @@ async def upload_image(
         image,
         raw_room_model=room_model,
         source=source,
+        model=settings.vl_model if source == "vl" else None,
     )
     db.commit()
     anonymous_session_service.attach_image(db, x_session_id, image.id)

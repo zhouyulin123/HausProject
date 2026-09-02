@@ -107,6 +107,7 @@ class UploadedImage(Base):
     # 上传分析成功时写入一次；用户校准仅更新 analysis_json 投影。
     original_prediction_json = Column(JSON, nullable=True)
     original_prediction_source = Column(String(30), nullable=True)
+    original_prediction_model = Column(String(100), nullable=True)
     original_prediction_digest = Column(String(71), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -152,6 +153,7 @@ class RequirementParseResult(Base):
     missing_fields = Column(JSON, nullable=True)
     follow_up_questions = Column(JSON, nullable=True)
     parser = Column(String(20), default="rule")  # llm / rule
+    parser_model = Column(String(100), nullable=True)
     confirmed = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.db.database import Base
 from app.db.models import (
     DesignTask,
+    DesignScene,
+    DesignSceneVersion,
     EvaluationRunBinding,
     GenerationRunEvent,
     RequirementParseResult,
@@ -175,6 +177,40 @@ def _plan():
     }
 
 
+def _scene_document():
+    return {
+        "schemaVersion": "1.0",
+        "unit": "m",
+        "coordinateSystem": "right-handed-y-up",
+        "room": {
+            "id": "living",
+            "name": "客厅",
+            "floorPolygon": [
+                {"x": -2, "z": -2},
+                {"x": 2, "z": -2},
+                {"x": 2, "z": 2},
+                {"x": -2, "z": 2},
+            ],
+            "ceilingHeight": 2.8,
+            "wallThickness": 0.12,
+        },
+        "openings": [],
+        "items": [
+            {
+                "instanceId": "sofa-main",
+                "sku": "SOFA-001",
+                "category": "沙发",
+                "transform": {
+                    "position": {"x": 0, "y": 0.45, "z": 0},
+                    "rotation": {"x": 0, "y": 0, "z": 0},
+                    "scale": {"x": 1, "y": 1, "z": 1},
+                },
+                "dimensions": {"x": 1, "y": 0.9, "z": 1},
+            }
+        ],
+    }
+
+
 def _complete_run(db: Session, dataset, task: DesignTask):
     run = bind_evaluation_run(
         db,
@@ -190,6 +226,19 @@ def _complete_run(db: Session, dataset, task: DesignTask):
         generator="llm",
         workflow_trace=[{"node": "validate_quality", "status": "completed"}],
     )
+    scene = DesignScene(plan_version_id=revision.plans[0].id, current_version=1)
+    db.add(scene)
+    db.flush()
+    db.add(
+        DesignSceneVersion(
+            scene_id=scene.id,
+            version=1,
+            scene_json=_scene_document(),
+            validation_json={"valid": True, "errors": [], "warnings": []},
+            source="auto_layout",
+        )
+    )
+    db.flush()
     now = datetime.now(timezone.utc)
     run.attempt_count = 1
     run.started_at = now

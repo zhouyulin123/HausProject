@@ -58,6 +58,7 @@ from app.services import (
     profile_service,
     task_service,
 )
+from app.services.llm_service import LLMUnavailable
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -226,8 +227,10 @@ def get_requirement(
     raw_input = task.raw_user_input or ""
 
     parser = "llm"
+    parser_model = None
     try:
         parsed = llm_service.parse_requirement(raw_input)
+        parser_model = settings.llm_model
         missing_fields = parsed.pop("missing_fields", [])
         follow_up_questions = parsed.pop("follow_up_questions", [])
     except LLMUnavailable:
@@ -252,6 +255,7 @@ def get_requirement(
             missing_fields=missing_fields,
             follow_up_questions=follow_up_questions,
             parser=parser,
+            parser_model=parser_model,
         )
     )
     task.status = "waiting_confirm"

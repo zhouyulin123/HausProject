@@ -37,13 +37,13 @@
 - 状态为 `completed`、`failed`、`dead_letter`、`cost_limit_exceeded`、`provider_unavailable` 或 `cancelled`，且 task/run 归属一致的可信终态运行；其中取消运行也作为生成失败进入分母，不能用于剔除差样本；
 - `generator=llm`，不接受 template 降级、demo、mock、manual、test 或 synthetic；
 - 所有终态都必须在执行前冻结模型、静态 Prompt 契约、完整动态输入、规则制品和完整商品上下文；
-- 评测绑定同时冻结与任务原文完全一致且 `parser=llm` 的需求解析、上传时原始 `vl` RoomModel 及绑定前确认日志；规则解析、占位视觉结果、确认后的需求和校准后的 RoomModel 投影都不能冒充模型预测；
+- 评测绑定同时冻结与任务原文完全一致且 `parser=llm` 的需求解析、实际需求模型名、上传时原始 `vl` RoomModel、实际视觉模型名及绑定前确认日志；规则解析、占位视觉结果、缺少实际模型名的历史记录、确认后的需求和校准后的 RoomModel 投影都不能冒充模型预测；
 - 原始 RoomModel 的 `rooms` 按 `room.id` 规范化，空间标注只能用 `rooms.<room_id>.<field>` 等精确路径查找，不会因为案例只有一个房间而猜测数组元素；
 - 成功运行还必须唯一绑定同任务的不可变 `DesignRevision`，并保存由其 `DesignPlanVersion` 与 `QuoteSnapshot` 规范化业务内容计算的 `output_digest`；收集时会重算摘要，不信任 `output_snapshot` 自报；
 - 成功运行必须存在四个 Worker 节点，且 `generate_plans` 来自 LLM，报价与质量校验来自确定性节点；失败、取消、死信和人工接管终态不得携带 revision、输出摘要或输出快照；
 - 同一证据包内每个已准入案例恰好一个运行，同一 run 不得跨案例复用。
 
-需求事实和空间事实始终以人工标注条数作为分母。真实模型没有输出某字段、来源不可信或路径未知时，该事实计为未命中，而不是从分母删除。低置信确认率只以真实 VL 已预测且低置信或明确要求确认的标注事实为分母，并要求追加式确认记录中的先前值和先前置信度都与原始预测一致。历史评测绑定没有预测快照时失败关闭。
+需求事实和空间事实始终以人工标注条数作为分母，包括后续方案生成失败的案例。真实模型没有输出某字段、来源或模型名不可信、路径未知时，该事实计为未命中，而不是从分母删除。低置信确认率只以真实 VL 已预测且低置信或明确要求确认的标注事实为分母，并要求追加式确认记录中的先前值和先前置信度都与原始预测一致。历史评测绑定没有预测快照时失败关闭。
 
 创建 GenerationRun 时，评测队列器必须调用
 `evals.trusted_evidence.bind_evaluation_run(db, dataset=..., split="regression", case_id=..., task=...)`，在同一事务中写入运行及持久化案例绑定。`evaluation_run_idempotency_key` 也必须传入 `db`、`task` 和 `split`，其身份同时包含案例、split、模型与静态制品版本；只把幂等键传给现有 `generate-async` 不构成可信绑定，服务会失败关闭。Worker 领取与证据收集都会复核任务需求、按上传顺序冻结的图片分析事实、唯一原始资产摘要和执行前版本；错误图片、额外图片、分析变化、需求变化、可变用户画像、绑定后混版、缺少 `task_input` 或历史图片没有摘要时均拒绝执行或签发。
