@@ -164,6 +164,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isFiniteVector(value: unknown): value is [number, number, number] {
+  return Array.isArray(value)
+    && value.length === 3
+    && value.every((item) => typeof item === "number" && Number.isFinite(item));
+}
+
+function hasRenderableDeterministicParts(rule: Record<string, unknown>): boolean {
+  if (!isRecord(rule.包围尺寸_mm) || !isRecord(rule.外观规则)) return false;
+  const bounding = rule.包围尺寸_mm;
+  if (![bounding.宽, bounding.高, bounding.深].every(
+    (item) => typeof item === "number" && Number.isFinite(item) && item > 0,
+  )) return false;
+  if (
+    !Array.isArray(rule.材质槽)
+    || rule.材质槽.length === 0
+    || !rule.材质槽.every((slot) => isRecord(slot) && typeof slot.槽位ID === "string")
+  ) return false;
+  return Array.isArray(rule.部件)
+    && rule.部件.length > 0
+    && rule.部件.every((part) =>
+      isRecord(part)
+      && typeof part.部件ID === "string"
+      && typeof part.几何 === "string"
+      && typeof part.材质槽 === "string"
+      && isFiniteVector(part.尺寸_mm)
+      && isFiniteVector(part.位置_mm)
+      && isFiniteVector(part.旋转_deg),
+    );
+}
+
 export function parseCustomFurniturePreview(
   value: unknown,
 ): CustomFurniturePreviewResult | null {
@@ -180,8 +210,7 @@ export function parseCustomFurniturePreview(
   if (
     rule.规则状态 !== "ready" ||
     !["cabinet_v2", "table_v2"].includes(String(rule.生成器)) ||
-    !Array.isArray(rule.材质槽) ||
-    !Array.isArray(rule.部件)
+    !hasRenderableDeterministicParts(rule)
   ) {
     return null;
   }

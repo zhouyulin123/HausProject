@@ -52,8 +52,15 @@ describe("自定义家具工作台映射", () => {
           生成器: "cabinet_v2",
           包围尺寸_mm: { 宽: 1800, 高: 2400, 深: 600 },
           外观规则: {},
-          材质槽: [],
-          部件: [],
+          材质槽: [{ 槽位ID: "panel", 材质: "E0 颗粒板" }],
+          部件: [{
+            部件ID: "body",
+            几何: "rounded_box",
+            尺寸_mm: [1800, 2400, 600],
+            位置_mm: [0, 1200, 0],
+            旋转_deg: [0, 0, 0],
+            材质槽: "panel",
+          }],
         },
       },
       quote_preview: {
@@ -74,6 +81,16 @@ describe("自定义家具工作台映射", () => {
 
     expect(parseCustomFurniturePreview(result)?.model_spec.家具类型).toBe("定制柜体");
     expect(parseCustomFurniturePreview({ ...result, model_spec: {} })).toBeNull();
+    expect(parseCustomFurniturePreview({
+      ...result,
+      model_spec: {
+        ...result.model_spec,
+        确定性建模规则: {
+          ...result.model_spec.确定性建模规则,
+          部件: [],
+        },
+      },
+    })).toBeNull();
     expect(quotePreviewDisplay(result.quote_preview)).toMatchObject({
       amount: "¥2,937.60",
       state: "确定性估算",
