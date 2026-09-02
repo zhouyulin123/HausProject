@@ -1,0 +1,111 @@
+import { describe, expect, it } from "vitest";
+import {
+  buildFinalSelectFeedbackEvent,
+  buildFurnitureFeedbackEvent,
+  buildMoveFeedbackEvent,
+  createFeedbackClientEventId,
+  feedbackDeliveryReducer,
+} from "./workspaceFeedback";
+
+describe("工作台结构化反馈事件", () => {
+  it("只有服务端方案版本与 SKU 同时存在时才构建采用或移除事件", () => {
+    expect(buildFurnitureFeedbackEvent({
+      clientEventId: "feedback-42-adopt-001",
+      selectedBeforeToggle: false,
+      planVersionId: 8,
+      sku: "SOFA-001",
+      roomId: "living-room",
+    })).toEqual({
+      client_event_id: "feedback-42-adopt-001",
+      action_type: "adopt",
+      plan_version_id: 8,
+      target_sku: "SOFA-001",
+      room_id: "living-room",
+    });
+    expect(buildFurnitureFeedbackEvent({
+      clientEventId: "feedback-42-remove-001",
+      selectedBeforeToggle: true,
+      planVersionId: 8,
+      sku: "SOFA-001",
+      roomId: null,
+    })).toEqual({
+      client_event_id: "feedback-42-remove-001",
+      action_type: "remove",
+      plan_version_id: 8,
+      source_sku: "SOFA-001",
+    });
+    expect(buildFurnitureFeedbackEvent({
+      clientEventId: "feedback-42-adopt-002",
+      selectedBeforeToggle: false,
+      planVersionId: null,
+      sku: "SOFA-001",
+      roomId: null,
+    })).toBeNull();
+    expect(buildFurnitureFeedbackEvent({
+      clientEventId: "feedback-42-adopt-003",
+      selectedBeforeToggle: false,
+      planVersionId: 8,
+      sku: undefined,
+      roomId: null,
+    })).toBeNull();
+  });
+
+  it("最终确认仅接受服务端方案版本和可选 1-5 满意度", () => {
+    expect(buildFinalSelectFeedbackEvent("feedback-42-final-001", 8, 5)).toEqual({
+      client_event_id: "feedback-42-final-001",
+      action_type: "final_select",
+      plan_version_id: 8,
+      satisfaction_score: 5,
+    });
+    expect(buildFinalSelectFeedbackEvent("feedback-42-final-002", 8, null)).toEqual({
+      client_event_id: "feedback-42-final-002",
+      action_type: "final_select",
+      plan_version_id: 8,
+    });
+    expect(buildFinalSelectFeedbackEvent("feedback-42-final-003", null, 3)).toBeNull();
+    expect(buildFinalSelectFeedbackEvent("feedback-42-final-004", 8, 6)).toBeNull();
+  });
+
+  it("移动事件缺少真实场景、版本或实例任一字段时保持静默", () => {
+    expect(buildMoveFeedbackEvent("feedback-42-move-001", 3, 7, "sofa-1", "living-room")).toEqual({
+      client_event_id: "feedback-42-move-001",
+      action_type: "move",
+      scene_id: 3,
+      scene_version: 7,
+      instance_id: "sofa-1",
+      room_id: "living-room",
+    });
+    expect(buildMoveFeedbackEvent("feedback-42-move-002", null, 7, "sofa-1", null)).toBeNull();
+    expect(buildMoveFeedbackEvent("feedback-42-move-003", 3, null, "sofa-1", null)).toBeNull();
+    expect(buildMoveFeedbackEvent("feedback-42-move-004", 3, 7, null, null)).toBeNull();
+  });
+
+  it("重试保留首次请求的稳定幂等键", () => {
+    const clientEventId = createFeedbackClientEventId(42, "adopt", "fixed-nonce");
+    const request = buildFurnitureFeedbackEvent({
+      clientEventId,
+      selectedBeforeToggle: false,
+      planVersionId: 8,
+      sku: "SOFA-001",
+      roomId: null,
+    })!;
+    const queued = feedbackDeliveryReducer([], {
+      type: "queued",
+      request,
+      label: "已加入云朵沙发",
+    });
+    const failed = feedbackDeliveryReducer(queued, {
+      type: "failed",
+      clientEventId,
+      message: "反馈暂未同步，可重试",
+    });
+    const retrying = feedbackDeliveryReducer(failed, {
+      type: "retrying",
+      clientEventId,
+    });
+
+    expect(clientEventId).toBe("feedback-42-adopt-fixed-nonce");
+    expect(retrying[0]?.request.client_event_id).toBe(clientEventId);
+    expect(retrying[0]?.status).toBe("sending");
+  });
+});
