@@ -223,6 +223,7 @@ describe("方案结果恢复", () => {
   it.each([
     ["dead_letter", "供应商调用超过硬截止时间"],
     ["cancelled", "方案生成已取消"],
+    ["cost_limit_exceeded", "模型调用将超过单任务成本上限，需人工确认"],
   ] as const)("生成任务进入 %s 后立即停止轮询", async (status, expected) => {
     const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
     const storage = createLocalStorage({
@@ -247,7 +248,11 @@ describe("方案结果恢复", () => {
           current_node: status,
           generator: null,
           error_message:
-            status === "dead_letter" ? "供应商调用超过硬截止时间" : null,
+            status === "dead_letter"
+              ? "供应商调用超过硬截止时间"
+              : status === "cost_limit_exceeded"
+                ? "模型调用将超过单任务成本上限，需人工确认"
+                : null,
           execution_deadline_at: "2026-09-02T04:00:00Z",
           dead_lettered_at:
             status === "dead_letter" ? "2026-09-02T04:00:00Z" : null,

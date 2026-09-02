@@ -270,6 +270,7 @@ interface GenerationStatus {
     | "completed"
     | "failed"
     | "dead_letter"
+    | "cost_limit_exceeded"
     | "cancelled";
   progress: number;
   current_node: string | null;
@@ -288,11 +289,17 @@ async function waitForGeneration(
       `/api/design/tasks/${taskId}/generation`,
     );
     if (generation.status === "completed") return;
-    if (["failed", "dead_letter", "cancelled"].includes(generation.status)) {
+    if (
+      ["failed", "dead_letter", "cost_limit_exceeded", "cancelled"].includes(
+        generation.status,
+      )
+    ) {
       const fallbackMessage = generation.status === "cancelled"
         ? "方案生成已取消"
         : generation.status === "dead_letter"
           ? "方案生成超过执行限制，已停止并等待人工处理"
+          : generation.status === "cost_limit_exceeded"
+            ? "方案生成达到成本上限，需要人工确认"
           : "方案生成失败，请稍后重试";
       throw new Error(generation.error_message || fallbackMessage);
     }
