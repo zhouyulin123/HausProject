@@ -149,6 +149,34 @@ def test_enrichment_exposes_only_audited_glb_as_approved_asset(db):
     }
 
 
+def test_enrichment_rejects_whitespace_only_glb_review_metadata(db):
+    product = _product(
+        "SOFA-GLB-BLANK",
+        model_url="/uploads/models/sofa.glb",
+        model_status="ready",
+        model_license="   ",
+        model_source="supplier:SOFA-GLB-BLANK",
+        model_reviewed_at=NOW,
+        model_reviewed_by="user:7",
+    )
+    db.add(product)
+    db.commit()
+    plans = [
+        {
+            "id": "plan-a",
+            "name": "空白授权方案",
+            "style": "现代简约",
+            "furnitureSuggestions": [{"sku": product.sku}],
+        }
+    ]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
+
+    enriched = plans[0]["furnitureSuggestions"][0]
+    assert enriched["assetMode"] == "parametric"
+    assert enriched["fallbackReason"] == "glb_pending_review"
+
+
 def test_catalog_context_only_contains_current_eligible_products(db):
     verified = _product("GOOD-001")
     draft = _product("DRAFT-001", verification_status="draft", data_origin="merchant_draft")

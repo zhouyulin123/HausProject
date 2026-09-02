@@ -313,6 +313,10 @@ export default function RoomView3D({
   const [cameraPreset, setCameraPreset] =
     useState<RoomCameraPreset>("perspective");
   const scene = editor.history.present;
+
+  useEffect(() => {
+    setRuntimeAssetOverrides({});
+  }, [plan.planVersionId]);
   const roomFacts = useMemo(
     () => buildRoomFactSummary(scene, roomModel),
     [roomModel, scene],

@@ -39,6 +39,10 @@ def _has_positive_dimensions(product: Any) -> bool:
     )
 
 
+def _has_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
 def product_asset_contract(product: Any) -> ProductAssetContract:
     """基于服务端审核事实裁决商品的 Web 3D 展示模式。"""
     status = getattr(product, "model_status", None) or "missing"
@@ -52,13 +56,11 @@ def product_asset_contract(product: Any) -> ProductAssetContract:
         reason = "glb_unavailable"
     elif not _has_positive_dimensions(product):
         reason = "glb_metadata_invalid"
-    elif not all(
-        (
-            getattr(product, "model_license", None),
-            getattr(product, "model_source", None),
-            getattr(product, "model_reviewed_at", None),
-            getattr(product, "model_reviewed_by", None),
-        )
+    elif not (
+        _has_text(getattr(product, "model_license", None))
+        and _has_text(getattr(product, "model_source", None))
+        and getattr(product, "model_reviewed_at", None) is not None
+        and _has_text(getattr(product, "model_reviewed_by", None))
     ):
         reason = "glb_pending_review"
     else:
