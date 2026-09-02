@@ -43,3 +43,4 @@ def test_core_customer_routes_are_registered():
     assert ("/api/orders/{order_id}/close", "POST") in routes
     assert ("/api/admin/users", "GET") in routes
     assert ("/api/admin/users/{user_id}/role", "PATCH") in routes
+    assert ("/api/admin/quality/summary", "GET") in routes
