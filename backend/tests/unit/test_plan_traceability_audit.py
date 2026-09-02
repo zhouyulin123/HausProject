@@ -1,6 +1,7 @@
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.db.database import Base
 from app.db.models import DesignPlanVersion, DesignTask
@@ -111,6 +112,8 @@ def test_traceability_audit_detects_snapshot_and_product_provenance_tampering(db
     broken = plans[0]
     broken.plan_json["furnitureSuggestions"][0]["sourceName"] = ""
     broken.quote_snapshot.quote_json["lineItems"][0]["subtotal"] += 1
+    flag_modified(broken, "plan_json")
+    flag_modified(broken.quote_snapshot, "quote_json")
     db.commit()
 
     report = audit_plan_traceability(db, sample_size=20, seed="weekly-2026-36")

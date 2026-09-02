@@ -32,6 +32,16 @@
 
 `QuoteSnapshot` 保存 `catalog_version`、`price_version`、`rule_version`、使用的 SKU 数据版本及完整行项目。`recalculate_quote_snapshot` 只使用快照中的数量和单价复算，不查询当前商品库，因此商品价格更新不会改变历史报价。
 
+## 每周方案来源抽检
+
+对完成状态的不可变方案执行 20 条固定种子抽样；查询不会预先排除缺失报价快照的坏记录。任一商品缺少人工核验来源、数据版本或报价行不一致，以及可用方案不足 20 条，整批审计都会失败：
+
+```powershell
+python audit_plan_traceability.py --seed 2026-W36 --sample-size 20 --output .test_artifacts/traceability-2026-W36.json
+```
+
+退出码 `0` 表示通过，`1` 表示质量门禁失败，`2` 表示参数、数据库或输出文件错误。每周保留种子和 JSON 报告，设计师可据其中的任务、版本、方案键和原因码回查原始快照。
+
 升级数据库：
 
 ```powershell
