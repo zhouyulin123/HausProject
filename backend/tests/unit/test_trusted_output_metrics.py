@@ -337,7 +337,8 @@ def test_collector_reports_no_evidence_for_unrepresented_geometry_constraint(
 
     result = _collect(db, dataset, run)["executions"][0]["result"]
 
-    assert result["layout_checks"] == 0
+    # 未实现的约束也属于真实业务要求，必须留在分母中并按未通过处理。
+    assert result["layout_checks"] == 1
     assert result["layout_hard_passes"] == 0
     assert result["layout_no_evidence"] == 1
 
