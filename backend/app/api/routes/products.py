@@ -4,7 +4,8 @@
 """
 
 from pathlib import Path
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Literal, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -16,16 +17,51 @@ from app.api.dependencies import require_factory
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import CustomQuoteRule, Product, User
+from app.services.catalog_service import is_product_eligible
 from app.services.glb_validation import GlbValidationError, validate_glb_upload
 from app.services.upload_validation import UploadValidationError, validate_image_upload
 
 router = APIRouter()
 
 
+def _validate_product_lifecycle(product: Product) -> None:
+    product.region_codes = list(
+        dict.fromkeys(
+            str(code).strip().upper()
+            for code in (product.region_codes or [])
+            if str(code).strip()
+        )
+    )
+    product.alternative_skus = list(
+        dict.fromkeys(
+            str(sku).strip().upper()
+            for sku in (product.alternative_skus or [])
+            if str(sku).strip()
+        )
+    )
+    if product.sku and product.sku.upper() in product.alternative_skus:
+        raise HTTPException(status_code=422, detail="替代 SKU 不能包含商品自身")
+    if (
+        product.lead_time_days_min is not None
+        and product.lead_time_days_max is not None
+        and product.lead_time_days_min > product.lead_time_days_max
+    ):
+        raise HTTPException(status_code=422, detail="最短交期不能大于最长交期")
+    if (
+        product.price_valid_from is not None
+        and product.price_valid_to is not None
+        and product.price_valid_from > product.price_valid_to
+    ):
+        raise HTTPException(status_code=422, detail="价格生效时间不能晚于失效时间")
+    if product.price_max is not None and product.price_max < product.price:
+        raise HTTPException(status_code=422, detail="价格上限不能低于参考价")
+
+
 def _product_to_dict(p: Product) -> dict:
     price_text = (
         f"¥{p.price:,} - {p.price_max:,}" if p.price_max else f"¥{p.price:,}"
     )
+    eligibility = is_product_eligible(p)
     return {
         "id": p.id,
         "sku": p.sku,
@@ -57,6 +93,23 @@ def _product_to_dict(p: Product) -> dict:
         "price_observed_at": p.price_observed_at,
         "price_note": p.price_note,
         "source_metadata": p.source_metadata,
+        "verification_status": p.verification_status,
+        "availability_status": p.availability_status,
+        "region_codes": p.region_codes or [],
+        "stock_quantity": p.stock_quantity,
+        "lead_time_days_min": p.lead_time_days_min,
+        "lead_time_days_max": p.lead_time_days_max,
+        "price_valid_from": p.price_valid_from,
+        "price_valid_to": p.price_valid_to,
+        "verified_at": p.verified_at,
+        "verified_by": p.verified_by,
+        "data_version": p.data_version,
+        "record_version": p.record_version,
+        "alternative_skus": p.alternative_skus or [],
+        "eligibility": {
+            "eligible": eligibility.eligible,
+            "reason_codes": list(eligibility.reason_codes),
+        },
     }
 
 
@@ -138,6 +191,18 @@ class ProductCreate(BaseModel):
     model_depth_mm: Optional[int] = Field(default=None, gt=0)
     model_license: Optional[str] = Field(default=None, max_length=100)
     model_source: Optional[str] = Field(default=None, max_length=255)
+    verification_status: Literal["draft", "verified", "rejected", "expired"] = "draft"
+    availability_status: Literal[
+        "in_stock", "low_stock", "out_of_stock", "preorder", "unknown"
+    ] = "unknown"
+    region_codes: list[str] = Field(default_factory=list, max_length=100)
+    stock_quantity: Optional[int] = Field(default=None, ge=0)
+    lead_time_days_min: Optional[int] = Field(default=None, ge=0)
+    lead_time_days_max: Optional[int] = Field(default=None, ge=0)
+    price_valid_from: Optional[datetime] = None
+    price_valid_to: Optional[datetime] = None
+    data_version: str = Field(default="draft-v1", min_length=1, max_length=100)
+    alternative_skus: list[str] = Field(default_factory=list, max_length=100)
 
 
 @router.post("")
@@ -146,7 +211,12 @@ def create_product(
     _user: User = Depends(require_factory),
     db: Session = Depends(get_db),
 ):
-    product = Product(**data.model_dump())
+    payload = data.model_dump()
+    product = Product(**payload)
+    if product.verification_status == "verified":
+        product.verified_at = datetime.now(timezone.utc)
+        product.verified_by = f"user:{_user.id}"
+    _validate_product_lifecycle(product)
     db.add(product)
     db.commit()
     db.refresh(product)
@@ -171,6 +241,20 @@ class ProductUpdate(BaseModel):
     model_depth_mm: Optional[int] = Field(default=None, gt=0)
     model_license: Optional[str] = Field(default=None, max_length=100)
     model_source: Optional[str] = Field(default=None, max_length=255)
+    verification_status: Optional[
+        Literal["draft", "verified", "rejected", "expired"]
+    ] = None
+    availability_status: Optional[
+        Literal["in_stock", "low_stock", "out_of_stock", "preorder", "unknown"]
+    ] = None
+    region_codes: Optional[list[str]] = Field(default=None, max_length=100)
+    stock_quantity: Optional[int] = Field(default=None, ge=0)
+    lead_time_days_min: Optional[int] = Field(default=None, ge=0)
+    lead_time_days_max: Optional[int] = Field(default=None, ge=0)
+    price_valid_from: Optional[datetime] = None
+    price_valid_to: Optional[datetime] = None
+    data_version: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    alternative_skus: Optional[list[str]] = Field(default=None, max_length=100)
 
 
 @router.patch("/{product_id}")
@@ -183,8 +267,33 @@ def update_product(
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    for k, v in data.model_dump(exclude_unset=True).items():
+    changes = data.model_dump(exclude_unset=True)
+    commercial_fields = {
+        "price",
+        "price_max",
+        "availability_status",
+        "stock_quantity",
+        "region_codes",
+        "lead_time_days_min",
+        "lead_time_days_max",
+        "price_valid_from",
+        "price_valid_to",
+        "model_width_mm",
+        "model_height_mm",
+        "model_depth_mm",
+        "data_version",
+    }
+    for k, v in changes.items():
         setattr(product, k, v)
+    product.record_version = (product.record_version or 1) + 1
+    if changes.get("verification_status") == "verified":
+        product.verified_at = datetime.now(timezone.utc)
+        product.verified_by = f"user:{_user.id}"
+    elif commercial_fields.intersection(changes):
+        product.verification_status = "draft"
+        product.verified_at = None
+        product.verified_by = None
+    _validate_product_lifecycle(product)
     db.commit()
     db.refresh(product)
     return _product_to_dict(product)

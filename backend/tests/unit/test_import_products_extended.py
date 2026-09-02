@@ -7,6 +7,7 @@ from app.db.models import Product
 from import_products import (
     PRODUCT_HEADERS,
     parse_product_row,
+    product_to_export_record,
     upsert_product_rows,
 )
 
@@ -156,3 +157,22 @@ def test_upsert_refuses_to_overwrite_public_reference(db) -> None:
 
     with pytest.raises(ValueError, match="拒绝覆盖公开参考商品"):
         upsert_product_rows(db, PRODUCT_HEADERS, [_row()])
+
+
+def test_json_export_record_round_trips_lifecycle_fields(db) -> None:
+    upsert_product_rows(db, PRODUCT_HEADERS, [_row()])
+    product = db.query(Product).filter(Product.sku == "SF-001").one()
+
+    exported = product_to_export_record(product)
+    reparsed = parse_product_row(
+        PRODUCT_HEADERS,
+        tuple(exported.get(header) for header in PRODUCT_HEADERS),
+    )
+
+    assert reparsed is not None
+    assert reparsed["product"]["verification_status"] == "verified"
+    assert reparsed["product"]["availability_status"] == "in_stock"
+    assert reparsed["product"]["region_codes"] == ["CN-SH", "CN-ZJ"]
+    assert reparsed["product"]["alternative_skus"] == ["SF-002", "SF-003"]
+    assert reparsed["product"]["price_valid_from"].replace(tzinfo=None) == product.price_valid_from
+    assert reparsed["product"]["price_valid_to"].replace(tzinfo=None) == product.price_valid_to

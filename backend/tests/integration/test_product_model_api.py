@@ -148,6 +148,8 @@ def test_product_lifecycle_fields_round_trip_and_verifier_is_server_owned(produc
     assert body["region_codes"] == ["CN-SH"]
     assert body["alternative_skus"] == ["TABLE-002"]
     assert body["record_version"] == 1
+    assert body["eligibility"]["eligible"] is False
+    assert "verification_required" in body["eligibility"]["reason_codes"]
 
     verified = client.patch(
         f"/api/products/{body['id']}",
@@ -159,3 +161,25 @@ def test_product_lifecycle_fields_round_trip_and_verifier_is_server_owned(produc
     assert verified.json()["verified_by"] == "user:999"
     assert verified.json()["verified_at"] is not None
     assert verified.json()["record_version"] == 2
+
+
+@pytest.mark.integration
+def test_product_api_rejects_invalid_lifecycle_ranges(product_api):
+    client, _ = product_api
+
+    response = client.post(
+        "/api/products",
+        json={
+            "sku": "TABLE-BAD-001",
+            "name": "错误交期餐桌",
+            "category": "餐桌",
+            "room": "餐厅",
+            "style": "现代简约",
+            "price": 3200,
+            "price_max": 3000,
+            "lead_time_days_min": 8,
+            "lead_time_days_max": 3,
+        },
+    )
+
+    assert response.status_code == 422

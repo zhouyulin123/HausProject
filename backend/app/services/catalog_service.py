@@ -1,24 +1,148 @@
-"""商品库 ↔ AI 方案的桥接层。
+"""商品资格、确定性替代与报价的单一事实源。"""
 
-两个职责：
-1. build_catalog_context —— 把成品家具库 + 定制价目表压缩成 LLM 上下文
-2. verify_and_enrich_plans —— 校验 LLM 选的 SKU、用数据库回填真实价格/材质/尺寸，
-   并生成「本店产品报价单」(shopQuote)。AI 永远不能自己编价格。
-"""
+from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import CustomQuoteRule, Product
 
+
 logger = logging.getLogger(__name__)
+VERIFICATION_STATUSES = {"draft", "verified", "rejected", "expired"}
+AVAILABILITY_STATUSES = {
+    "in_stock",
+    "low_stock",
+    "out_of_stock",
+    "preorder",
+    "unknown",
+}
 
 
-def _active_products(db: Session) -> List[Product]:
-    return db.scalars(select(Product).where(Product.is_active.is_(True))).all()
+@dataclass(frozen=True)
+class ProductEligibility:
+    eligible: bool
+    reason_codes: tuple[str, ...]
+
+    def __bool__(self) -> bool:
+        return self.eligible
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def is_product_eligible(
+    product: Product,
+    *,
+    at: datetime | None = None,
+    region: str | None = None,
+    allow_draft: bool = False,
+    max_unit_price: int | None = None,
+    max_dimensions_mm: Mapping[str, int] | None = None,
+) -> ProductEligibility:
+    """集中执行商用商品硬过滤，并返回可审计的原因代码。"""
+    current = _as_utc(at) or datetime.now(timezone.utc)
+    reasons: list[str] = []
+    if not product.is_active:
+        reasons.append("inactive")
+    if product.data_origin == "public_reference":
+        reasons.append("public_reference")
+
+    verification = product.verification_status or "draft"
+    if verification == "draft" and not allow_draft:
+        reasons.append("verification_required")
+    elif verification == "rejected":
+        reasons.append("verification_rejected")
+    elif verification == "expired":
+        reasons.append("verification_expired")
+    elif verification not in VERIFICATION_STATUSES:
+        reasons.append("verification_invalid")
+
+    availability = product.availability_status or "unknown"
+    if availability == "out_of_stock":
+        reasons.append("out_of_stock")
+    elif availability == "unknown":
+        reasons.append("availability_unknown")
+    elif availability in {"in_stock", "low_stock"} and (
+        product.stock_quantity is None or product.stock_quantity <= 0
+    ):
+        reasons.append("out_of_stock")
+    elif availability == "preorder" and (
+        product.lead_time_days_min is None
+        or product.lead_time_days_max is None
+        or product.lead_time_days_min > product.lead_time_days_max
+    ):
+        reasons.append("lead_time_unknown")
+    elif availability not in AVAILABILITY_STATUSES:
+        reasons.append("availability_invalid")
+
+    valid_from = _as_utc(product.price_valid_from)
+    valid_to = _as_utc(product.price_valid_to)
+    if valid_from is None or valid_to is None:
+        reasons.append("price_validity_unknown")
+    else:
+        if current < valid_from:
+            reasons.append("price_not_started")
+        if current > valid_to:
+            reasons.append("price_expired")
+
+    regions = [str(code).strip().upper() for code in (product.region_codes or []) if code]
+    normalized_region = region.strip().upper() if region else None
+    if normalized_region and regions and normalized_region not in regions and "*" not in regions:
+        reasons.append("region_unavailable")
+
+    dimensions = {
+        "width": product.model_width_mm,
+        "depth": product.model_depth_mm,
+        "height": product.model_height_mm,
+    }
+    if any(not isinstance(value, int) or value <= 0 for value in dimensions.values()):
+        reasons.append("dimensions_missing")
+    elif max_dimensions_mm and any(
+        dimensions[name] > int(limit)
+        for name, limit in max_dimensions_mm.items()
+        if name in dimensions and limit is not None
+    ):
+        reasons.append("dimensions_exceeded")
+
+    if max_unit_price is not None and product.price > max_unit_price:
+        reasons.append("budget_exceeded")
+    return ProductEligibility(not reasons, tuple(dict.fromkeys(reasons)))
+
+
+def eligible_products(
+    db: Session,
+    *,
+    at: datetime | None = None,
+    region: str | None = None,
+    allow_draft: bool = False,
+    max_unit_price: int | None = None,
+    max_dimensions_mm: Mapping[str, int] | None = None,
+) -> list[Product]:
+    products = db.scalars(select(Product).where(Product.is_active.is_(True))).all()
+    return [
+        product for product in products
+        if is_product_eligible(
+            product,
+            at=at,
+            region=region,
+            allow_draft=allow_draft,
+            max_unit_price=max_unit_price,
+            max_dimensions_mm=max_dimensions_mm,
+        ).eligible
+    ]
 
 
 def _active_rules(db: Session) -> List[CustomQuoteRule]:
@@ -27,134 +151,300 @@ def _active_rules(db: Session) -> List[CustomQuoteRule]:
     ).all()
 
 
-def build_catalog_context(db: Session) -> str:
-    """商品库上下文（约 30 行文本，随库增长后续可按风格预筛）。"""
-    lines = ["【本店成品家具库】格式: sku|名称|类别|空间|风格|材质|价格(元)|尺寸"]
-    for p in _active_products(db):
-        price = f"{p.price}-{p.price_max}" if p.price_max else str(p.price)
-        lines.append(
-            f"{p.sku}|{p.name}|{p.category}|{p.room}|{p.style}|{p.material}|{price}|{p.size}"
+def _version_hash(prefix: str, payload: Any) -> str:
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, default=str
+    ).encode("utf-8")
+    return f"{prefix}-{hashlib.sha256(encoded).hexdigest()[:16]}"
+
+
+def _catalog_version(products: list[Product]) -> str:
+    payload = [
+        (product.sku, product.data_version, product.record_version)
+        for product in sorted(products, key=lambda item: item.sku or "")
+    ]
+    return _version_hash("catalog", payload)
+
+
+def _rule_version(rules: list[CustomQuoteRule]) -> str:
+    payload = [
+        (
+            rule.id,
+            rule.project_name,
+            rule.material_grade,
+            rule.unit_price,
+            str(rule.updated_at or rule.created_at),
         )
-    lines.append("")
-    lines.append("【本店定制项目价目表】格式: 项目|材料档位|单价(元)|计价单位")
-    for r in _active_rules(db):
-        lines.append(f"{r.project_name}|{r.material_grade}|{r.unit_price}|{r.pricing_unit}")
+        for rule in sorted(rules, key=lambda item: item.id or 0)
+    ]
+    return _version_hash("rules", payload)
+
+
+def build_catalog_context(
+    db: Session,
+    *,
+    at: datetime | None = None,
+    region: str | None = None,
+    allow_draft: bool = False,
+) -> str:
+    """只把通过统一资格门禁的商品暴露给模型。"""
+    products = eligible_products(db, at=at, region=region, allow_draft=allow_draft)
+    lines = ["【本店成品家具库】格式: sku|名称|类别|空间|风格|材质|价格(元)|尺寸"]
+    for product in products:
+        price = (
+            f"{product.price}-{product.price_max}"
+            if product.price_max
+            else str(product.price)
+        )
+        lines.append(
+            f"{product.sku}|{product.name}|{product.category}|{product.room}|"
+            f"{product.style}|{product.material}|{price}|{product.size}"
+        )
+    lines.extend(["", "【本店定制项目价目表】格式: 项目|材料档位|单价(元)|计价单位"])
+    for rule in _active_rules(db):
+        lines.append(
+            f"{rule.project_name}|{rule.material_grade}|{rule.unit_price}|"
+            f"{rule.pricing_unit}"
+        )
     return "\n".join(lines)
 
 
-def _product_price_text(p: Product) -> str:
-    return f"¥{p.price:,} - {p.price_max:,}" if p.price_max else f"¥{p.price:,}"
+def _product_price_text(product: Product) -> str:
+    return (
+        f"¥{product.price:,} - {product.price_max:,}"
+        if product.price_max
+        else f"¥{product.price:,}"
+    )
 
 
-def _fallback_furniture(products: List[Product], plan_style: str, count: int = 4) -> List[Dict[str, Any]]:
-    """LLM 没选出有效 SKU 时，按风格就近从库里挑。"""
-    def score(p: Product) -> int:
-        if not p.style:
-            return 0
-        return 2 if p.style in plan_style else (1 if p.style[:2] in plan_style else 0)
+def find_product_alternatives(
+    db: Session,
+    source: Product,
+    *,
+    at: datetime | None = None,
+    region: str | None = None,
+    max_unit_price: int | None = None,
+    max_dimensions_mm: Mapping[str, int] | None = None,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """按显式替代、同类/空间、价格接近度稳定排序，不使用 LLM。"""
+    explicit = {sku: index for index, sku in enumerate(source.alternative_skus or [])}
+    candidates = []
+    for product in eligible_products(
+        db,
+        at=at,
+        region=region,
+        max_unit_price=max_unit_price,
+        max_dimensions_mm=max_dimensions_mm,
+    ):
+        if product.id == source.id or product.sku == source.sku:
+            continue
+        same_category = product.category == source.category
+        same_room = product.room == source.room
+        is_explicit = product.sku in explicit
+        if not (is_explicit or same_category or same_room):
+            continue
+        reasons = []
+        if is_explicit:
+            reasons.append("explicit_alternative")
+        if same_category:
+            reasons.append("same_category")
+        if same_room:
+            reasons.append("same_room")
+        if product.price <= source.price:
+            reasons.append("price_not_higher")
+        reasons.append("dimensions_fit")
+        sort_key = (
+            0 if is_explicit else 1,
+            explicit.get(product.sku, 9999),
+            -(int(same_category) + int(same_room)),
+            abs(product.price - source.price),
+            product.sku or "",
+        )
+        candidates.append(
+            (sort_key, {"sku": product.sku, "product": product, "reason_codes": reasons})
+        )
+    return [item for _, item in sorted(candidates, key=lambda entry: entry[0])[:limit]]
 
-    picked = sorted(products, key=score, reverse=True)[:count]
-    return [{"sku": p.sku, "quantity": 1} for p in picked]
+
+def _fallback_furniture(products: List[Product], plan_style: str, count: int = 4):
+    def score(product: Product) -> tuple[int, str]:
+        style_score = 0
+        if product.style:
+            style_score = (
+                2 if product.style in plan_style else int(product.style[:2] in plan_style)
+            )
+        return (-style_score, product.sku or "")
+
+    return [
+        {"sku": product.sku, "quantity": 1}
+        for product in sorted(products, key=score)[:count]
+    ]
 
 
 def _match_rule(
     rules: List[CustomQuoteRule], project: str, grade: Optional[str]
 ) -> Optional[CustomQuoteRule]:
-    exact = [r for r in rules if r.project_name == project and grade and r.material_grade == grade]
+    exact = [
+        rule for rule in rules
+        if rule.project_name == project and grade and rule.material_grade == grade
+    ]
     if exact:
         return exact[0]
-    by_project = [r for r in rules if r.project_name == project]
+    by_project = [rule for rule in rules if rule.project_name == project]
     if by_project:
         return by_project[0]
-    # 项目名模糊匹配（LLM 可能写「衣柜定制」而库里是「定制衣柜」）
-    loose = [r for r in rules if project and (project in r.project_name or r.project_name in project)]
+    loose = [
+        rule for rule in rules
+        if project and (project in rule.project_name or rule.project_name in project)
+    ]
     return loose[0] if loose else None
 
 
-def verify_and_enrich_plans(db: Session, plans: List[Dict[str, Any]]) -> None:
-    """就地校验/回填每套方案（LLM 与模板方案统一走这里）。"""
-    products = _active_products(db)
+def verify_and_enrich_plans(
+    db: Session,
+    plans: List[Dict[str, Any]],
+    *,
+    at: datetime | None = None,
+    region: str | None = None,
+    allow_draft: bool = False,
+    budget_max: int | None = None,
+    max_dimensions_mm: Mapping[str, int] | None = None,
+) -> None:
+    """统一校验 SKU、确定性替代、回填价格并生成版本化报价。"""
+    current = _as_utc(at) or datetime.now(timezone.utc)
+    all_products = db.scalars(select(Product).where(Product.is_active.is_(True))).all()
+    by_sku = {product.sku: product for product in all_products if product.sku}
+    products = eligible_products(
+        db,
+        at=current,
+        region=region,
+        allow_draft=allow_draft,
+        max_unit_price=budget_max,
+        max_dimensions_mm=max_dimensions_mm,
+    )
+    eligible_by_sku = {product.sku: product for product in products if product.sku}
     rules = _active_rules(db)
-    by_sku = {p.sku: p for p in products if p.sku}
+    catalog_version = _catalog_version(products)
+    rule_version = _rule_version(rules)
 
     for plan in plans:
-        plan_style = str(plan.get("style", ""))
-
-        # ---- 成品家具：SKU 校验 + 真实数据回填 ----
         raw_items = plan.get("furnitureSuggestions") or []
-        valid_raw = [
-            item for item in raw_items
-            if isinstance(item, dict) and (item.get("sku") or item.get("id")) in by_sku
-        ]
-        if not valid_raw:
-            logger.warning("方案 %s 的家具无有效 SKU，按风格从库中回退挑选", plan.get("id"))
-            valid_raw = _fallback_furniture(products, plan_style)
+        if not raw_items:
+            raw_items = _fallback_furniture(products, str(plan.get("style", "")))
+        resolved_items: list[tuple[dict[str, Any], Product, str | None, list[str]]] = []
+        rejected: list[dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                rejected.append({"sku": None, "reason_codes": ["invalid_item"]})
+                continue
+            requested_sku = item.get("sku") or item.get("id")
+            product = eligible_by_sku.get(requested_sku)
+            replaced_sku = None
+            replacement_reasons: list[str] = []
+            if product is None:
+                source = by_sku.get(requested_sku)
+                if source is not None:
+                    alternatives = find_product_alternatives(
+                        db,
+                        source,
+                        at=current,
+                        region=region,
+                        max_unit_price=budget_max,
+                        max_dimensions_mm=max_dimensions_mm,
+                        limit=1,
+                    )
+                    if alternatives:
+                        replacement = alternatives[0]
+                        product = replacement["product"]
+                        replaced_sku = requested_sku
+                        replacement_reasons = replacement["reason_codes"]
+                if product is None:
+                    reasons = (
+                        is_product_eligible(source, at=current, region=region).reason_codes
+                        if source is not None
+                        else ("sku_not_found",)
+                    )
+                    rejected.append({"sku": requested_sku, "reason_codes": list(reasons)})
+                    continue
+            resolved_items.append((item, product, replaced_sku, replacement_reasons))
 
         enriched = []
+        line_items = []
         furniture_total = 0
-        for i, item in enumerate(valid_raw):
-            sku = item.get("sku") or item.get("id")
-            p = by_sku.get(sku)
-            if not p:
-                continue
+        for index, (item, product, replaced_sku, replacement_reasons) in enumerate(resolved_items):
             try:
-                qty = max(1, min(10, int(item.get("quantity", 1))))
+                quantity = max(1, min(10, int(item.get("quantity", 1))))
             except (TypeError, ValueError):
-                qty = 1
-            subtotal = p.price * qty
+                quantity = 1
+            subtotal = product.price * quantity
+            if budget_max is not None and furniture_total + subtotal > budget_max:
+                rejected.append({"sku": product.sku, "reason_codes": ["budget_exceeded"]})
+                continue
             furniture_total += subtotal
-            enriched.append(
-                {
-                    "id": sku,
-                    "sku": sku,
-                    "name": p.name,
-                    "category": p.category,
-                    "room": p.room,
-                    "style": p.style,
-                    "material": p.material,
-                    "priceRange": _product_price_text(p),
-                    "sizeSuggestion": p.size or "",
-                    "matchScore": max(85, 97 - i * 3),
-                    "reason": item.get("reason") or p.selling_point or "",
-                    "alternative": item.get("alternative") or p.alternative or "可选同风格系列款",
-                    "imageUrl": p.image_url,
-                    "dataOrigin": p.data_origin,
-                    "sourceName": p.source_name,
-                    "dataStatus": (
-                        "merchant_draft"
-                        if p.data_origin == "merchant_draft"
-                        else "unverified"
-                        if p.data_origin == "unknown"
-                        else "real"
-                    ),
-                    "quantity": qty,
-                    "unitPrice": p.price,
-                    "subtotal": subtotal,
-                }
-            )
+            line_item = {
+                "sku": product.sku,
+                "quantity": quantity,
+                "unitPrice": product.price,
+                "subtotal": subtotal,
+                "dataVersion": product.data_version,
+                "recordVersion": product.record_version,
+            }
+            line_items.append(line_item)
+            enriched_item = {
+                "id": product.sku,
+                "sku": product.sku,
+                "name": product.name,
+                "category": product.category,
+                "room": product.room,
+                "style": product.style,
+                "material": product.material,
+                "priceRange": _product_price_text(product),
+                "sizeSuggestion": product.size or "",
+                "matchScore": max(85, 97 - index * 3),
+                "reason": item.get("reason") or product.selling_point or "",
+                "alternative": product.alternative or "",
+                "alternativeSkus": list(product.alternative_skus or []),
+                "imageUrl": product.image_url,
+                "dataOrigin": product.data_origin,
+                "sourceName": product.source_name,
+                "sourceUrl": product.source_url,
+                "verifiedAt": (
+                    product.verified_at.isoformat() if product.verified_at else None
+                ),
+                "dataStatus": (
+                    "verified" if product.verification_status == "verified" else "draft"
+                ),
+                "quantity": quantity,
+                "unitPrice": product.price,
+                "subtotal": subtotal,
+                "dataVersion": product.data_version,
+                "recordVersion": product.record_version,
+            }
+            if replaced_sku:
+                enriched_item["replacedSku"] = replaced_sku
+                enriched_item["replacementReasonCodes"] = replacement_reasons
+            enriched.append(enriched_item)
         plan["furnitureSuggestions"] = enriched
 
-        # ---- 定制项目：规则匹配 + 单价强制以价目表为准 ----
-        raw_customs = plan.get("customItems") or []
-        if not raw_customs:
-            # 兜底：常规两项（衣柜 + 电视柜背景墙）
-            raw_customs = [
-                {"project": "定制衣柜", "quantity": 6, "note": "主卧衣柜投影约 6㎡"},
-                {"project": "电视柜背景墙", "quantity": 4, "note": "客厅整墙约 4㎡"},
-            ]
         custom_items = []
+        custom_lines = []
         custom_total = 0
+        raw_customs = plan.get("customItems") or [
+            {"project": "定制衣柜", "quantity": 6, "note": "主卧衣柜投影约 6㎡"},
+            {"project": "电视柜背景墙", "quantity": 4, "note": "客厅整墙约 4㎡"},
+        ]
         for item in raw_customs:
             if not isinstance(item, dict):
                 continue
             rule = _match_rule(rules, str(item.get("project", "")), item.get("grade"))
-            if not rule:
+            if rule is None:
                 continue
             try:
-                qty = max(0.5, min(60.0, float(item.get("quantity", 1))))
+                quantity = max(0.5, min(60.0, float(item.get("quantity", 1))))
             except (TypeError, ValueError):
-                qty = 1.0
-            subtotal = round(rule.unit_price * qty)
+                quantity = 1.0
+            subtotal = round(rule.unit_price * quantity)
             custom_total += subtotal
             custom_items.append(
                 {
@@ -162,16 +452,40 @@ def verify_and_enrich_plans(db: Session, plans: List[Dict[str, Any]]) -> None:
                     "grade": rule.material_grade,
                     "unit": rule.pricing_unit,
                     "unitPrice": rule.unit_price,
-                    "quantity": round(qty, 1),
+                    "quantity": round(quantity, 1),
                     "subtotal": subtotal,
                     "note": item.get("note") or rule.description or "",
+                    "ruleId": rule.id,
+                }
+            )
+            custom_lines.append(
+                {
+                    "ruleId": rule.id,
+                    "quantity": round(quantity, 1),
+                    "unitPrice": rule.unit_price,
+                    "subtotal": subtotal,
                 }
             )
         plan["customItems"] = custom_items
-
-        # ---- 本店产品报价单 ----
+        price_version = _version_hash(
+            "prices",
+            [
+                (
+                    line["sku"], line["unitPrice"],
+                    line["dataVersion"], line["recordVersion"],
+                )
+                for line in line_items
+            ],
+        )
+        plan["catalogValidation"] = {"rejected": rejected}
         plan["shopQuote"] = {
             "furnitureTotal": furniture_total,
             "customTotal": custom_total,
             "total": furniture_total + custom_total,
+            "catalogVersion": catalog_version,
+            "priceVersion": price_version,
+            "ruleVersion": rule_version,
+            "pricedAt": current.isoformat(),
+            "lineItems": line_items,
+            "customLineItems": custom_lines,
         }

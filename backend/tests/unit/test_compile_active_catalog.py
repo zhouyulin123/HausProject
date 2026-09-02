@@ -65,6 +65,10 @@ def test_compile_updates_known_product_as_editable_merchant_draft(db) -> None:
     assert product.source_product_id == "CJ-002"
     assert product.price_note == "内部参考零售价，待人工复核；不含配送、安装和选配费用。"
     assert product.source_metadata["verification_status"] == "pending_manual_review"
+    assert product.verification_status == "draft"
+    assert product.availability_status == "unknown"
+    assert product.verified_at is None
+    assert product.verified_by is None
     assert product.is_active is True
     assert (product.model_width_mm, product.model_height_mm, product.model_depth_mm) == (
         1210,

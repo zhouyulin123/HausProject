@@ -53,6 +53,15 @@ def persist_generation(
         db.flush()
 
         quote = deepcopy(plan.get("shopQuote") or {})
+        sku_versions = [
+            {
+                "sku": item.get("sku"),
+                "dataVersion": item.get("dataVersion"),
+                "recordVersion": item.get("recordVersion"),
+            }
+            for item in quote.get("lineItems") or []
+            if isinstance(item, dict) and item.get("sku")
+        ]
         db.add(
             QuoteSnapshot(
                 plan_version_id=plan_version.id,
@@ -61,11 +70,41 @@ def persist_generation(
                 custom_total=int(quote.get("customTotal") or 0),
                 grand_total=int(quote.get("total") or 0),
                 quote_json=quote,
+                catalog_version=str(quote.get("catalogVersion") or "legacy"),
+                price_version=str(quote.get("priceVersion") or "legacy"),
+                rule_version=str(quote.get("ruleVersion") or "legacy"),
+                sku_versions_json=sku_versions,
             )
         )
 
     db.flush()
     return revision
+
+
+def recalculate_quote_snapshot(snapshot: QuoteSnapshot) -> dict[str, Any]:
+    """仅使用不可变快照行项目复算，不查询当前商品或规则。"""
+    quote = snapshot.quote_json or {}
+    furniture_total = sum(
+        int(item.get("unitPrice") or 0) * int(item.get("quantity") or 0)
+        for item in quote.get("lineItems") or []
+        if isinstance(item, dict)
+    )
+    custom_total = sum(
+        round(float(item.get("unitPrice") or 0) * float(item.get("quantity") or 0))
+        for item in quote.get("customLineItems") or []
+        if isinstance(item, dict)
+    )
+    grand_total = furniture_total + custom_total
+    return {
+        "furniture_total": furniture_total,
+        "custom_total": custom_total,
+        "grand_total": grand_total,
+        "consistent": (
+            furniture_total == snapshot.furniture_total
+            and custom_total == snapshot.custom_total
+            and grand_total == snapshot.grand_total
+        ),
+    }
 
 
 def get_revision(

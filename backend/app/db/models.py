@@ -268,6 +268,33 @@ class Product(Base):
     price_observed_at = Column(DateTime(timezone=True), nullable=True)
     price_note = Column(String(500), nullable=True)
     source_metadata = Column(JSON, nullable=True)
+    verification_status = Column(
+        String(20),
+        nullable=False,
+        default="draft",
+        server_default="draft",
+        index=True,
+    )
+    availability_status = Column(
+        String(20),
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+        index=True,
+    )
+    region_codes = Column(JSON, nullable=False, default=list)
+    stock_quantity = Column(Integer, nullable=True)
+    lead_time_days_min = Column(Integer, nullable=True)
+    lead_time_days_max = Column(Integer, nullable=True)
+    price_valid_from = Column(DateTime(timezone=True), nullable=True, index=True)
+    price_valid_to = Column(DateTime(timezone=True), nullable=True, index=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    verified_by = Column(String(100), nullable=True)
+    data_version = Column(
+        String(100), nullable=False, default="draft-v1", server_default="draft-v1"
+    )
+    record_version = Column(Integer, nullable=False, default=1, server_default="1")
+    alternative_skus = Column(JSON, nullable=False, default=list)
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -571,6 +598,16 @@ class QuoteSnapshot(Base):
     custom_total = Column(Integer, nullable=False, default=0)
     grand_total = Column(Integer, nullable=False, default=0)
     quote_json = Column(JSON, nullable=False)
+    catalog_version = Column(
+        String(100), nullable=False, default="legacy", server_default="legacy"
+    )
+    price_version = Column(
+        String(100), nullable=False, default="legacy", server_default="legacy"
+    )
+    rule_version = Column(
+        String(100), nullable=False, default="legacy", server_default="legacy"
+    )
+    sku_versions_json = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     plan_version = relationship(

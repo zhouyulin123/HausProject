@@ -6,11 +6,12 @@
     python import_products.py products_import.xlsx  # 导入（按 SKU 去重：已存在则更新，否则新增）
 
 Excel 有两个工作表：
-    「成品家具」：sku, 名称, 类别, 空间, 风格, 材质, 价格, 价格上限, 尺寸, 卖点, 替代选择
+    「商品主表」：商品、尺寸、核验、库存、地区、交期、价格有效期与替代 SKU
     「定制报价」：项目名, 分类, 计价单位, 材料档位, 单价, 说明
 """
 
 import sys
+from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 from openpyxl import Workbook, load_workbook
@@ -22,6 +23,8 @@ PRODUCT_HEADERS = [
     "sku", "名称", "类别", "空间", "风格", "材质", "参考价", "价格上限",
     "尺寸", "宽(mm)", "深(mm)", "高(mm)", "卖点", "替代选择",
     "启用状态", "人工复核状态", "价格备注",
+    "可售状态", "地区代码", "库存数量", "最短交期(天)", "最长交期(天)",
+    "价格生效时间", "价格失效时间", "复核负责人", "数据版本", "替代SKU",
 ]
 RULE_HEADERS = ["项目名", "分类", "计价单位", "材料档位", "单价", "说明"]
 
@@ -37,7 +40,8 @@ def make_template() -> None:
         "SF-100", "示例：三人位布艺沙发", "沙发", "客厅", "奶油风",
         "科技布", 4999, 6999, "宽2400×深1000×高780mm", 2400, 1000, 780,
         "耐抓易清洁，宠物家庭首选", "棉麻款（低 500 元）", "是", "待复核",
-        "内部参考零售价，待人工复核",
+        "内部参考零售价，待人工复核", "未知", "", "", "", "", "", "",
+        "", "draft-v1", "",
     ])
     ws2 = wb.create_sheet("定制报价")
     ws2.append(RULE_HEADERS)
@@ -75,6 +79,38 @@ def _controlled_value(value: Any, label: str, mapping: dict[str, Any]) -> Any:
     if normalized not in mapping:
         raise ValueError(f"{label}只能是：{', '.join(mapping)}")
     return mapping[normalized]
+
+
+def _non_negative_int(value: Any, label: str) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label}必须是整数") from exc
+    if number < 0:
+        raise ValueError(f"{label}不能小于 0")
+    return number
+
+
+def _datetime_value(value: Any, label: str) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"{label}必须是 ISO 8601 时间") from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _code_list(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    raw = value if isinstance(value, list) else str(value).replace("，", ",").split(",")
+    return list(dict.fromkeys(str(item).strip().upper() for item in raw if str(item).strip()))
 
 
 def parse_product_row(
@@ -133,6 +169,62 @@ def parse_product_row(
         "人工复核状态",
         {"待复核": "pending_manual_review", "已复核": "manual_verified"},
     )
+    product["verification_status"] = (
+        "verified" if review_status == "manual_verified" else "draft"
+    )
+    if "可售状态" in cells:
+        product["availability_status"] = _controlled_value(
+            cells.get("可售状态", "未知"),
+            "可售状态",
+            {
+                "现货": "in_stock",
+                "低库存": "low_stock",
+                "缺货": "out_of_stock",
+                "预售": "preorder",
+                "未知": "unknown",
+            },
+        )
+    if "地区代码" in cells:
+        product["region_codes"] = _code_list(cells.get("地区代码"))
+    for header, field in {
+        "库存数量": "stock_quantity",
+        "最短交期(天)": "lead_time_days_min",
+        "最长交期(天)": "lead_time_days_max",
+    }.items():
+        if header in cells:
+            product[field] = _non_negative_int(cells.get(header), header)
+    for header, field in {
+        "价格生效时间": "price_valid_from",
+        "价格失效时间": "price_valid_to",
+    }.items():
+        if header in cells:
+            product[field] = _datetime_value(cells.get(header), header)
+    if "复核负责人" in cells:
+        product["verified_by"] = cells.get("复核负责人")
+    if "数据版本" in cells:
+        product["data_version"] = cells.get("数据版本") or "draft-v1"
+    if "替代SKU" in cells:
+        product["alternative_skus"] = _code_list(cells.get("替代SKU"))
+    if product["verification_status"] == "verified":
+        product["verified_at"] = datetime.now(timezone.utc)
+        if not product.get("verified_by"):
+            raise ValueError("已复核商品必须填写复核负责人")
+    if (
+        product.get("lead_time_days_min") is not None
+        and product.get("lead_time_days_max") is not None
+        and product["lead_time_days_min"] > product["lead_time_days_max"]
+    ):
+        raise ValueError("最短交期不能大于最长交期")
+    if (
+        product.get("price_valid_from")
+        and product.get("price_valid_to")
+        and product["price_valid_from"] > product["price_valid_to"]
+    ):
+        raise ValueError("价格生效时间不能晚于失效时间")
+    if product.get("price_max") is not None and product["price_max"] < product["price"]:
+        raise ValueError("价格上限不能低于参考价")
+    if product["sku"].upper() in product.get("alternative_skus", []):
+        raise ValueError("替代 SKU 不能包含商品自身")
     return {"product": product, "review_status": review_status}
 
 
@@ -183,8 +275,10 @@ def upsert_product_rows(
                 db.add(product)
                 result["added"] += 1
             else:
+                previous_version = product.record_version or 1
                 for field, value in data.items():
                     setattr(product, field, value)
+                product.record_version = previous_version + 1
                 result["updated"] += 1
 
             product.data_origin = "merchant_draft"
@@ -202,6 +296,43 @@ def upsert_product_rows(
         db.rollback()
         raise
     return result
+
+
+def product_to_export_record(product: Product) -> dict[str, Any]:
+    """导出可再次导入的 JSON 记录，保留生命周期字段。"""
+    return {
+        "sku": product.sku,
+        "名称": product.name,
+        "类别": product.category,
+        "空间": product.room,
+        "风格": product.style,
+        "材质": product.material,
+        "参考价": product.price,
+        "价格上限": product.price_max,
+        "尺寸": product.size,
+        "宽(mm)": product.model_width_mm,
+        "深(mm)": product.model_depth_mm,
+        "高(mm)": product.model_height_mm,
+        "卖点": product.selling_point,
+        "替代选择": product.alternative,
+        "启用状态": "是" if product.is_active else "否",
+        "人工复核状态": "已复核" if product.verification_status == "verified" else "待复核",
+        "价格备注": product.price_note,
+        "可售状态": {
+            "in_stock": "现货", "low_stock": "低库存", "out_of_stock": "缺货",
+            "preorder": "预售", "unknown": "未知",
+        }.get(product.availability_status, "未知"),
+        "地区代码": ",".join(product.region_codes or []),
+        "库存数量": product.stock_quantity,
+        "最短交期(天)": product.lead_time_days_min,
+        "最长交期(天)": product.lead_time_days_max,
+        "价格生效时间": product.price_valid_from.isoformat() if product.price_valid_from else None,
+        "价格失效时间": product.price_valid_to.isoformat() if product.price_valid_to else None,
+        "复核负责人": product.verified_by,
+        "数据版本": product.data_version,
+        "替代SKU": ",".join(product.alternative_skus or []),
+        "record_version": product.record_version,
+    }
 
 
 def import_file(path: str) -> None:

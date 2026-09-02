@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
 from fastapi import FastAPI
@@ -68,7 +69,18 @@ def agent_api_context(monkeypatch):
                 room="客厅",
                 style="现代简约",
                 price=5000,
-                data_origin="merchant_draft",
+                data_origin="merchant",
+                verification_status="verified",
+                availability_status="in_stock",
+                stock_quantity=5,
+                region_codes=["*"],
+                price_valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                price_valid_to=datetime(2027, 1, 1, tzinfo=timezone.utc),
+                verified_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                verified_by="test:fixture",
+                model_width_mm=2200,
+                model_height_mm=800,
+                model_depth_mm=950,
                 is_active=True,
             )
         )
@@ -195,10 +207,8 @@ def test_agent_turn_resumes_from_structured_answers(agent_api_context):
         event for event in payload["events"] if event["node"] == "catalog_search"
     )
     assert catalog_event["details"]["candidate_count"] == 1
-    assert catalog_event["details"]["data_status_counts"] == {
-        "merchant_draft": 1
-    }
-    assert catalog_event["details"]["contains_unverified_drafts"] is True
+    assert catalog_event["details"]["data_status_counts"] == {"merchant": 1}
+    assert catalog_event["details"]["contains_unverified_drafts"] is False
 
 
 @pytest.mark.integration
