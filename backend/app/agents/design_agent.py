@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import operator
+import re
 from copy import deepcopy
 from typing import Annotated, Any, Callable, TypedDict
 
@@ -145,6 +146,143 @@ _CUSTOM_FIELD_ORDER = (
 )
 
 
+_CONSTRUCTION_CLAUSE_SPLIT = re.compile(
+    r"[，,。；;！？!?\n]+|但是|不过|然而|然后|后再|"
+    r"但(?=要|需|想|可以|能|把|将|拆|改|动|移|开|做|换|调整|消防|燃气|水电)|"
+    r"同时(?=在|把|将|拆|改|动|移|开|做|换|调整)|"
+    r"再(?=把|将|拆|改|动|移|开|做|换|调整)"
+)
+_NEGATION_AT_CLAUSE_START = re.compile(
+    r"^(?:请|务必|一定)?(?:不要|不准|禁止|避免|无需|不用|不需要|不能|不可|别|勿|不)"
+)
+_NEGATION_BEFORE_ACTION = re.compile(
+    r"(?:不要|不准|禁止|避免|无需|不用|不需要|不能|不可|别|勿|不)"
+    r"(?:再|去|要)?[^，。；！？,;!?]{0,2}$"
+)
+_QUESTION_BEFORE_ACTION = re.compile(
+    r"(?:能不能|可不可以|要不要|该不该|是否(?:可以|能够|能)?|能否)$"
+)
+_SAFE_MOVABLE_OBJECT = re.compile(
+    r"沙发|家具|桌(?:子)?|椅(?:子)?|床(?:铺)?|柜(?:子|体)?|灯(?:具)?|窗帘|地毯|家电"
+)
+_LOCATION_THEN_SAFE_OBJECT = re.compile(
+    rf"(?:旁边|旁|边上|附近|前面|后面|一侧|侧面|边)"
+    rf"[^，。；！？,;!?]{{0,4}}(?:{_SAFE_MOVABLE_OBJECT.pattern})"
+)
+_LOAD_BEARING_OBJECT = re.compile(
+    r"承重墙|承重结构|剪力墙|结构柱|承重柱|房梁|梁柱"
+)
+_GENERAL_MODIFICATION_ACTION = re.compile(
+    r"拆除?|砸掉?|敲掉?|改造|改动|改到|改为|改成|调整|移动|移位|迁移|挪动|"
+    r"新增|增加|加装|取消|封堵|关闭|切割?|开槽|布线|走线|"
+    r"更换|换管|改管|接管|动(?:一?下)?"
+)
+_CONSTRUCTION_RISK_RULES: tuple[
+    tuple[str, re.Pattern[str], re.Pattern[str]], ...
+] = (
+    (
+        "load_bearing_structure_change",
+        _LOAD_BEARING_OBJECT,
+        re.compile(
+            rf"{_GENERAL_MODIFICATION_ACTION.pattern}|"
+            r"开(?:一?个|一?处|一道)?(?:门)?洞|开孔|打孔"
+        ),
+    ),
+    (
+        "wall_demolition_or_opening",
+        re.compile(
+            r"非承重墙(?:体)?|普通(?:隔)?墙(?:体)?|轻体墙(?:体)?|隔墙(?:体)?|"
+            r"(?<!承重)(?<!剪力)墙(?:体)?"
+        ),
+        re.compile(
+            r"拆除?|砸掉?|敲掉?|移除|切墙|切割|"
+            r"开(?:一?个|一?处|一道)?(?:门)?洞|开孔|打孔"
+        ),
+    ),
+    (
+        "fire_safety_system_change",
+        re.compile(r"消防(?:设施|系统|管线)?|喷淋|烟感|消防栓|防火门|火灾报警器"),
+        _GENERAL_MODIFICATION_ACTION,
+    ),
+    (
+        "gas_system_change",
+        re.compile(r"燃气(?:管|表|设施|系统)?|煤气(?:管|表)?|天然气(?:管|表)?"),
+        _GENERAL_MODIFICATION_ACTION,
+    ),
+    (
+        "electrical_system_change",
+        re.compile(
+            r"水电|电路|电线|电缆|插座|开关|配电箱|电箱|强电|弱电|电源|电气|电表"
+        ),
+        _GENERAL_MODIFICATION_ACTION,
+    ),
+    (
+        "plumbing_system_change",
+        re.compile(r"水电|给排水|给水|排水|水路|水管|下水|地漏|马桶"),
+        _GENERAL_MODIFICATION_ACTION,
+    ),
+)
+_ALL_CONSTRUCTION_ACTIONS = re.compile(
+    "|".join(
+        f"(?:{action.pattern})"
+        for _, _, action in _CONSTRUCTION_RISK_RULES
+    )
+)
+
+
+def _construction_pair_matches(
+    clause: str,
+    object_pattern: re.Pattern[str],
+    action_pattern: re.Pattern[str],
+) -> bool:
+    object_matches = list(object_pattern.finditer(clause))
+    action_matches = list(action_pattern.finditer(clause))
+    if not object_matches or not action_matches:
+        return False
+
+    first_action = _ALL_CONSTRUCTION_ACTIONS.search(clause)
+    for action in action_matches:
+        action_prefix = clause[: action.start()]
+        asks_about_action = bool(_QUESTION_BEFORE_ACTION.search(action_prefix))
+        action_negated = not asks_about_action and (
+            bool(_NEGATION_BEFORE_ACTION.search(action_prefix))
+            or (
+                bool(_NEGATION_AT_CLAUSE_START.match(clause))
+                and first_action is not None
+                and action.start() == first_action.start()
+            )
+        )
+        if action_negated:
+            continue
+        for risk_object in object_matches:
+            if (
+                action.end() <= risk_object.start()
+                and _LOCATION_THEN_SAFE_OBJECT.search(clause[risk_object.end() :])
+            ):
+                continue
+            gap_start = min(action.end(), risk_object.end())
+            gap_end = max(action.start(), risk_object.start())
+            gap = clause[gap_start:gap_end] if gap_end > gap_start else ""
+            if len(gap) > 8 or _SAFE_MOVABLE_OBJECT.search(gap):
+                continue
+            return True
+    return False
+
+
+def classify_high_risk_construction_intent(message: str) -> list[str]:
+    """按分句识别高风险施工意图，返回稳定且可审计的原因码。"""
+    reason_codes: list[str] = []
+    for raw_clause in _CONSTRUCTION_CLAUSE_SPLIT.split(message):
+        clause = re.sub(r"\s+", "", raw_clause)
+        if not clause:
+            continue
+        for code, object_pattern, action_pattern in _CONSTRUCTION_RISK_RULES:
+            if _construction_pair_matches(clause, object_pattern, action_pattern):
+                if code not in reason_codes:
+                    reason_codes.append(code)
+    return reason_codes
+
+
 def _custom_spec_check(
     raw_spec: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, str]], bool]:
@@ -266,6 +404,28 @@ class DesignAgentWorkflow:
         return graph.compile()
 
     def _validate_facts(self, state: DesignAgentState) -> dict[str, Any]:
+        construction_risks = classify_high_risk_construction_intent(
+            state.get("message", "")
+        )
+        if construction_risks:
+            return {
+                **_next_step(state, "safety_intent_gate"),
+                "current_node": "safety_intent_gate",
+                "status": "needs_human",
+                "exit_reason": "safety_blocked",
+                "quality_outcome": "escalate",
+                "approval_required": True,
+                "hard_errors": construction_risks,
+                "pending_questions": [],
+                "result": None,
+                "tool_events": [
+                    {
+                        "tool": "safety_intent_gate",
+                        "status": "rejected",
+                        "payload": {"reason_codes": construction_risks},
+                    }
+                ],
+            }
         if state.get("budget_exhausted"):
             return {
                 "current_node": "validate_facts",
@@ -308,6 +468,8 @@ class DesignAgentWorkflow:
 
     @staticmethod
     def _route_after_fact_check(state: DesignAgentState) -> str:
+        if state.get("exit_reason") == "safety_blocked":
+            return "escalate"
         if (
             state.get("budget_exhausted")
             or state.get("exit_reason") == "retry_exhausted"
@@ -509,6 +671,14 @@ class DesignAgentWorkflow:
         }
 
     def _escalate(self, state: DesignAgentState) -> dict[str, Any]:
+        if state.get("exit_reason") == "safety_blocked":
+            return {
+                **_next_step(state, "escalate"),
+                "status": "needs_human",
+                "exit_reason": "safety_blocked",
+                "approval_required": True,
+                "hard_errors": list(state.get("hard_errors", [])),
+            }
         if state.get("budget_exhausted"):
             return {
                 "current_node": "escalate",

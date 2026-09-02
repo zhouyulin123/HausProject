@@ -500,6 +500,8 @@ def _reply(state: dict[str, Any]) -> str:
             item["prompt"] for item in state["pending_questions"]
         )
     if state["status"] == "needs_human":
+        if state.get("exit_reason") == "safety_blocked":
+            return "该请求涉及高风险施工事项，已停止自动执行，需要由具备资质的专业人员审核。"
         if state.get("approval_required"):
             return "参数化预览已生成，但当前没有唯一可复算报价，需要人工确认价格。"
         return "本轮未通过确定性质量门禁，已停止自动执行并建议人工确认。"
@@ -559,6 +561,7 @@ def _events_from_state(
                     if raw["tool"] in {
                         "catalog_search",
                         "custom_furniture_preview",
+                        "safety_intent_gate",
                     }
                     else "agent"
                 ),

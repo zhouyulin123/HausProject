@@ -24,7 +24,12 @@ def _facts(**overrides):
     ("message", "expected_codes"),
     [
         ("请拆除客厅承重墙扩大空间", ["load_bearing_structure_change"]),
+        ("承重墙能不能拆？", ["load_bearing_structure_change"]),
         ("普通隔墙可以开一个门洞吗？", ["wall_demolition_or_opening"]),
+        (
+            "保留承重墙，同时在普通隔墙开洞",
+            ["wall_demolition_or_opening"],
+        ),
         ("消防喷淋能移位到吊顶边缘吗？", ["fire_safety_system_change"]),
         ("把厨房燃气管改到另一侧", ["gas_system_change"]),
         ("插座和配电箱都要移位", ["electrical_system_change"]),
@@ -53,6 +58,8 @@ def test_high_risk_construction_classifier_returns_stable_reason_codes(
         "不要移动燃气管，只调整餐桌位置",
         "不改消防设施，帮我选一组沙发",
         "墙面只刷漆，不开洞",
+        "把承重墙旁边的沙发移动到窗边",
+        "移动承重墙旁边的沙发到窗边",
     ],
 )
 def test_high_risk_construction_classifier_respects_negation_scope(message):
@@ -60,9 +67,10 @@ def test_high_risk_construction_classifier_respects_negation_scope(message):
 
 
 @pytest.mark.unit
-def test_high_risk_construction_classifier_only_negates_its_own_clause():
+@pytest.mark.parametrize("conjunction", ["但是", "但"])
+def test_high_risk_construction_classifier_only_negates_its_own_clause(conjunction):
     assert design_agent_module.classify_high_risk_construction_intent(
-        "不要拆承重墙，但是消防喷淋能移位吗？"
+        f"不要拆承重墙，{conjunction}消防喷淋能移位吗？"
     ) == ["fire_safety_system_change"]
 
 
@@ -119,6 +127,31 @@ def test_agent_blocks_construction_risk_before_any_tool_call(
             "payload": {"reason_codes": result["hard_errors"]},
         }
     ]
+
+
+@pytest.mark.unit
+def test_construction_safety_codes_survive_step_budget_boundary():
+    workflow = DesignAgentWorkflow(
+        retrieve_catalog=lambda _: {},
+        execute_design=lambda _: {},
+        execute_scene=lambda _: {},
+        max_steps=12,
+    )
+
+    result = workflow.run(
+        task_id=1,
+        turn_id=100,
+        active_mode="catalog_design",
+        intent="design",
+        message="承重墙可以开洞吗？",
+        facts=_facts(),
+        initial_step_count=11,
+    )
+
+    assert result["status"] == "needs_human"
+    assert result["exit_reason"] == "safety_blocked"
+    assert result["hard_errors"] == ["load_bearing_structure_change"]
+    assert result["approval_required"] is True
 
 
 @pytest.mark.unit
