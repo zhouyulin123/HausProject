@@ -34,6 +34,20 @@ class EvaluationEvidence:
     results: tuple[CaseResult, ...]
 
 
+_HIGHER_IS_BETTER = (
+    "requirement_accuracy",
+    "low_confidence_confirmation_rate",
+    "valid_sku_rate",
+    "quote_consistency_rate",
+    "layout_hard_constraint_pass_rate",
+    "generation_success_rate",
+)
+_LOWER_IS_BETTER = (
+    "severe_cross_user_access",
+    "unbounded_retry_cases",
+)
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -139,6 +153,9 @@ def build_evaluation_report(
             "dataset_version": dataset.dataset_version,
             "case_count": len(dataset.cases),
             "eligible_case_count": len(dataset.eligible_cases()),
+            "eligible_case_ids": sorted(
+                case.id for case in dataset.eligible_cases()
+            ),
             "split_counts": split_counts,
             "origin_counts": origin_counts,
             "ineligible_cases": dataset.ineligible_reasons,
@@ -146,6 +163,118 @@ def build_evaluation_report(
         "metrics": quality_report.metrics,
         "gates": [asdict(item) for item in gate_result.items],
         "gate_passed": gate_result.passed,
+    }
+
+
+def _report_comparison_identity(
+    report: dict[str, Any],
+    *,
+    label: str,
+) -> tuple[str, tuple[str, ...]]:
+    if report.get("schema_version") != "1.0":
+        raise EvaluationInputError(f"{label}报告 schema_version 不受支持")
+    versions = report.get("versions")
+    dataset = report.get("dataset")
+    if not isinstance(versions, dict) or not isinstance(dataset, dict):
+        raise EvaluationInputError(f"{label}报告缺少 versions 或 dataset")
+    data_version = versions.get("data")
+    case_ids = dataset.get("eligible_case_ids")
+    if not isinstance(data_version, str) or not data_version.strip():
+        raise EvaluationInputError(f"{label}报告缺少数据版本")
+    if not isinstance(case_ids, list) or any(
+        not isinstance(case_id, str) or not case_id.strip()
+        for case_id in case_ids
+    ):
+        raise EvaluationInputError(f"{label}报告缺少可比较的案例集合")
+    normalized_ids = tuple(sorted(case_id.strip() for case_id in case_ids))
+    if len(set(normalized_ids)) != len(normalized_ids):
+        raise EvaluationInputError(f"{label}报告的案例集合包含重复 ID")
+    return data_version.strip(), normalized_ids
+
+
+def _metric_value(
+    metrics: dict[str, Any],
+    metric: str,
+    *,
+    label: str,
+) -> float | int | None:
+    value = metrics.get(metric)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise EvaluationInputError(f"{label}报告的指标 {metric} 不合法")
+    return value
+
+
+def compare_evaluation_reports(
+    candidate: dict[str, Any],
+    baseline: dict[str, Any],
+) -> dict[str, Any]:
+    """只在相同数据版本和案例集合上比较候选与基线。"""
+    candidate_data, candidate_cases = _report_comparison_identity(
+        candidate,
+        label="候选",
+    )
+    baseline_data, baseline_cases = _report_comparison_identity(
+        baseline,
+        label="基线",
+    )
+    if candidate_data != baseline_data:
+        raise EvaluationInputError(
+            f"基线与候选数据版本不一致：{baseline_data} != {candidate_data}"
+        )
+    if candidate_cases != baseline_cases:
+        raise EvaluationInputError("基线与候选案例集合不一致")
+    candidate_metrics = candidate.get("metrics")
+    baseline_metrics = baseline.get("metrics")
+    if not isinstance(candidate_metrics, dict) or not isinstance(
+        baseline_metrics, dict
+    ):
+        raise EvaluationInputError("基线或候选报告缺少 metrics")
+
+    items: list[dict[str, Any]] = []
+    for metric in (*_HIGHER_IS_BETTER, *_LOWER_IS_BETTER):
+        candidate_value = _metric_value(
+            candidate_metrics,
+            metric,
+            label="候选",
+        )
+        baseline_value = _metric_value(
+            baseline_metrics,
+            metric,
+            label="基线",
+        )
+        higher_is_better = metric in _HIGHER_IS_BETTER
+        if baseline_value is None:
+            regressed = False
+        elif candidate_value is None:
+            regressed = True
+        elif higher_is_better:
+            regressed = candidate_value < baseline_value
+        else:
+            regressed = candidate_value > baseline_value
+        delta = (
+            candidate_value - baseline_value
+            if candidate_value is not None and baseline_value is not None
+            else None
+        )
+        items.append(
+            {
+                "metric": metric,
+                "direction": "higher" if higher_is_better else "lower",
+                "baseline": baseline_value,
+                "candidate": candidate_value,
+                "delta": delta,
+                "regressed": regressed,
+            }
+        )
+    return {
+        "passed": not any(item["regressed"] for item in items),
+        "baseline_versions": baseline["versions"],
+        "candidate_versions": candidate["versions"],
+        "data_version": candidate_data,
+        "eligible_case_ids": list(candidate_cases),
+        "items": items,
     }
 
 
