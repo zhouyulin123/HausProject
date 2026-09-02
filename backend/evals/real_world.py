@@ -234,14 +234,24 @@ class CaseResult:
     case_id: str
     requirement_correct: int = 0
     requirement_total: int = 0
+    space_fact_correct: int = 0
+    space_fact_total: int = 0
     low_confidence_facts: int = 0
     low_confidence_confirmed: int = 0
     recommended_skus: int = 0
     valid_skus: int = 0
+    product_match_checks: int = 0
+    product_match_accepted: int = 0
     quote_checks: int = 0
     quote_consistent: int = 0
+    budget_checks: int = 0
+    budget_within_limit: int = 0
     layout_checks: int = 0
     layout_hard_passes: int = 0
+    style_checks: int = 0
+    style_consistent: int = 0
+    human_rating_count: int = 0
+    human_rating_sum: int = 0
     generation_succeeded: bool = False
     severe_cross_user_access: int = 0
     unbounded_retry_detected: bool = False
@@ -250,27 +260,46 @@ class CaseResult:
         counters = (
             self.requirement_correct,
             self.requirement_total,
+            self.space_fact_correct,
+            self.space_fact_total,
             self.low_confidence_facts,
             self.low_confidence_confirmed,
             self.recommended_skus,
             self.valid_skus,
+            self.product_match_checks,
+            self.product_match_accepted,
             self.quote_checks,
             self.quote_consistent,
+            self.budget_checks,
+            self.budget_within_limit,
             self.layout_checks,
             self.layout_hard_passes,
+            self.style_checks,
+            self.style_consistent,
+            self.human_rating_count,
+            self.human_rating_sum,
             self.severe_cross_user_access,
         )
         if any(value < 0 for value in counters):
             raise ValueError("评测计数不能为负数")
         pairs = (
             (self.requirement_correct, self.requirement_total),
+            (self.space_fact_correct, self.space_fact_total),
             (self.low_confidence_confirmed, self.low_confidence_facts),
             (self.valid_skus, self.recommended_skus),
+            (self.product_match_accepted, self.product_match_checks),
             (self.quote_consistent, self.quote_checks),
+            (self.budget_within_limit, self.budget_checks),
             (self.layout_hard_passes, self.layout_checks),
+            (self.style_consistent, self.style_checks),
         )
         if any(numerator > denominator for numerator, denominator in pairs):
             raise ValueError("评测命中数不能大于检查总数")
+        if not (
+            self.human_rating_count <= self.human_rating_sum
+            <= self.human_rating_count * 5
+        ):
+            raise ValueError("人工满意度总分必须落在 1 到 5 分量表范围内")
 
 
 @dataclass(frozen=True)
@@ -294,31 +323,59 @@ def aggregate_quality_metrics(
     totals = {
         "requirement_correct": sum(r.requirement_correct for r in results),
         "requirement_total": sum(r.requirement_total for r in results),
+        "space_fact_correct": sum(r.space_fact_correct for r in results),
+        "space_fact_total": sum(r.space_fact_total for r in results),
         "low_confidence_confirmed": sum(
             r.low_confidence_confirmed for r in results
         ),
         "low_confidence_facts": sum(r.low_confidence_facts for r in results),
         "valid_skus": sum(r.valid_skus for r in results),
         "recommended_skus": sum(r.recommended_skus for r in results),
+        "product_match_accepted": sum(
+            r.product_match_accepted for r in results
+        ),
+        "product_match_checks": sum(r.product_match_checks for r in results),
         "quote_consistent": sum(r.quote_consistent for r in results),
         "quote_checks": sum(r.quote_checks for r in results),
+        "budget_within_limit": sum(r.budget_within_limit for r in results),
+        "budget_checks": sum(r.budget_checks for r in results),
         "layout_hard_passes": sum(r.layout_hard_passes for r in results),
         "layout_checks": sum(r.layout_checks for r in results),
+        "style_consistent": sum(r.style_consistent for r in results),
+        "style_checks": sum(r.style_checks for r in results),
+        "human_rating_sum": sum(r.human_rating_sum for r in results),
+        "human_rating_count": sum(r.human_rating_count for r in results),
     }
     metrics: dict[str, float | int | None] = {
         "requirement_accuracy": _rate(
             totals["requirement_correct"], totals["requirement_total"]
         ),
+        "space_fact_accuracy": _rate(
+            totals["space_fact_correct"], totals["space_fact_total"]
+        ),
         "low_confidence_confirmation_rate": _rate(
             totals["low_confidence_confirmed"], totals["low_confidence_facts"]
         ),
         "valid_sku_rate": _rate(totals["valid_skus"], totals["recommended_skus"]),
+        "product_match_acceptance_rate": _rate(
+            totals["product_match_accepted"], totals["product_match_checks"]
+        ),
         "quote_consistency_rate": _rate(
             totals["quote_consistent"], totals["quote_checks"]
+        ),
+        "budget_compliance_rate": _rate(
+            totals["budget_within_limit"], totals["budget_checks"]
         ),
         "layout_hard_constraint_pass_rate": _rate(
             totals["layout_hard_passes"], totals["layout_checks"]
         ),
+        "style_consistency_rate": _rate(
+            totals["style_consistent"], totals["style_checks"]
+        ),
+        "human_satisfaction_mean": _rate(
+            totals["human_rating_sum"], totals["human_rating_count"]
+        ),
+        "human_satisfaction_count": totals["human_rating_count"],
         "generation_success_rate": _rate(
             sum(1 for r in results if r.generation_succeeded), len(results)
         ),

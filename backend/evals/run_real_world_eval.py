@@ -36,10 +36,15 @@ class EvaluationEvidence:
 
 _HIGHER_IS_BETTER = (
     "requirement_accuracy",
+    "space_fact_accuracy",
     "low_confidence_confirmation_rate",
     "valid_sku_rate",
+    "product_match_acceptance_rate",
     "quote_consistency_rate",
+    "budget_compliance_rate",
     "layout_hard_constraint_pass_rate",
+    "style_consistency_rate",
+    "human_satisfaction_mean",
     "generation_success_rate",
 )
 _LOWER_IS_BETTER = (
