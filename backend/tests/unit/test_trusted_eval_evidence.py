@@ -27,10 +27,12 @@ from evals.run_real_world_eval import (
 )
 from evals.trusted_evidence import (
     RunBinding,
+    _signature,
     bind_evaluation_run,
     collect_trusted_evidence,
     dataset_fingerprint,
     evaluation_run_idempotency_key,
+    verify_trusted_evidence,
 )
 from tests.real_world_fixtures import write_v2_manifest
 
@@ -281,8 +283,9 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
         dataset,
         split="regression",
     )
-    assert execution["task_id"] == run.task_id
-    assert execution["system_run_id"] == run.id
+    assert execution["execution_ref"].startswith("exec-hmac-sha256:")
+    assert "task_id" not in execution
+    assert "system_run_id" not in execution
     assert execution["model"] == run.model
     assert bundle["versions"] == {
         "model": run.model,
@@ -296,6 +299,99 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
     assert "private prompt content" not in serialized
     assert "private_requirement" not in serialized
     assert "private_output" not in serialized
+
+
+def test_execution_ref_is_stable_per_deployment_key_and_domain_isolated(
+    db,
+    tmp_path,
+):
+    dataset = _dataset(tmp_path)
+    run = _completed_system_run(
+        db,
+        dataset=dataset,
+        case_id="private-case-alias",
+    )
+    bindings = (RunBinding("private-case-alias", run.task_id, run.id),)
+
+    first = collect_trusted_evidence(
+        db,
+        dataset=dataset,
+        split="regression",
+        bindings=bindings,
+        signing_key=SIGNING_KEY,
+        key_id="quality-ci-1",
+    )
+    second = collect_trusted_evidence(
+        db,
+        dataset=dataset,
+        split="regression",
+        bindings=bindings,
+        signing_key=SIGNING_KEY,
+        key_id="quality-ci-1",
+    )
+    other_domain = collect_trusted_evidence(
+        db,
+        dataset=dataset,
+        split="regression",
+        bindings=bindings,
+        signing_key="different-deployment-key-that-is-at-least-32-bytes",
+        key_id="quality-ci-2",
+    )
+
+    assert first["executions"][0]["execution_ref"] == second["executions"][0][
+        "execution_ref"
+    ]
+    assert first["executions"][0]["execution_ref"] != other_domain["executions"][
+        0
+    ]["execution_ref"]
+
+
+def test_verifier_rejects_raw_database_ids_and_duplicate_execution_refs(
+    db,
+    tmp_path,
+):
+    dataset = _two_case_dataset(tmp_path)
+    run_a = _completed_system_run(db, dataset=dataset, case_id="private-a")
+    run_b = _completed_system_run(db, dataset=dataset, case_id="private-b")
+    bundle = collect_trusted_evidence(
+        db,
+        dataset=dataset,
+        split="regression",
+        bindings=(
+            RunBinding("private-a", run_a.task_id, run_a.id),
+            RunBinding("private-b", run_b.task_id, run_b.id),
+        ),
+        signing_key=SIGNING_KEY,
+        key_id="quality-ci-1",
+    )
+
+    raw_ids = json.loads(json.dumps(bundle))
+    raw_execution = raw_ids["executions"][0]
+    raw_execution["task_id"] = run_a.task_id
+    raw_execution["system_run_id"] = run_a.id
+    unsigned = {key: value for key, value in raw_ids.items() if key != "attestation"}
+    raw_ids["attestation"]["signature"] = _signature(unsigned, SIGNING_KEY)
+    with pytest.raises(EvaluationInputError, match="execution 字段不合法"):
+        verify_trusted_evidence(
+            raw_ids,
+            dataset=dataset,
+            split="regression",
+            verification_keys={"quality-ci-1": SIGNING_KEY},
+        )
+
+    duplicate = json.loads(json.dumps(bundle))
+    duplicate["executions"][1]["execution_ref"] = duplicate["executions"][0][
+        "execution_ref"
+    ]
+    unsigned = {key: value for key, value in duplicate.items() if key != "attestation"}
+    duplicate["attestation"]["signature"] = _signature(unsigned, SIGNING_KEY)
+    with pytest.raises(EvaluationInputError, match="execution_ref"):
+        verify_trusted_evidence(
+            duplicate,
+            dataset=dataset,
+            split="regression",
+            verification_keys={"quality-ci-1": SIGNING_KEY},
+        )
 
 
 @pytest.mark.parametrize(
