@@ -492,13 +492,35 @@ def test_model_cost_reservation_accumulates_and_rejects_over_task_limit(db):
         estimated_cost_cny=0.4,
         cost_limit_cny=1.0,
     ) == pytest.approx(0.4)
-    assert generation_run_service.reserve_model_cost(
+    assert generation_run_service.mark_failed(
         db,
-        run_id=run.id,
+        run=run,
         worker_id="worker-a",
         worker_attempt=1,
+        error_message="不可重试的上游错误",
+        retryable=False,
+    ) == "failed"
+
+    second_run = generation_run_service.create_run(
+        db,
+        task=task,
+        idempotency_key="second-run",
+        max_attempts=3,
+    )
+    second_run = generation_run_service.claim_next_run(
+        db,
+        run_id=second_run.id,
+        worker_id="worker-b",
+        lease_seconds=60,
+    )
+    assert second_run is not None
+    assert generation_run_service.reserve_model_cost(
+        db,
+        run_id=second_run.id,
+        worker_id="worker-b",
+        worker_attempt=1,
         estimated_cost_cny=0.5,
-        cost_limit_cny=1.0,
+        cost_limit_cny=2.0,
     ) == pytest.approx(0.9)
 
     with pytest.raises(
@@ -507,16 +529,19 @@ def test_model_cost_reservation_accumulates_and_rejects_over_task_limit(db):
     ):
         generation_run_service.reserve_model_cost(
             db,
-            run_id=run.id,
-            worker_id="worker-a",
+            run_id=second_run.id,
+            worker_id="worker-b",
             worker_attempt=1,
             estimated_cost_cny=0.2,
-            cost_limit_cny=1.0,
+            cost_limit_cny=2.0,
         )
 
     db.refresh(run)
-    assert run.cost_reserved_cny == pytest.approx(0.9)
+    db.refresh(second_run)
+    assert run.cost_reserved_cny == pytest.approx(0.4)
     assert run.cost_limit_cny == pytest.approx(1.0)
+    assert second_run.cost_reserved_cny == pytest.approx(0.5)
+    assert second_run.cost_limit_cny == pytest.approx(1.0)
 
 
 @pytest.mark.unit

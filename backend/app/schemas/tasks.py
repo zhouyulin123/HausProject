@@ -47,6 +47,7 @@ class GenerationQueuedResponse(BaseModel):
         "completed",
         "failed",
         "dead_letter",
+        "cost_limit_exceeded",
         "cancelled",
     ]
 
@@ -74,6 +75,9 @@ class GenerationStatusResponse(BaseModel):
     next_retry_at: Optional[datetime] = None
     execution_deadline_at: Optional[datetime] = None
     dead_lettered_at: Optional[datetime] = None
+    cost_cny: Optional[float] = None
+    cost_reserved_cny: float = 0.0
+    cost_limit_cny: Optional[float] = None
     events: List[GenerationEventResponse] = Field(default_factory=list)
 
 

@@ -5,8 +5,12 @@
 """
 
 import base64
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import logging
+import math
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -26,6 +30,11 @@ _vl_client: Optional[OpenAI] = None
 # 最近一次 generate_plans 的完整生成元数据（模型/Prompt/输入/用量/成本）。
 # 由 generate_plans 成功调用后更新，tasks 层在 workflow.run 之后读取落库。
 _last_generation_meta: Optional[Dict[str, Any]] = None
+ModelCostGuard = Callable[[Optional[float]], None]
+_model_cost_guard: ContextVar[ModelCostGuard | None] = ContextVar(
+    "model_cost_guard",
+    default=None,
+)
 
 
 def last_generation_meta() -> Optional[Dict[str, Any]]:
@@ -51,6 +60,35 @@ def estimate_cost_cny(
         / 1_000_000,
         6,
     )
+
+
+def estimate_model_call_cost_ceiling_cny(
+    *,
+    system: str,
+    user: str,
+    max_tokens: int,
+    input_price_per_mtok: Optional[float],
+    output_price_per_mtok: Optional[float],
+) -> Optional[float]:
+    """按输入字节上界和最大输出 token 计算保守调用成本。"""
+    if input_price_per_mtok is None or output_price_per_mtok is None:
+        return None
+    prompt_token_ceiling = len((system + user).encode("utf-8")) + 256
+    raw_cost = (
+        prompt_token_ceiling * input_price_per_mtok
+        + max(0, max_tokens) * output_price_per_mtok
+    ) / 1_000_000
+    return math.ceil(raw_cost * 1_000_000) / 1_000_000
+
+
+@contextmanager
+def model_cost_guard(guard: ModelCostGuard) -> Iterator[None]:
+    """仅在当前执行上下文注入模型调用前的成本审批。"""
+    token = _model_cost_guard.set(guard)
+    try:
+        yield
+    finally:
+        _model_cost_guard.reset(token)
 
 
 def get_client() -> OpenAI:
@@ -87,8 +125,20 @@ def _chat_json(
     usage_out: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """调用 DeepSeek 并解析 JSON 输出。usage_out 传入时写入 token 用量。"""
+    client = get_client()
+    guard = _model_cost_guard.get()
+    if guard is not None:
+        guard(
+            estimate_model_call_cost_ceiling_cny(
+                system=system,
+                user=user,
+                max_tokens=max_tokens,
+                input_price_per_mtok=settings.llm_input_price_per_mtok,
+                output_price_per_mtok=settings.llm_output_price_per_mtok,
+            )
+        )
     try:
-        resp = get_client().chat.completions.create(
+        resp = client.chat.completions.create(
             model=settings.llm_model,
             messages=[
                 {"role": "system", "content": system},

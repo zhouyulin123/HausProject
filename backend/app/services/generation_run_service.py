@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import math
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
@@ -29,6 +30,71 @@ NODE_PROGRESS = {
 
 class GenerationRunOwnershipError(RuntimeError):
     """Worker 已失去租约或任务被取消，当前执行不得继续提交。"""
+
+
+class GenerationCostGuardError(GenerationRunOwnershipError):
+    """模型调用被任务成本策略中止。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        estimated_cost_cny: float | None,
+        reserved_cost_cny: float,
+        cost_limit_cny: float,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.estimated_cost_cny = estimated_cost_cny
+        self.reserved_cost_cny = reserved_cost_cny
+        self.cost_limit_cny = cost_limit_cny
+
+    @property
+    def details(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "estimated_cost_cny": self.estimated_cost_cny,
+            "reserved_cost_cny": self.reserved_cost_cny,
+            "cost_limit_cny": self.cost_limit_cny,
+        }
+
+
+class GenerationCostConfigurationError(GenerationCostGuardError):
+    """缺少可验证的模型成本配置。"""
+
+    def __init__(
+        self,
+        *,
+        reserved_cost_cny: float,
+        cost_limit_cny: float,
+    ) -> None:
+        super().__init__(
+            "模型 token 单价未完整配置，已阻止付费调用",
+            code="model_cost_unavailable",
+            estimated_cost_cny=None,
+            reserved_cost_cny=reserved_cost_cny,
+            cost_limit_cny=cost_limit_cny,
+        )
+
+
+class GenerationCostLimitExceeded(GenerationCostGuardError):
+    """模型调用会超出任务成本上限。"""
+
+    def __init__(
+        self,
+        *,
+        estimated_cost_cny: float,
+        reserved_cost_cny: float,
+        cost_limit_cny: float,
+    ) -> None:
+        super().__init__(
+            "模型调用将超过单任务成本上限，需人工确认",
+            code="task_cost_limit_exceeded",
+            estimated_cost_cny=estimated_cost_cny,
+            reserved_cost_cny=reserved_cost_cny,
+            cost_limit_cny=cost_limit_cny,
+        )
 
 
 def create_run(
@@ -366,6 +432,93 @@ def assert_worker_ownership(
     )
 
 
+def reserve_model_cost(
+    db: Session,
+    *,
+    run_id: int,
+    worker_id: str,
+    worker_attempt: int,
+    estimated_cost_cny: float | None,
+    cost_limit_cny: float,
+    now: datetime | None = None,
+) -> float:
+    """在调用供应商前原子预留任务成本，返回任务累计预留值。"""
+    run_task_id = db.scalar(
+        select(GenerationRun.task_id).where(GenerationRun.id == run_id)
+    )
+    if run_task_id is None:
+        db.rollback()
+        raise GenerationRunOwnershipError("方案生成任务不存在")
+
+    # 同一 DesignTask 是成本账本的并发串行化锁。
+    task = db.scalar(
+        select(DesignTask)
+        .where(DesignTask.id == run_task_id)
+        .with_for_update()
+    )
+    run = _owned_run(
+        db,
+        run_id=run_id,
+        worker_id=worker_id,
+        worker_attempt=worker_attempt,
+        now=now,
+        lock=True,
+    )
+    if task is None or run is None:
+        db.rollback()
+        raise GenerationRunOwnershipError("方案生成任务已失去租约或被取消")
+
+    persisted_limit = db.scalar(
+        select(func.min(GenerationRun.cost_limit_cny)).where(
+            GenerationRun.task_id == task.id,
+            GenerationRun.cost_limit_cny.is_not(None),
+        )
+    )
+    effective_limit = float(
+        persisted_limit if persisted_limit is not None else cost_limit_cny
+    )
+    reserved = float(
+        db.scalar(
+            select(func.coalesce(func.sum(GenerationRun.cost_reserved_cny), 0.0))
+            .where(GenerationRun.task_id == task.id)
+        )
+        or 0.0
+    )
+    if (
+        not math.isfinite(effective_limit)
+        or effective_limit <= 0
+        or estimated_cost_cny is None
+    ):
+        error = GenerationCostConfigurationError(
+            reserved_cost_cny=reserved,
+            cost_limit_cny=max(0.0, effective_limit),
+        )
+        db.rollback()
+        raise error
+
+    estimated = float(estimated_cost_cny)
+    if not math.isfinite(estimated) or estimated < 0:
+        error = GenerationCostConfigurationError(
+            reserved_cost_cny=reserved,
+            cost_limit_cny=effective_limit,
+        )
+        db.rollback()
+        raise error
+    if reserved + estimated > effective_limit + 1e-9:
+        error = GenerationCostLimitExceeded(
+            estimated_cost_cny=estimated,
+            reserved_cost_cny=reserved,
+            cost_limit_cny=effective_limit,
+        )
+        db.rollback()
+        raise error
+
+    run.cost_limit_cny = effective_limit
+    run.cost_reserved_cny = float(run.cost_reserved_cny or 0.0) + estimated
+    db.commit()
+    return reserved + estimated
+
+
 def renew_lease(
     db: Session,
     *,
@@ -595,6 +748,58 @@ def mark_failed(
     return run.status
 
 
+def mark_cost_guard_blocked(
+    db: Session,
+    *,
+    run_id: int,
+    worker_id: str,
+    worker_attempt: int,
+    error: GenerationCostGuardError,
+    now: datetime | None = None,
+) -> bool:
+    """把成本策略拒绝收敛为可查询、不重试的人工接管终态。"""
+    current = _as_utc(now or datetime.now(timezone.utc))
+    run = _owned_run(
+        db,
+        run_id=run_id,
+        worker_id=worker_id,
+        worker_attempt=worker_attempt,
+        now=current,
+        lock=True,
+    )
+    if run is None:
+        db.rollback()
+        return False
+
+    _clear_worker(run)
+    run.status = "cost_limit_exceeded"
+    run.progress = 100
+    run.current_node = "cost_guard"
+    run.error_message = str(error)[:2000]
+    run.cost_limit_cny = error.cost_limit_cny
+    run.next_retry_at = None
+    run.completed_at = current
+    db.add(
+        GenerationRunEvent(
+            run_id=run.id,
+            node="cost_guard",
+            status="failed",
+            progress=100,
+            source="deterministic",
+            detail_json=error.details,
+        )
+    )
+    _set_task_state(
+        db,
+        run=run,
+        status="needs_human",
+        progress=0,
+        error_message=run.error_message,
+    )
+    db.commit()
+    return True
+
+
 def request_cancel(
     db: Session,
     *,
@@ -612,7 +817,13 @@ def request_cancel(
         db.rollback()
         return "failed"
     run = locked_run
-    if run.status in {"completed", "failed", "dead_letter", "cancelled"}:
+    if run.status in {
+        "completed",
+        "failed",
+        "dead_letter",
+        "cancelled",
+        "cost_limit_exceeded",
+    }:
         db.commit()
         return run.status
     run.cancel_requested_at = run.cancel_requested_at or current

@@ -797,6 +797,10 @@ class GenerationRun(Base):
     output_snapshot = Column(JSON, nullable=True)  # 方案摘要（名称/风格/预算/评分/家具数）
     usage_json = Column(JSON, nullable=True)  # token 用量（prompt/completion/total）
     cost_cny = Column(Float, nullable=True)  # 估算成本（配置单价后才有值）
+    cost_reserved_cny = Column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    cost_limit_cny = Column(Float, nullable=True)
     worker_id = Column(String(100), nullable=True, index=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
     heartbeat_at = Column(DateTime(timezone=True), nullable=True)

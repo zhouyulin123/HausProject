@@ -34,8 +34,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("LLM_MODEL", "DEEPSEEK_MODEL"),
     )
     # 可选：每百万 token 单价（元），配置后才会估算方案生成成本并写入 generation_runs
-    llm_input_price_per_mtok: float | None = None
-    llm_output_price_per_mtok: float | None = None
+    llm_input_price_per_mtok: float | None = Field(
+        default=None, gt=0, le=1_000_000
+    )
+    llm_output_price_per_mtok: float | None = Field(
+        default=None, gt=0, le=1_000_000
+    )
 
     # 视觉模型（SiliconFlow 上的 Qwen3-VL：户型图 / 房间照片分析）
     vl_api_key: str = ""
@@ -103,13 +107,19 @@ class Settings(BaseSettings):
     generation_worker_execution_timeout_seconds: int = Field(
         default=900, ge=30, le=7200
     )
+    generation_task_cost_limit_cny: float = Field(
+        default=1.0, gt=0, le=1000
+    )
     generation_worker_retry_base_seconds: int = Field(default=5, ge=1, le=600)
     generation_inline_fallback: bool = False
     # 阶段 4 失败分诊报告验签；未配置时管理端同步接口关闭。
     eval_report_signing_key: str = ""
 
     model_config = SettingsConfigDict(
-        env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore"
+        env_file=str(_ENV_FILE),
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
     )
 
     @property
@@ -137,6 +147,12 @@ class Settings(BaseSettings):
 
         if self.generation_inline_fallback:
             raise ValueError("生产环境不能启用 GENERATION_INLINE_FALLBACK")
+
+        if self.llm_api_key and (
+            self.llm_input_price_per_mtok is None
+            or self.llm_output_price_per_mtok is None
+        ):
+            raise ValueError("生产环境启用 LLM 时必须配置输入与输出 token 单价")
 
         weak_jwt_values = {
             "dev-secret-change-me-in-production",

@@ -14,7 +14,7 @@ import time
 from app.core.config import settings
 from app.db.database import SessionLocal
 from app.db.models import DesignTask, GenerationRun
-from app.services import generation_run_service
+from app.services import generation_run_service, llm_service
 
 
 logger = logging.getLogger(__name__)
@@ -177,7 +177,19 @@ def process_one_run(
             }
             if "on_success" in inspect.signature(selected_executor).parameters:
                 executor_kwargs["on_success"] = persist_success
-            response = selected_executor(db, **executor_kwargs)
+
+            def reserve_model_call(estimated_cost_cny: float | None) -> None:
+                generation_run_service.reserve_model_cost(
+                    db,
+                    run_id=claimed_run_id,
+                    worker_id=worker_id,
+                    worker_attempt=worker_attempt,
+                    estimated_cost_cny=estimated_cost_cny,
+                    cost_limit_cny=settings.generation_task_cost_limit_cny,
+                )
+
+            with llm_service.model_cost_guard(reserve_model_call):
+                response = selected_executor(db, **executor_kwargs)
             if finalized:
                 db.commit()
             elif not generation_run_service.mark_completed(
@@ -191,6 +203,34 @@ def process_one_run(
                     "方案生成结果提交前已失去租约"
                 )
         logger.info("方案生成完成: run_id=%s", claimed_run_id)
+    except generation_run_service.GenerationCostGuardError as exc:
+        logger.warning(
+            "方案生成被成本策略阻止: run_id=%s code=%s",
+            claimed_run_id,
+            exc.code,
+        )
+        with SessionLocal() as db:
+            blocked = generation_run_service.mark_cost_guard_blocked(
+                db,
+                run_id=claimed_run_id,
+                worker_id=worker_id,
+                worker_attempt=worker_attempt,
+                error=exc,
+            )
+            if not blocked:
+                cancelled = generation_run_service.mark_cancelled_by_worker(
+                    db,
+                    run_id=claimed_run_id,
+                    worker_id=worker_id,
+                    worker_attempt=worker_attempt,
+                )
+                if not cancelled:
+                    generation_run_service.recover_expired_runs(
+                        db,
+                        retry_delay_seconds=(
+                            settings.generation_worker_retry_base_seconds
+                        ),
+                    )
     except generation_run_service.GenerationRunOwnershipError:
         logger.warning("方案生成执行已停止: run_id=%s", claimed_run_id)
         with SessionLocal() as db:

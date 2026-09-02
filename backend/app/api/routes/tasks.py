@@ -469,6 +469,9 @@ def get_generation_status(
         next_retry_at=run.next_retry_at,
         execution_deadline_at=run.execution_deadline_at,
         dead_lettered_at=run.dead_lettered_at,
+        cost_cny=run.cost_cny,
+        cost_reserved_cny=run.cost_reserved_cny or 0.0,
+        cost_limit_cny=run.cost_limit_cny,
         events=[
             GenerationEventResponse(
                 node=event.node,

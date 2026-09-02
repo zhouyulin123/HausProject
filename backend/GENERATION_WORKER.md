@@ -28,11 +28,13 @@ Windows 也可以双击 `backend/start_generation_worker.bat`。生产部署应�
 
 - `queued`：等待认领，失败退避期间由 `next_retry_at` 控制再次执行时间。
 - `running`：Worker 已持有租约，并按固定间隔续租。
-- `completed`、`failed`、`dead_letter`、`cancelled`：不会再被 Worker 认领的终态；其中 `dead_letter` 表示硬截止时间到期或可重试执行已耗尽。
+- `completed`、`failed`、`dead_letter`、`cancelled`、`cost_limit_exceeded`：不会再被 Worker 认领的终态；其中 `dead_letter` 表示硬截止时间到期或可重试执行已耗尽，`cost_limit_exceeded` 表示任务已转人工确认。
 - 首次认领会固定整个运行的 `execution_deadline_at`。心跳只能把租约续到该时间，不能延长总执行窗口；后续 attempt 也沿用同一截止时间。
 - Worker 异常退出后，其他 Worker 会回收过期租约；仍有次数且能在截止时间前退避则重新入队，否则进入 `dead_letter`，对应设计任务状态为 `failed`。
 - `Idempotency-Key` 在同一设计任务内唯一，相同键重复请求会返回原运行，不会重复执行。
 - 运行中收到取消请求后，Worker 会在步骤写入或最终持久化前停止；最终结果提交与 `completed` 状态处于同一数据库事务。
+- 每次文本模型调用前会按输入字节上界和最大输出 token 保守估算，并在数据库中原子预留成本。账本按设计任务聚合，后续重试或新运行不会重置上限。
+- 价格配置缺失或余额不足时，供应商请求不会发出，也不会伪装成模板生成成功。运行会写入 `cost_guard` 事件并转人工处理。
 
 ## 主要配置
 
@@ -42,6 +44,8 @@ Windows 也可以双击 `backend/start_generation_worker.bat`。生产部署应�
 - `GENERATION_WORKER_HEARTBEAT_SECONDS`：续租间隔，默认 15 秒，必须显著小于租约。
 - `GENERATION_WORKER_EXECUTION_TIMEOUT_SECONDS`：单个持久化运行的总执行窗口，默认 900 秒，范围 30–7200 秒；生产必须为正值。
 - `GENERATION_WORKER_RETRY_BASE_SECONDS`：指数退避基数，默认 5 秒。
+- `GENERATION_TASK_COST_LIMIT_CNY`：单个设计任务的文本模型保守预留成本上限，默认 1 元，范围 `(0, 1000]`。
+- `LLM_INPUT_PRICE_PER_MTOK` / `LLM_OUTPUT_PRICE_PER_MTOK`：每百万 token 人民币单价。生产环境启用 LLM 时必填；Worker 运行期缺失也会闭合阻断调用。
 - `GENERATION_INLINE_FALLBACK`：仅用于显式本地调试，默认关闭，生产环境配置为 `true` 会拒绝启动。
 
-接口行为：`POST /api/design/tasks/{task_id}/generate-async` 入队，`GET /api/design/tasks/{task_id}/generation` 查询状态（含 `execution_deadline_at` 与 `dead_lettered_at`），`POST /api/design/tasks/{task_id}/generation/cancel` 请求取消。
+接口行为：`POST /api/design/tasks/{task_id}/generate-async` 入队，`GET /api/design/tasks/{task_id}/generation` 查询状态（含 `execution_deadline_at`、`dead_lettered_at`、`cost_cny`、`cost_reserved_cny` 与 `cost_limit_cny`），`POST /api/design/tasks/{task_id}/generation/cancel` 请求取消。
