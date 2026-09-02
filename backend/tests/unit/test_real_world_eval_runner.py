@@ -9,6 +9,7 @@ from evals.run_real_world_eval import (
     build_evaluation_report,
     compare_evaluation_reports,
     load_case_results,
+    main as run_eval_main,
     render_markdown,
 )
 
@@ -270,3 +271,70 @@ def test_regression_comparison_rejects_different_dataset_or_case_set(tmp_path):
     wrong_cases["dataset"]["eligible_case_ids"] = ["case-a"]
     with pytest.raises(EvaluationInputError, match="案例集合"):
         compare_evaluation_reports(report, wrong_cases)
+
+
+def test_cli_baseline_report_fails_candidate_that_regresses_above_absolute_gate(
+    tmp_path,
+):
+    dataset = _manifest(tmp_path)
+    baseline_results = _write_json(
+        tmp_path / "baseline-results.json",
+        {
+            "schema_version": "1.0",
+            "versions": {
+                "model": "m1",
+                "prompt": "p1",
+                "rules": "r1",
+                "data": "data-1",
+            },
+            "results": [_result("case-a"), _result("case-b")],
+        },
+    )
+    candidate_case = _result("case-b")
+    candidate_case["requirement_correct"] = 19
+    candidate_results = _write_json(
+        tmp_path / "candidate-results.json",
+        {
+            "schema_version": "1.0",
+            "versions": {
+                "model": "m2",
+                "prompt": "p2",
+                "rules": "r1",
+                "data": "data-1",
+            },
+            "results": [_result("case-a"), candidate_case],
+        },
+    )
+    baseline_report = build_evaluation_report(
+        dataset=dataset,
+        evidence=load_case_results(baseline_results, dataset=dataset),
+    )
+    baseline_report_path = _write_json(
+        tmp_path / "baseline-report.json",
+        baseline_report,
+    )
+    output_dir = tmp_path / "reports"
+
+    exit_code = run_eval_main(
+        [
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--results",
+            str(candidate_results),
+            "--baseline-report",
+            str(baseline_report_path),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    report = json.loads(
+        (output_dir / "real_world_eval.json").read_text(encoding="utf-8")
+    )
+    assert report["gate_passed"] is True
+    assert report["regression_comparison"]["passed"] is False
+    assert report["overall_passed"] is False
+    assert exit_code == 1
+    markdown = (output_dir / "real_world_eval.md").read_text(encoding="utf-8")
+    assert "版本回归 | FAIL" in markdown
+    assert "requirement_accuracy" in markdown
