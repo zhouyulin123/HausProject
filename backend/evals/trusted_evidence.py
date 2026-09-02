@@ -641,9 +641,8 @@ def _runtime_result(
         quote_consistent=quote_consistent,
         budget_checks=len(plans),
         budget_within_limit=budget_within_limit,
-        layout_checks=(
-            len(expected_constraints) * len(plans) - layout_no_evidence
-        ),
+        # 缺少几何表达也是未满足真实标注，不能通过缩小分母抬高通过率。
+        layout_checks=len(expected_constraints) * len(plans),
         layout_hard_passes=layout_passes,
         layout_no_evidence=layout_no_evidence,
         style_checks=len(plans),
