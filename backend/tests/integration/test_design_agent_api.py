@@ -11,6 +11,7 @@ from app.api.routes import design_agent, upload
 from app.db.database import Base, get_db
 from app.db.models import (
     ChatLog,
+    CustomQuoteRule,
     DesignAgentEvent,
     DesignAgentTurn,
     DesignRevision,
@@ -68,6 +69,16 @@ def agent_api_context(monkeypatch):
                 style="现代简约",
                 price=5000,
                 data_origin="merchant_draft",
+                is_active=True,
+            )
+        )
+        db.add(
+            CustomQuoteRule(
+                project_name="定制衣柜",
+                category="柜类定制",
+                pricing_unit="㎡",
+                material_grade="E0 颗粒板",
+                unit_price=680,
                 is_active=True,
             )
         )
@@ -522,3 +533,240 @@ def test_workspace_upload_rejects_foreign_task_before_analysis(agent_api_context
     )
 
     assert response.status_code == 404
+
+
+def _custom_cabinet_spec():
+    return {
+        "family": "cabinet",
+        "name": "主卧定制衣柜",
+        "purpose": "wardrobe",
+        "material": "E0 颗粒板",
+        "dimensions": {
+            "width_mm": 1200,
+            "height_mm": 2400,
+            "depth_mm": 600,
+        },
+        "structure": {
+            "door_style": "hinged",
+            "door_count": 3,
+            "compartment_count": 3,
+            "shelf_count": 4,
+            "drawer_count": 2,
+            "panel_thickness_mm": 18,
+            "leg_height_mm": 80,
+        },
+    }
+
+
+@pytest.mark.integration
+def test_custom_furniture_agent_collects_partial_spec_across_turns(
+    agent_api_context,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+
+    first = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "custom-missing-family-001",
+            "message": "我想定制一件家具",
+            "active_mode": "custom_furniture",
+        },
+    )
+    second = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "custom-missing-structure-002",
+            "message": "做主卧衣柜",
+            "active_mode": "custom_furniture",
+            "custom_furniture_spec": {
+                "family": "cabinet",
+                "name": "主卧定制衣柜",
+                "purpose": "wardrobe",
+                "material": "E0 颗粒板",
+                "dimensions": {
+                    "width_mm": 1200,
+                    "height_mm": 2400,
+                    "depth_mm": 600,
+                },
+            },
+        },
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["intent"] == "custom_furniture"
+    assert [question["field"] for question in first.json()["pending_questions"]] == [
+        "custom_furniture_spec.family"
+    ]
+    assert [question["field"] for question in second.json()["pending_questions"]] == [
+        "custom_furniture_spec.structure"
+    ]
+    assert second.json()["state"]["custom_furniture_spec"]["family"] == "cabinet"
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task.agent_state_json["custom_furniture_spec"]["dimensions"] == {
+            "width_mm": 1200,
+            "height_mm": 2400,
+            "depth_mm": 600,
+        }
+
+
+@pytest.mark.integration
+def test_custom_furniture_agent_completes_unique_quote_preview(
+    agent_api_context,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "custom-complete-001",
+            "message": "生成衣柜预览和报价",
+            "active_mode": "custom_furniture",
+            "custom_furniture_spec": _custom_cabinet_spec(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["exit_reason"] == "goal_completed"
+    assert payload["approval_required"] is False
+    assert payload["result"]["status"] == "preview_ready"
+    assert payload["result"]["quote_preview"]["estimated_amount"] == "1958.40"
+    assert payload["result"]["model_spec"]["确定性建模规则"]["生成器"] == "cabinet_v2"
+    assert next(event for event in payload["events"] if event["node"] == "custom_furniture_preview")
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task.agent_state_json["custom_furniture_spec"] == _custom_cabinet_spec()
+        assert task.agent_state_json["result"] == payload["result"]
+
+
+@pytest.mark.integration
+def test_custom_furniture_agent_missing_quote_requires_approval_without_retry(
+    agent_api_context,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+    table_spec = {
+        "family": "table",
+        "name": "六人位餐桌",
+        "purpose": "dining_table",
+        "material": "实木（橡木）",
+        "dimensions": {
+            "width_mm": 1600,
+            "height_mm": 750,
+            "depth_mm": 800,
+        },
+        "structure": {
+            "top_shape": "rectangle",
+            "base_style": "four_leg",
+            "support_count": 4,
+            "seat_count": 6,
+            "top_thickness_mm": 36,
+            "edge_radius_mm": 12,
+        },
+    }
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "custom-approval-001",
+            "message": "生成餐桌预览",
+            "active_mode": "custom_furniture",
+            "custom_furniture_spec": table_spec,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "needs_human"
+    assert payload["approval_required"] is True
+    assert payload["state"]["approval_required"] is True
+    assert payload["exit_reason"] == "approval_required"
+    assert payload["state"]["retry_count"] == 0
+    assert payload["result"]["quote_preview"]["reason_code"] == "quote_rule_missing"
+
+
+@pytest.mark.integration
+def test_custom_furniture_agent_idempotency_does_not_repeat_preview_tool(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    original = design_agent.design_agent_service.custom_furniture_service.build_preview
+    calls = []
+
+    def counted_preview(db, spec):
+        calls.append(spec.family)
+        return original(db, spec)
+
+    monkeypatch.setattr(
+        design_agent.design_agent_service.custom_furniture_service,
+        "build_preview",
+        counted_preview,
+    )
+    body = {
+        "client_turn_id": "custom-idempotent-001",
+        "message": "生成衣柜预览和报价",
+        "active_mode": "custom_furniture",
+        "custom_furniture_spec": _custom_cabinet_spec(),
+    }
+
+    first = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=body,
+    )
+    second = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=body,
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert second.json() == first.json()
+    assert calls == ["cabinet"]
+    with factory() as db:
+        turn = db.scalars(
+            select(DesignAgentTurn).where(
+                DesignAgentTurn.task_id == task_id,
+                DesignAgentTurn.client_turn_id == "custom-idempotent-001",
+            )
+        ).one()
+        events = db.scalars(
+            select(DesignAgentEvent).where(DesignAgentEvent.turn_id == turn.id)
+        ).all()
+        assert len([event for event in events if event.node == "custom_furniture_preview"]) == 1
+
+
+@pytest.mark.integration
+def test_custom_furniture_invalid_structure_waits_without_retry_or_500(
+    agent_api_context,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+    invalid = _custom_cabinet_spec()
+    invalid["structure"] = {**invalid["structure"], "door_style": "open"}
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "custom-invalid-001",
+            "message": "用这个结构生成",
+            "active_mode": "custom_furniture",
+            "custom_furniture_spec": invalid,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "waiting_user"
+    assert payload["exit_reason"] == "invalid_facts"
+    assert payload["state"]["retry_count"] == 0
+    assert payload["result"] is None
+    assert [question["field"] for question in payload["pending_questions"]] == [
+        "custom_furniture_spec.structure"
+    ]

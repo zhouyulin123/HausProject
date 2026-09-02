@@ -144,3 +144,100 @@ def test_agent_never_completes_invalid_quote_result():
     assert result["status"] == "needs_human"
     assert result["exit_reason"] == "tool_failed"
     assert "invalid_quote" in result["hard_errors"]
+
+
+@pytest.mark.unit
+def test_agent_custom_furniture_waits_for_only_missing_structure():
+    calls = []
+    workflow = DesignAgentWorkflow(
+        retrieve_catalog=lambda _: (_ for _ in ()).throw(
+            AssertionError("定制家具不应检索成品商品")
+        ),
+        execute_design=lambda _: (_ for _ in ()).throw(
+            AssertionError("定制家具不应调用方案生成")
+        ),
+        execute_scene=lambda _: {},
+        execute_custom=lambda state: calls.append(state) or {},
+    )
+
+    result = workflow.run(
+        task_id=1,
+        turn_id=5,
+        active_mode="custom_furniture",
+        intent="custom_furniture",
+        message="做一个衣柜",
+        facts={},
+        custom_furniture_spec={
+            "family": "cabinet",
+            "name": "主卧衣柜",
+            "purpose": "wardrobe",
+            "material": "E0 颗粒板",
+            "dimensions": {
+                "width_mm": 1200,
+                "height_mm": 2400,
+                "depth_mm": 600,
+            },
+        },
+    )
+
+    assert calls == []
+    assert result["status"] == "waiting_user"
+    assert result["exit_reason"] == "missing_facts"
+    assert [question["field"] for question in result["pending_questions"]] == [
+        "custom_furniture_spec.structure"
+    ]
+
+
+@pytest.mark.unit
+def test_agent_custom_furniture_quote_handoff_never_retries():
+    attempts = []
+    workflow = DesignAgentWorkflow(
+        retrieve_catalog=lambda _: {},
+        execute_design=lambda _: {},
+        execute_scene=lambda _: {},
+        execute_custom=lambda state: attempts.append(state["retry_count"])
+        or {
+            "status": "needs_human",
+            "spec": state["custom_furniture_spec"],
+            "model_spec": {"确定性建模规则": {"规则状态": "ready"}},
+            "quote_preview": {
+                "status": "needs_human",
+                "reason_code": "quote_rule_missing",
+            },
+            "warnings": [],
+        },
+    )
+
+    result = workflow.run(
+        task_id=1,
+        turn_id=6,
+        active_mode="custom_furniture",
+        intent="custom_furniture",
+        message="生成餐桌预览",
+        facts={},
+        custom_furniture_spec={
+            "family": "table",
+            "name": "六人位餐桌",
+            "purpose": "dining_table",
+            "material": "实木（橡木）",
+            "dimensions": {
+                "width_mm": 1600,
+                "height_mm": 750,
+                "depth_mm": 800,
+            },
+            "structure": {
+                "top_shape": "rectangle",
+                "base_style": "four_leg",
+                "support_count": 4,
+                "seat_count": 6,
+                "top_thickness_mm": 36,
+                "edge_radius_mm": 12,
+            },
+        },
+    )
+
+    assert attempts == [0]
+    assert result["status"] == "needs_human"
+    assert result["approval_required"] is True
+    assert result["exit_reason"] == "approval_required"
+    assert result["retry_count"] == 0
