@@ -227,8 +227,16 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "content_digest",
             "original_prediction_json",
             "original_prediction_source",
+            "original_prediction_model",
             "original_prediction_digest",
         } <= uploaded_image_columns
+        requirement_parse_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "requirement_parse_results"
+            )
+        }
+        assert "parser_model" in requirement_parse_columns
         evaluation_binding_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns(

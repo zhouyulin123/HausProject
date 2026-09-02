@@ -111,6 +111,8 @@ def _task_with_predictions(
     room_id: str = "living",
     width_m: float | None = 4.2,
     prediction_source: str = "vl",
+    parser_model: str | None = "requirement-model-v1",
+    prediction_model: str | None = "vision-model-v1",
 ):
     case = dataset.cases[0]
     task = DesignTask(
@@ -130,6 +132,7 @@ def _task_with_predictions(
         raw_input=task.raw_user_input,
         parsed_json=parsed_json if parsed_json is not None else {"space_type": "客厅"},
         parser=parser,
+        parser_model=parser_model,
     )
     db.add(parse_result)
     room_model = _room_model(room_id=room_id, width_m=width_m)
@@ -143,6 +146,7 @@ def _task_with_predictions(
         image,
         raw_room_model=room_model,
         source=prediction_source,
+        model=prediction_model,
     )
     db.add(image)
     db.commit()
@@ -264,6 +268,8 @@ def test_metrics_use_frozen_pre_calibration_llm_and_vlm_predictions(db, tmp_path
     assert execution["prediction_digest"] == binding.prediction_digest
     room_prediction = binding.prediction_snapshot_json["space"]["room_model"]
     assert room_prediction["rooms"]["living"]["width_m"] == 4.2
+    assert binding.prediction_snapshot_json["requirement"]["model"] == "requirement-model-v1"
+    assert binding.prediction_snapshot_json["space"]["model"] == "vision-model-v1"
 
 
 def test_missing_or_untrusted_prediction_is_a_miss_not_a_smaller_denominator(db, tmp_path):
@@ -274,6 +280,8 @@ def test_missing_or_untrusted_prediction_is_a_miss_not_a_smaller_denominator(db,
         parser="rule",
         parsed_json={"space_type": "客厅"},
         prediction_source="placeholder",
+        parser_model=None,
+        prediction_model=None,
     )
 
     run = _complete_run(db, dataset, task)
@@ -284,6 +292,24 @@ def test_missing_or_untrusted_prediction_is_a_miss_not_a_smaller_denominator(db,
     assert result["space_fact_correct"] == 0
     assert result["space_fact_total"] == 1
     assert result["low_confidence_facts"] == 0
+
+
+def test_model_source_without_actual_model_identity_is_not_trusted(db, tmp_path):
+    dataset = _dataset(tmp_path)
+    task, _, _ = _task_with_predictions(
+        db,
+        dataset,
+        parser_model=None,
+        prediction_model=None,
+    )
+
+    run = _complete_run(db, dataset, task)
+    result = _collect(db, dataset, run)["executions"][0]["result"]
+
+    assert result["requirement_correct"] == 0
+    assert result["requirement_total"] == 1
+    assert result["space_fact_correct"] == 0
+    assert result["space_fact_total"] == 1
 
 
 def test_space_paths_are_addressed_by_room_id_without_single_room_fallback(db, tmp_path):
