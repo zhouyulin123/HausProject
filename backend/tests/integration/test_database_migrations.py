@@ -216,6 +216,8 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "request_digest",
             "input_digest",
             "provenance_schema_version",
+            "result_revision_id",
+            "output_digest",
         } <= generation_run_columns
         uploaded_image_columns = {
             column["name"]
@@ -257,6 +259,18 @@ def test_alembic_upgrades_empty_database_to_current_schema():
         assert generation_run_constraints[
             "uq_generation_runs_task_idempotency"
         ] == {"task_id", "idempotency_key"}
+        assert generation_run_constraints[
+            "uq_generation_runs_result_revision"
+        ] == {"result_revision_id"}
+        generation_foreign_keys = {
+            tuple(foreign_key["constrained_columns"]): foreign_key
+            for foreign_key in inspect(inspection_engine).get_foreign_keys(
+                "generation_runs"
+            )
+        }
+        assert generation_foreign_keys[("result_revision_id",)][
+            "referred_table"
+        ] == "design_revisions"
     finally:
         if inspection_engine is not None:
             inspection_engine.dispose()
