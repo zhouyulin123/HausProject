@@ -133,6 +133,8 @@ def test_report_serializes_versioned_metrics_and_gate_evidence(tmp_path):
 
     assert report["gate_passed"] is True
     assert report["dataset"]["eligible_case_count"] == 2
+    assert report["dataset"]["fingerprint"].startswith("sha256:")
+    assert len(report["dataset"]["fingerprint"]) == len("sha256:") + 64
     assert report["versions"] == {
         "model": "m1",
         "prompt": "p1",
@@ -268,6 +270,11 @@ def test_regression_comparison_rejects_different_dataset_or_case_set(tmp_path):
     wrong_data["versions"]["data"] = "data-2"
     with pytest.raises(EvaluationInputError, match="数据版本"):
         compare_evaluation_reports(report, wrong_data)
+
+    wrong_fingerprint = json.loads(json.dumps(report))
+    wrong_fingerprint["dataset"]["fingerprint"] = "sha256:" + "0" * 64
+    with pytest.raises(EvaluationInputError, match="数据集指纹"):
+        compare_evaluation_reports(report, wrong_fingerprint)
 
     wrong_cases = json.loads(json.dumps(report))
     wrong_cases["dataset"]["eligible_case_ids"] = ["case-a"]
