@@ -29,7 +29,7 @@ export interface FurnitureItem {
   imageUrl?: string;
   /** 可加载的 glTF 2.0 二进制商品模型。 */
   modelUrl?: string;
-  modelStatus?: "missing" | "ready" | "failed";
+  modelStatus?: "missing" | "pending_review" | "ready" | "rejected" | "failed";
   modelDimensionsMm?: {
     width: number | null;
     height: number | null;

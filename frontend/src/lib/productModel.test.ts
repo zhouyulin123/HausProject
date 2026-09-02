@@ -26,7 +26,7 @@ describe("商品 3D 模型资产", () => {
     expect(
       getProductModelAsset({
         modelUrl: "/models/demo/sofa.glb",
-        modelStatus: "failed",
+        modelStatus: "pending_review",
         modelDimensionsMm: { width: 2400, height: 850, depth: 1050 },
       }),
     ).toBeNull();

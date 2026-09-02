@@ -301,6 +301,9 @@ class Product(Base):
     model_depth_mm = Column(Integer, nullable=True)
     model_license = Column(String(100), nullable=True)
     model_source = Column(String(255), nullable=True)
+    model_reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    model_reviewed_by = Column(String(100), nullable=True)
+    model_review_note = Column(String(500), nullable=True)
     model_spec_json = Column(JSON, nullable=True)  # 3D 建模真实参数（尺寸/结构/造型/材质PBR/工艺）
     data_origin = Column(
         String(30), nullable=False, default="unknown", server_default="unknown", index=True

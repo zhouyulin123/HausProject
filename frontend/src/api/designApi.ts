@@ -382,7 +382,7 @@ interface BackendProduct {
   alternative: string | null;
   image_url: string | null;
   model_url: string | null;
-  model_status: "missing" | "ready" | "failed";
+  model_status: "missing" | "pending_review" | "ready" | "rejected" | "failed";
   model_width_mm: number | null;
   model_height_mm: number | null;
   model_depth_mm: number | null;
@@ -460,12 +460,15 @@ export interface AdminProduct {
   alternative: string | null;
   image_url: string | null;
   model_url: string | null;
-  model_status: "missing" | "ready" | "failed";
+  model_status: "missing" | "pending_review" | "ready" | "rejected" | "failed";
   model_width_mm: number | null;
   model_height_mm: number | null;
   model_depth_mm: number | null;
   model_license: string | null;
   model_source: string | null;
+  model_reviewed_at: string | null;
+  model_reviewed_by: string | null;
+  model_review_note: string | null;
 }
 
 export interface QuoteRule {
@@ -521,6 +524,17 @@ export async function uploadProductModel(
   return request<AdminProduct>(`/api/products/${productId}/model`, {
     method: "POST",
     body: form,
+  });
+}
+
+export async function reviewProductModel(
+  productId: number,
+  decision: "approve" | "reject",
+  note?: string,
+): Promise<AdminProduct> {
+  return request<AdminProduct>(`/api/products/${productId}/model-review`, {
+    method: "POST",
+    body: JSON.stringify({ decision, note: note || null }),
   });
 }
 

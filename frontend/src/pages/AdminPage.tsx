@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { Boxes, Pencil, Plus, Ruler, Search, Store, Trash2 } from "lucide-react";
+import { Boxes, Check, Pencil, Plus, Ruler, Search, Store, Trash2, X } from "lucide-react";
 import type { AdminProduct, QuoteRule } from "@/api/designApi";
 import {
   deleteProduct,
   deleteQuoteRule,
   fetchAdminProducts,
   fetchQuoteRules,
+  reviewProductModel,
   saveQuoteRule,
 } from "@/api/designApi";
 import ProductFormModal from "@/components/admin/ProductFormModal";
@@ -158,6 +159,8 @@ export default function AdminPage() {
                       <span className="text-sm font-semibold text-stone-800">{p.name}</span>
                       {p.sku && <Tag tone="cream">{p.sku}</Tag>}
                       {p.model_status === "ready" && <Tag tone="sage">3D</Tag>}
+                      {p.model_status === "pending_review" && <Tag tone="cream">3D 待审核</Tag>}
+                      {p.model_status === "rejected" && <Tag tone="terra">3D 已拒绝</Tag>}
                     </div>
                     <p className="mt-0.5 truncate text-xs text-stone-400">
                       {p.category} · {p.room} · {p.style} · {p.material}
@@ -167,6 +170,32 @@ export default function AdminPage() {
                     {p.price_text}
                   </span>
                   <div className="flex shrink-0 items-center gap-1">
+                    {p.model_status === "pending_review" && (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title="批准模型"
+                          onClick={async () => {
+                            await reviewProductModel(p.id, "approve");
+                            void reload();
+                          }}
+                        >
+                          <Check className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title="拒绝模型"
+                          onClick={async () => {
+                            await reviewProductModel(p.id, "reject");
+                            void reload();
+                          }}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </>
+                    )}
                     <Button variant="ghost" size="sm" onClick={() => openEdit(p)}>
                       <Pencil className="h-4 w-4" />
                     </Button>
@@ -330,4 +359,3 @@ function QuoteRulesPanel({
     </div>
   );
 }
-

@@ -6,7 +6,12 @@ export interface ModelDimensionsMm {
   depth: number | null;
 }
 
-export type ProductModelStatus = "missing" | "ready" | "failed";
+export type ProductModelStatus =
+  | "missing"
+  | "pending_review"
+  | "ready"
+  | "rejected"
+  | "failed";
 
 interface ProductModelFields {
   modelUrl?: string;

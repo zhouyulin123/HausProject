@@ -267,7 +267,11 @@ export default function ProductFormModal({
                     ? "待上传"
                     : draft.model_status === "ready"
                       ? "模型可用"
-                      : "暂无模型"}
+                      : draft.model_status === "pending_review"
+                        ? "待授权审核"
+                        : draft.model_status === "rejected"
+                          ? "审核未通过"
+                          : "暂无模型"}
                 </span>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-3">

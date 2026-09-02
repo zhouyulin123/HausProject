@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import require_factory
+from app.api.dependencies import require_admin, require_factory
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import CustomQuoteRule, Product, User
@@ -84,6 +84,9 @@ def _product_to_dict(p: Product) -> dict:
         "model_depth_mm": p.model_depth_mm,
         "model_license": p.model_license,
         "model_source": p.model_source,
+        "model_reviewed_at": p.model_reviewed_at,
+        "model_reviewed_by": p.model_reviewed_by,
+        "model_review_note": p.model_review_note,
         "model_spec_json": p.model_spec_json,
         "data_origin": p.data_origin,
         "source_name": p.source_name,
@@ -291,6 +294,13 @@ def update_product(
         "model_depth_mm",
         "data_version",
     }
+    model_review_fields = {
+        "model_width_mm",
+        "model_height_mm",
+        "model_depth_mm",
+        "model_license",
+        "model_source",
+    }
     for k, v in changes.items():
         setattr(product, k, v)
     product.record_version = (product.record_version or 1) + 1
@@ -301,6 +311,11 @@ def update_product(
         product.verification_status = "draft"
         product.verified_at = None
         product.verified_by = None
+    if model_review_fields.intersection(changes) and product.model_url:
+        product.model_status = "pending_review"
+        product.model_reviewed_at = None
+        product.model_reviewed_by = None
+        product.model_review_note = None
     _validate_product_lifecycle(product)
     db.commit()
     db.refresh(product)
@@ -359,6 +374,10 @@ async def upload_product_model(
         (product.model_width_mm, product.model_height_mm, product.model_depth_mm)
     ):
         raise HTTPException(status_code=422, detail="请先填写模型宽、高、深尺寸")
+    if not (product.model_license or "").strip() or not (
+        product.model_source or ""
+    ).strip():
+        raise HTTPException(status_code=422, detail="请先填写模型授权和来源")
 
     content = await file.read()
     try:
@@ -377,12 +396,49 @@ async def upload_product_model(
     stored_path = upload_dir / stored_name
     stored_path.write_bytes(content)
     product.model_url = f"/uploads/models/{stored_name}"
-    product.model_status = "ready"
+    product.model_status = "pending_review"
+    product.model_reviewed_at = None
+    product.model_reviewed_by = None
+    product.model_review_note = None
     try:
         db.commit()
     except Exception:
         stored_path.unlink(missing_ok=True)
         raise
+    db.refresh(product)
+    return _product_to_dict(product)
+
+
+class ProductModelReview(BaseModel):
+    decision: Literal["approve", "reject"]
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.post("/{product_id}/model-review")
+def review_product_model(
+    product_id: int,
+    data: ProductModelReview,
+    user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if not product.model_url or product.model_status not in {
+        "pending_review",
+        "ready",
+        "rejected",
+    }:
+        raise HTTPException(status_code=409, detail="商品没有可审核的模型")
+    if not (product.model_license or "").strip() or not (
+        product.model_source or ""
+    ).strip():
+        raise HTTPException(status_code=422, detail="模型授权和来源不完整")
+    product.model_status = "ready" if data.decision == "approve" else "rejected"
+    product.model_reviewed_at = datetime.now(timezone.utc)
+    product.model_reviewed_by = f"user:{user.id}"
+    product.model_review_note = (data.note or "").strip() or None
+    db.commit()
     db.refresh(product)
     return _product_to_dict(product)
 
