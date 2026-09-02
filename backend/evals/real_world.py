@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +53,7 @@ class RealWorldCase:
     label_version: str | None
     allowed_purposes: tuple[str, ...]
     failure_tags: tuple[str, ...]
+    asset_sha256: str = ""
 
     def ineligible_reasons(self) -> list[str]:
         reasons: list[str] = []
@@ -129,6 +131,19 @@ def _resolve_asset(asset_root: Path, raw_path: str, case_id: str) -> Path:
     return resolved
 
 
+def _asset_sha256(path: Path, case_id: str) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise DatasetValidationError(
+            f"案例 {case_id} 的资产无法读取：{exc}"
+        ) from exc
+    return digest.hexdigest()
+
+
 def load_case_manifest(
     manifest_path: Path | str,
     *,
@@ -155,6 +170,7 @@ def load_case_manifest(
     root = Path(asset_root).resolve() if asset_root is not None else path.parent
     errors: list[str] = []
     seen_ids: set[str] = set()
+    seen_asset_hashes: dict[str, str] = {}
     cases: list[RealWorldCase] = []
     for index, raw in enumerate(raw_cases):
         if not isinstance(raw, dict):
@@ -195,6 +211,13 @@ def load_case_manifest(
                 )
             raw_asset_path = _required_text(raw, "asset_path", case_id)
             asset_path = _resolve_asset(root, raw_asset_path, case_id)
+            asset_sha256 = _asset_sha256(asset_path, case_id)
+            duplicate_case_id = seen_asset_hashes.get(asset_sha256)
+            if duplicate_case_id is not None:
+                raise DatasetValidationError(
+                    f"案例 {case_id} 与 {duplicate_case_id} 引用了重复物理资产"
+                )
+            seen_asset_hashes[asset_sha256] = case_id
             label_version = raw.get("label_version")
             if label_version is not None and (
                 not isinstance(label_version, str) or not label_version.strip()
@@ -209,6 +232,7 @@ def load_case_manifest(
                     split=split,  # type: ignore[arg-type]
                     origin=origin,  # type: ignore[arg-type]
                     asset_path=asset_path,
+                    asset_sha256=asset_sha256,
                     consent_status=consent_status,  # type: ignore[arg-type]
                     annotation_status=annotation_status,  # type: ignore[arg-type]
                     label_version=(label_version or None),

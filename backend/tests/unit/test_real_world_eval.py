@@ -50,14 +50,24 @@ def _case(**overrides) -> dict:
 def test_manifest_only_selects_consented_annotated_evaluation_cases(tmp_path):
     asset_dir = tmp_path / "assets"
     asset_dir.mkdir()
-    (asset_dir / "room.png").write_bytes(b"not-a-real-image")
+    (asset_dir / "ready.png").write_bytes(b"ready-room")
+    (asset_dir / "pending-consent.png").write_bytes(b"pending-consent-room")
+    (asset_dir / "pending-label.png").write_bytes(b"pending-label-room")
 
     path = _write_manifest(
         tmp_path,
         [
-            _case(id="ready"),
-            _case(id="pending-consent", consent_status="pending"),
-            _case(id="pending-label", annotation_status="pending"),
+            _case(id="ready", asset_path="assets/ready.png"),
+            _case(
+                id="pending-consent",
+                consent_status="pending",
+                asset_path="assets/pending-consent.png",
+            ),
+            _case(
+                id="pending-label",
+                annotation_status="pending",
+                asset_path="assets/pending-label.png",
+            ),
         ],
     )
 
