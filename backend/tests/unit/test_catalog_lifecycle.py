@@ -102,6 +102,17 @@ def test_price_validity_boundaries_are_inclusive_and_draft_needs_explicit_overri
     ).eligible
 
 
+def test_region_specific_product_requires_explicit_region_context():
+    regional = _product("P-REGIONAL")
+    global_product = _product("P-GLOBAL", region_codes=["*"])
+
+    result = is_product_eligible(regional, at=NOW)
+
+    assert result.eligible is False
+    assert "region_required" in result.reason_codes
+    assert is_product_eligible(global_product, at=NOW).eligible
+
+
 def test_catalog_context_only_contains_current_eligible_products(db):
     verified = _product("GOOD-001")
     draft = _product("DRAFT-001", verification_status="draft", data_origin="merchant_draft")
@@ -179,4 +190,3 @@ def test_enrichment_replaces_unavailable_sku_and_records_versioned_quote(db):
     assert quote["lineItems"][0]["unitPrice"] == 4800
     assert quote["catalogVersion"]
     assert quote["priceVersion"]
-

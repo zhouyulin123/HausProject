@@ -100,7 +100,9 @@ def is_product_eligible(
 
     regions = [str(code).strip().upper() for code in (product.region_codes or []) if code]
     normalized_region = region.strip().upper() if region else None
-    if normalized_region and regions and normalized_region not in regions and "*" not in regions:
+    if regions and "*" not in regions and normalized_region is None:
+        reasons.append("region_required")
+    elif normalized_region and regions and normalized_region not in regions and "*" not in regions:
         reasons.append("region_unavailable")
 
     dimensions = {
