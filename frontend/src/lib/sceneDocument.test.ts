@@ -5,6 +5,7 @@ import {
   buildSceneDocument,
   clampItemTransform,
   isDemoScene,
+  sceneDocumentSourceKey,
   updateSceneItemTransform,
 } from "./sceneDocument";
 
@@ -45,6 +46,19 @@ function livingRoomModel(overrides: Partial<RoomModel> = {}): RoomModel {
 }
 
 describe("方案到 3D 场景转换", () => {
+  it("语义相同的新 plan 对象保持稳定场景源键", () => {
+    const clonedPlan = structuredClone(mockDesigns[0]);
+
+    expect(sceneDocumentSourceKey(mockDesigns[0], "客厅", null)).toBe(
+      sceneDocumentSourceKey(clonedPlan, "客厅", null),
+    );
+
+    clonedPlan.furnitureSuggestions[0].category = "床";
+    expect(sceneDocumentSourceKey(mockDesigns[0], "客厅", null)).not.toBe(
+      sceneDocumentSourceKey(clonedPlan, "客厅", null),
+    );
+  });
+
   it("生成统一米制、Y 轴向上的场景文档", () => {
     const scene = buildSceneDocument(mockDesigns[0], "客厅");
 

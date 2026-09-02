@@ -158,6 +158,15 @@ export function buildSceneDocument(
   };
 }
 
+/** React 编辑器只在场景语义变化时重新初始化。 */
+export function sceneDocumentSourceKey(
+  plan: DesignPlan,
+  roomType: string,
+  roomModel?: RoomModel | null,
+): string {
+  return JSON.stringify(buildSceneDocument(plan, roomType, roomModel));
+}
+
 export function updateSceneItemTransform(
   scene: SceneDocument,
   instanceId: string,

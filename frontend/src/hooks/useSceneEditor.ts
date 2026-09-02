@@ -12,6 +12,7 @@ import {
   buildSceneDocument,
   clampItemTransform,
   isDemoScene,
+  sceneDocumentSourceKey,
   updateSceneItemTransform,
 } from "@/lib/sceneDocument";
 import {
@@ -83,9 +84,12 @@ export function useSceneEditor(
   }) => void,
   onSceneReferenceChange?: (reference: SceneReference | null) => void,
 ): UseSceneEditorResult {
+  const initialSceneKey = sceneDocumentSourceKey(plan, roomType, roomModel);
   const initialScene = useMemo(
     () => buildSceneDocument(plan, roomType, roomModel),
-    [plan, roomType, roomModel],
+    // initialSceneKey 来自完整场景文档，等价的新对象不会重启恢复 effect。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [initialSceneKey],
   );
   const [history, setHistory] = useState(() =>
     createSceneHistory(initialScene),
