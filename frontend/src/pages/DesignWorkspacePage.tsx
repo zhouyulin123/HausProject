@@ -16,6 +16,7 @@ import DesignWorkspaceInspector from "@/components/workspace/DesignWorkspaceInsp
 import WorkspaceFeedbackControls from "@/components/workspace/WorkspaceFeedbackControls";
 import {
   fetchDesignAgentState,
+  fetchDesignTaskPlans,
   fetchFurnitureCatalog,
   type AgentTurnResponse,
 } from "@/api/designApi";
@@ -51,7 +52,9 @@ export default function DesignWorkspacePage() {
   const selectProject = useDesignProjectStore((state) => state.selectProject);
   const setMessages = useDesignProjectStore((state) => state.setMessages);
   const applyAgentState = useDesignProjectStore((state) => state.applyAgentState);
+  const attachPlan = useDesignProjectStore((state) => state.attachPlan);
   const generatedPlans = useDesignStore((state) => state.generatedPlans);
+  const setGeneratedPlans = useDesignStore((state) => state.setGeneratedPlans);
   const [catalog, setCatalog] = useState<FurnitureItem[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
@@ -60,6 +63,31 @@ export default function DesignWorkspacePage() {
   const [satisfaction, setSatisfaction] = useState<1 | 2 | 3 | 4 | 5 | null>(null);
   const finalSelectRef = useRef<{ signature: string; clientEventId: string } | null>(null);
   const feedback = useFeedbackDelivery(projectId ?? 0);
+
+  const restoreServerPlans = useCallback(async (taskId: number) => {
+    try {
+      const plans = await fetchDesignTaskPlans(taskId);
+      if (!plans.length) return;
+      const existingPlans = useDesignStore.getState().generatedPlans;
+      const incomingIds = new Set(plans.map((item) => item.id));
+      setGeneratedPlans([
+        ...existingPlans.filter(
+          (item) => item.task_id !== taskId && !incomingIds.has(item.id),
+        ),
+        ...plans,
+      ]);
+      const activePlanId = useDesignProjectStore.getState().projects[taskId]?.activePlanId;
+      const activePlan = plans.find((item) => item.id === activePlanId) ?? plans[0];
+      if (activePlan.planVersionId) {
+        attachPlan(taskId, {
+          id: activePlan.id,
+          planVersionId: activePlan.planVersionId,
+        });
+      }
+    } catch {
+      // 确认控件保持禁用；绝不以 revision 或本地方案编号替代服务端方案版本。
+    }
+  }, [attachPlan, setGeneratedPlans]);
 
   const applyWorkspaceAgentResponse = useCallback((response: AgentTurnResponse) => {
     if (!projectId) return;
@@ -75,7 +103,10 @@ export default function DesignWorkspacePage() {
       customFurnitureResult: parseCustomFurniturePreview(response.result),
       approvalRequired: response.approval_required,
     });
-  }, [applyAgentState, projectId]);
+    if (response.status === "completed" && response.intent === "design") {
+      void restoreServerPlans(projectId);
+    }
+  }, [applyAgentState, projectId, restoreServerPlans]);
 
   const appendConversationTurn = useCallback((message: string, reply: string) => {
     if (!projectId) return;
@@ -118,6 +149,9 @@ export default function DesignWorkspacePage() {
             content: message.content,
           })),
         );
+        if (checkpoint.status === "completed" && checkpoint.intent === "design") {
+          void restoreServerPlans(project.id);
+        }
         setAgentConnection("connected");
       })
       .catch(() => {
@@ -126,7 +160,7 @@ export default function DesignWorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, [applyAgentState, project?.id, setMessages]);
+  }, [applyAgentState, project?.id, restoreServerPlans, setMessages]);
 
   useEffect(() => {
     if (project?.mode === "custom_furniture") {

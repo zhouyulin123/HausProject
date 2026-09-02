@@ -65,4 +65,17 @@ describe("设计反馈 API", () => {
       satisfaction_score: 4,
     });
   });
+
+  it("按任务读取带服务端版本的方案用于反馈绑定", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: "session-001" }))
+      .mockResolvedValueOnce(jsonResponse({ plans: [], generator: "agent" }));
+    vi.stubGlobal("window", { localStorage: createLocalStorage() });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchDesignTaskPlans } = await import("./designApi");
+    await expect(fetchDesignTaskPlans(42)).resolves.toEqual([]);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("/api/design/tasks/42/result");
+  });
 });

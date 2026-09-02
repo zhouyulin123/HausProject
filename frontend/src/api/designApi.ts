@@ -972,10 +972,14 @@ export async function generateDesignsForTask(taskId: number): Promise<DesignPlan
     { method: "POST", body: JSON.stringify({}) },
   );
   await waitForGeneration(taskId);
+  return fetchDesignTaskPlans(taskId);
+}
+
+/** 读取指定任务已持久化的真实方案版本，不创建任务也不触发生成。 */
+export async function fetchDesignTaskPlans(taskId: number): Promise<DesignPlan[]> {
   const result = await request<{ plans: DesignPlan[]; generator: string }>(
     `/api/design/tasks/${taskId}/result`,
   );
-  console.info(`[designApi] 方案生成完成（generator=${result.generator}）`);
   return result.plans.map(decoratePlan);
 }
 
