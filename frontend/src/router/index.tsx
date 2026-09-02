@@ -32,6 +32,7 @@ const WorkspacePage = lazyPage(() => import("@/pages/WorkspacePage"));
 const CustomersPage = lazyPage(() => import("@/pages/CustomersPage"));
 const AdminPage = lazyPage(() => import("@/pages/AdminPage"));
 const AdminUsersPage = lazyPage(() => import("@/pages/AdminUsersPage"));
+const AdminQualityPage = lazyPage(() => import("@/pages/AdminQualityPage"));
 const LoginPage = lazyPage(() => import("@/pages/LoginPage"));
 const Demo3DPage = lazyPage(() => import("@/pages/Demo3DPage"));
 
@@ -109,6 +110,14 @@ export const router = createBrowserRouter(
             <RequireAdmin>
               <AdminUsersPage />
             </RequireAdmin>
+          ),
+        },
+        {
+          path: "admin/quality",
+          element: (
+            <RequireFactory>
+              <AdminQualityPage />
+            </RequireFactory>
           ),
         },
         { path: "login", element: <LoginPage /> },

@@ -69,6 +69,7 @@ export default function Header() {
         { label: "工作台", to: "/workspace" },
         { label: "客户跟单", to: "/customers" },
         { label: "商品库", to: "/admin" },
+        { label: "运营质量", to: "/admin/quality" },
         ...(isAdmin() ? [{ label: "用户管理", to: "/admin/users" }] : []),
       ]
     : [

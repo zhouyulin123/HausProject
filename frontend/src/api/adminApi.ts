@@ -5,6 +5,7 @@
 import { readToken } from "./authApi";
 import type { AuthUser, UserRole } from "./authApi";
 import { useAuthStore } from "@/store/useAuthStore";
+import type { QualitySummary, QualityWindowDays } from "@/types/quality";
 
 export interface AdminUser extends AuthUser {
   created_at: string | null;
@@ -50,4 +51,12 @@ export async function updateUserRole(
     { method: "PATCH", body: JSON.stringify({ role }) },
   );
   return data.user;
+}
+
+export async function fetchQualitySummary(
+  windowDays: QualityWindowDays,
+): Promise<QualitySummary> {
+  return adminRequest<QualitySummary>(
+    `/api/admin/quality/summary?window_days=${windowDays}`,
+  );
 }
