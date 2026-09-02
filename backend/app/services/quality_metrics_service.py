@@ -7,15 +7,20 @@ from datetime import datetime, timedelta, timezone
 from math import floor
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
     DesignAgentEvent,
     DesignAgentTurn,
+    DesignFeedbackEvent,
     GenerationRun,
     LayoutRun,
 )
+
+
+_FEEDBACK_ACTIONS = ("adopt", "remove", "replace", "move", "final_select")
+_MODIFICATION_ACTIONS = ("remove", "replace", "move")
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
@@ -92,6 +97,19 @@ def build_quality_summary(
             DesignAgentEvent.event_type == "validation_failed",
         )
     ).all()
+    feedback_rows = db.execute(
+        select(
+            DesignFeedbackEvent.action_type,
+            func.count(DesignFeedbackEvent.id),
+            func.count(DesignFeedbackEvent.satisfaction_score),
+            func.sum(DesignFeedbackEvent.satisfaction_score),
+        )
+        .where(
+            DesignFeedbackEvent.created_at >= cutoff,
+            DesignFeedbackEvent.action_type.in_(_FEEDBACK_ACTIONS),
+        )
+        .group_by(DesignFeedbackEvent.action_type)
+    ).all()
 
     generation_statuses = Counter(run.status for run in generation_runs)
     completed = generation_statuses["completed"]
@@ -116,6 +134,17 @@ def build_quality_summary(
                 if isinstance(code, str) and code.strip()
             )
     layout_pass_total = sum(1 for run in layout_runs if run.best_valid)
+    feedback_action_counts = dict.fromkeys(_FEEDBACK_ACTIONS, 0)
+    satisfaction_count = 0
+    satisfaction_total = 0
+    for action_type, event_count, score_count, score_total in feedback_rows:
+        feedback_action_counts[action_type] = int(event_count)
+        satisfaction_count += int(score_count)
+        satisfaction_total += int(score_total or 0)
+    feedback_total = sum(feedback_action_counts.values())
+    modification_total = sum(
+        feedback_action_counts[action] for action in _MODIFICATION_ACTIONS
+    )
 
     return {
         "generated_at": current.isoformat(),
@@ -156,6 +185,19 @@ def build_quality_summary(
                 else None
             ),
             "issue_codes": dict(sorted(layout_issue_codes.items())),
+        },
+        "feedback": {
+            "total": feedback_total,
+            "action_counts": feedback_action_counts,
+            "modification_total": modification_total,
+            "modification_rate": _rate(modification_total, feedback_total),
+            "final_select_total": feedback_action_counts["final_select"],
+            "satisfaction_count": satisfaction_count,
+            "satisfaction_mean": (
+                round(satisfaction_total / satisfaction_count, 2)
+                if satisfaction_count
+                else None
+            ),
         },
         "failure_codes": _failure_codes(validation_events),
     }

@@ -34,10 +34,29 @@ class LayoutQualityMetrics(BaseModel):
     issue_codes: dict[str, int]
 
 
+class FeedbackActionCounts(BaseModel):
+    adopt: int = Field(ge=0)
+    remove: int = Field(ge=0)
+    replace: int = Field(ge=0)
+    move: int = Field(ge=0)
+    final_select: int = Field(ge=0)
+
+
+class FeedbackQualityMetrics(BaseModel):
+    total: int = Field(ge=0)
+    action_counts: FeedbackActionCounts
+    modification_total: int = Field(ge=0)
+    modification_rate: float | None = Field(default=None, ge=0, le=1)
+    final_select_total: int = Field(ge=0)
+    satisfaction_count: int = Field(ge=0)
+    satisfaction_mean: float | None = Field(default=None, ge=1, le=5)
+
+
 class QualitySummaryResponse(BaseModel):
     generated_at: datetime
     window_days: int = Field(ge=1, le=365)
     generation: GenerationQualityMetrics
     agent: AgentQualityMetrics
     layout: LayoutQualityMetrics
+    feedback: FeedbackQualityMetrics
     failure_codes: dict[str, int]
