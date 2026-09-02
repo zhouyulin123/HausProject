@@ -1,7 +1,7 @@
 """add failure triage clusters
 
-Revision ID: c9d0e1f2a3b4
-Revises: b8c9d0e1f2a3
+Revision ID: 0a1b2c3d4e5f
+Revises: f2b3c4d5e6f7
 """
 
 from typing import Sequence, Union
@@ -10,8 +10,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "c9d0e1f2a3b4"
-down_revision: Union[str, Sequence[str], None] = "b8c9d0e1f2a3"
+revision: str = "0a1b2c3d4e5f"
+down_revision: Union[str, Sequence[str], None] = "f2b3c4d5e6f7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
