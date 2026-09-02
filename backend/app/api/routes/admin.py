@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,13 +10,26 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import require_admin
 from app.db.database import get_db
 from app.db.models import User
+from app.schemas.quality import QualitySummaryResponse
 from app.services import auth_service
+from app.services.quality_metrics_service import build_quality_summary
 
 router = APIRouter()
 
 
 class RoleUpdate(BaseModel):
     role: str = Field(pattern="^(customer|factory|admin)$")
+
+
+@router.get("/quality/summary", response_model=QualitySummaryResponse)
+def get_quality_summary(
+    window_days: int = Query(default=30, ge=1, le=365),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> QualitySummaryResponse:
+    return QualitySummaryResponse.model_validate(
+        build_quality_summary(db, window_days=window_days)
+    )
 
 
 def _user_to_dict(user: User) -> dict:
