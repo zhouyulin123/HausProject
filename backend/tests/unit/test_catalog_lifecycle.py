@@ -318,3 +318,76 @@ def test_custom_quote_rule_must_be_unique(db):
         rules[0].id,
         rules[1].id,
     ]
+
+
+def test_custom_quote_includes_region_waste_minimum_fees_and_tax(db):
+    rule = CustomQuoteRule(
+        project_name="定制衣柜",
+        material_grade="E0 实木多层板",
+        pricing_unit="㎡",
+        unit_price=1280,
+        region_codes=["CN-SH"],
+        waste_rate_bps=500,
+        minimum_quantity=3,
+        installation_fee=300,
+        shipping_fee=200,
+        tax_rate_bps=600,
+        data_version="custom-price-2026-09",
+        record_version=4,
+        is_active=True,
+    )
+    db.add_all([_product("SOFA-001"), rule])
+    db.commit()
+    plans = [{
+        "id": "plan-a",
+        "furnitureSuggestions": [{"sku": "SOFA-001"}],
+        "customItems": [{
+            "project": "定制衣柜",
+            "grade": "E0 实木多层板",
+            "quantity": 2,
+        }],
+    }]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
+
+    custom = plans[0]["customItems"][0]
+    line = plans[0]["shopQuote"]["customLineItems"][0]
+    assert custom["requestedQuantity"] == 2
+    assert custom["billableQuantity"] == 3
+    assert custom["baseSubtotal"] == 3840
+    assert custom["taxAmount"] == 260
+    assert custom["subtotal"] == 4600
+    assert line["subtotal"] == 4600
+    assert line["dataVersion"] == "custom-price-2026-09"
+    assert line["recordVersion"] == 4
+    assert plans[0]["shopQuote"]["customTotal"] == 4600
+
+
+def test_custom_quote_rejects_rule_outside_delivery_region(db):
+    db.add_all([
+        _product("SOFA-001"),
+        CustomQuoteRule(
+            project_name="定制衣柜",
+            material_grade="E0 实木多层板",
+            pricing_unit="㎡",
+            unit_price=1280,
+            region_codes=["CN-SH"],
+            is_active=True,
+        ),
+    ])
+    db.commit()
+    plans = [{
+        "id": "plan-a",
+        "furnitureSuggestions": [{"sku": "SOFA-001"}],
+        "customItems": [{
+            "project": "定制衣柜",
+            "grade": "E0 实木多层板",
+            "quantity": 3,
+        }],
+    }]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-BJ")
+
+    assert plans[0]["catalogValidation"]["quoteStatus"] == "blocked"
+    assert "custom_quote_rule_missing" in plans[0]["catalogValidation"]["hardErrors"]
+    assert "shopQuote" not in plans[0]

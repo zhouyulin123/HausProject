@@ -109,6 +109,20 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "rule_version",
             "sku_versions_json",
         } <= quote_columns
+        custom_rule_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("custom_quote_rules")
+        }
+        assert {
+            "region_codes",
+            "waste_rate_bps",
+            "minimum_quantity",
+            "installation_fee",
+            "shipping_fee",
+            "tax_rate_bps",
+            "data_version",
+            "record_version",
+        } <= custom_rule_columns
         render_job_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns(
