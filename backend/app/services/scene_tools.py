@@ -21,6 +21,7 @@ from app.schemas.scenes import (
     Transform,
     Vector3,
 )
+from app.services.product_asset_service import product_asset_contract
 
 
 class SceneToolError(ValueError):
@@ -150,6 +151,7 @@ def apply_scene_operations(
             ]
         elif isinstance(operation, AddSceneItem):
             product = _load_product(db, operation.sku)
+            asset_contract = product_asset_contract(product)
             dimensions = PositiveVector3(
                 x=product.model_width_mm / 1000,
                 y=product.model_height_mm / 1000,
@@ -161,6 +163,8 @@ def apply_scene_operations(
                     instance_id=_next_instance_id(document, product.sku),
                     sku=product.sku,
                     category=product.category,
+                    asset_mode=asset_contract["asset_mode"],
+                    fallback_reason=asset_contract["fallback_reason"],
                     dimensions=dimensions,
                     transform=Transform(
                         position=Vector3(

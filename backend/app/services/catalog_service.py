@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import CustomQuoteRule, Product
+from app.services.product_asset_service import product_asset_contract
 
 
 logger = logging.getLogger(__name__)
@@ -550,6 +551,7 @@ def verify_and_enrich_plans(
                 "recordVersion": product.record_version,
             }
             line_items.append(line_item)
+            asset_contract = product_asset_contract(product)
             enriched_item = {
                 "id": product.sku,
                 "sku": product.sku,
@@ -565,6 +567,16 @@ def verify_and_enrich_plans(
                 "alternative": product.alternative or "",
                 "alternativeSkus": list(product.alternative_skus or []),
                 "imageUrl": product.image_url,
+                "modelUrl": product.model_url,
+                "modelStatus": product.model_status,
+                "modelDimensionsMm": {
+                    "width": product.model_width_mm,
+                    "height": product.model_height_mm,
+                    "depth": product.model_depth_mm,
+                },
+                "modelSpecJson": product.model_spec_json,
+                "assetMode": asset_contract["asset_mode"],
+                "fallbackReason": asset_contract["fallback_reason"],
                 "dataOrigin": product.data_origin,
                 "sourceName": product.source_name,
                 "sourceUrl": product.source_url,

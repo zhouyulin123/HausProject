@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 
 from app.schemas.scenes import (
+    AssetFallbackReason,
+    AssetMode,
     Opening,
     PositiveVector3,
     RoomGeometry,
@@ -53,6 +55,8 @@ class LayoutFurniture:
     width_m: float
     depth_m: float
     height_m: float
+    asset_mode: AssetMode = "parametric"
+    fallback_reason: AssetFallbackReason | None = "asset_contract_missing"
 
 
 def _safe_stem(sku: str) -> str:
@@ -71,6 +75,8 @@ def _scene_item(
         instance_id=f"item-{_safe_stem(furniture.sku)}-{index + 1}",
         sku=furniture.sku,
         category=furniture.category,
+        asset_mode=furniture.asset_mode,
+        fallback_reason=furniture.fallback_reason,
         dimensions=PositiveVector3(
             x=furniture.width_m,
             y=furniture.height_m,

@@ -169,6 +169,19 @@ class MaterialOverride(SceneModel):
     )
 
 
+AssetMode = Literal["approved_glb", "parametric", "fallback"]
+AssetFallbackReason = Literal[
+    "glb_unavailable",
+    "glb_pending_review",
+    "glb_rejected",
+    "glb_marked_failed",
+    "glb_metadata_invalid",
+    "asset_contract_missing",
+    "catalog_product_unavailable",
+    "glb_load_failed",
+]
+
+
 class SceneItem(SceneModel):
     instance_id: str = Field(
         min_length=1,
@@ -183,6 +196,19 @@ class SceneItem(SceneModel):
         default_factory=list,
         max_length=30,
     )
+    asset_mode: AssetMode = "parametric"
+    fallback_reason: AssetFallbackReason | None = None
+
+    @model_validator(mode="after")
+    def validate_asset_contract(self) -> "SceneItem":
+        if self.asset_mode == "fallback" and self.fallback_reason is None:
+            raise ValueError("fallbackReason 是 fallback 模式的必填字段")
+        if (
+            self.asset_mode == "approved_glb"
+            and self.fallback_reason is not None
+        ):
+            raise ValueError("approved_glb 不得携带 fallbackReason")
+        return self
 
 
 class SceneCamera(SceneModel):

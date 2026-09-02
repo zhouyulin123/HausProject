@@ -42,6 +42,18 @@ export interface SceneMaterialOverride {
   color?: string | null;
 }
 
+export type AssetMode = "approved_glb" | "parametric" | "fallback";
+
+export type AssetFallbackReason =
+  | "glb_unavailable"
+  | "glb_pending_review"
+  | "glb_rejected"
+  | "glb_marked_failed"
+  | "glb_metadata_invalid"
+  | "asset_contract_missing"
+  | "catalog_product_unavailable"
+  | "glb_load_failed";
+
 export interface SceneItem {
   instanceId: string;
   /** 必须对应服务端商品库中的有效 SKU。 */
@@ -50,6 +62,9 @@ export interface SceneItem {
   transform: SceneTransform;
   dimensions?: SceneVector3 | null;
   materials?: SceneMaterialOverride[];
+  /** 服务端审核后的资产模式；浏览器运行时失败会按实例覆写为 fallback。 */
+  assetMode?: AssetMode;
+  fallbackReason?: AssetFallbackReason | null;
 }
 
 export interface SceneCamera {

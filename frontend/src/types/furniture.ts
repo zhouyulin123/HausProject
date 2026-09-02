@@ -30,6 +30,9 @@ export interface FurnitureItem {
   /** 可加载的 glTF 2.0 二进制商品模型。 */
   modelUrl?: string;
   modelStatus?: "missing" | "pending_review" | "ready" | "rejected" | "failed";
+  /** 不允许前端仅凭 modelStatus 推断为审核通过的 GLB。 */
+  assetMode?: AssetMode;
+  fallbackReason?: AssetFallbackReason;
   modelDimensionsMm?: {
     width: number | null;
     height: number | null;
@@ -82,3 +85,4 @@ export interface Furniture3DSpec {
     灯具模型?: "floor" | "pendant" | "ring";
   };
 }
+import type { AssetFallbackReason, AssetMode } from "./scene";

@@ -27,6 +27,7 @@ from app.db.models import (
 from app.schemas.scenes import Opening, RoomGeometry, SceneDocument, Vector2XZ
 from app.services.layout_evaluator import LayoutScore
 from app.services.layout_generator import LayoutFurniture
+from app.services.product_asset_service import product_asset_contract
 from app.services.room_model_service import room_model_from_analysis
 
 # 类别默认占地（米）[宽, 深]，与前端 roomLayout.ts 的 CATEGORY_FOOTPRINT 对齐
@@ -97,6 +98,14 @@ def build_layout_furniture(
         if not sku:
             continue
         product = by_sku.get(sku)
+        asset_contract = (
+            product_asset_contract(product)
+            if product is not None
+            else {
+                "asset_mode": "fallback",
+                "fallback_reason": "catalog_product_unavailable",
+            }
+        )
         category = (product.category if product else None) or str(
             item.get("category") or ""
         )
@@ -115,6 +124,8 @@ def build_layout_furniture(
                     width_m=product.model_width_mm / 1000,
                     depth_m=product.model_depth_mm / 1000,
                     height_m=product.model_height_mm / 1000,
+                    asset_mode=asset_contract["asset_mode"],
+                    fallback_reason=asset_contract["fallback_reason"],
                 )
             )
         else:
@@ -128,6 +139,8 @@ def build_layout_furniture(
                     width_m=width,
                     depth_m=depth,
                     height_m=height,
+                    asset_mode=asset_contract["asset_mode"],
+                    fallback_reason=asset_contract["fallback_reason"],
                 )
             )
     return result

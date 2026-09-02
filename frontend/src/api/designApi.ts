@@ -396,6 +396,17 @@ interface BackendProduct {
   image_url: string | null;
   model_url: string | null;
   model_status: "missing" | "pending_review" | "ready" | "rejected" | "failed";
+  asset_mode: "approved_glb" | "parametric" | "fallback";
+  fallback_reason:
+    | "glb_unavailable"
+    | "glb_pending_review"
+    | "glb_rejected"
+    | "glb_marked_failed"
+    | "glb_metadata_invalid"
+    | "asset_contract_missing"
+    | "catalog_product_unavailable"
+    | "glb_load_failed"
+    | null;
   model_width_mm: number | null;
   model_height_mm: number | null;
   model_depth_mm: number | null;
@@ -433,6 +444,8 @@ export async function fetchFurnitureCatalog(
       sku: p.sku ?? undefined,
       modelUrl: p.model_url ?? undefined,
       modelStatus: p.model_status,
+      assetMode: p.asset_mode,
+      fallbackReason: p.fallback_reason ?? undefined,
       modelDimensionsMm: {
         width: p.model_width_mm,
         height: p.model_height_mm,

@@ -19,6 +19,7 @@ from app.db.database import get_db
 from app.db.models import CustomQuoteRule, Product, User
 from app.services.catalog_service import is_product_eligible
 from app.services.glb_validation import GlbValidationError, validate_glb_upload
+from app.services.product_asset_service import product_asset_contract
 from app.services.upload_validation import UploadValidationError, validate_image_upload
 
 router = APIRouter()
@@ -113,6 +114,7 @@ def _product_to_dict(p: Product) -> dict:
             "eligible": eligibility.eligible,
             "reason_codes": list(eligibility.reason_codes),
         },
+        **product_asset_contract(p),
     }
 
 

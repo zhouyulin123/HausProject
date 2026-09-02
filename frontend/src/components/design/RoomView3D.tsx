@@ -31,8 +31,13 @@ import {
 import { type Group } from "three";
 import { useSceneEditor } from "@/hooks/useSceneEditor";
 import ProductModel3D from "./ProductModel3D";
-import type { ProductModelAsset } from "@/lib/productModel";
-import { getProductModelAsset } from "@/lib/productModel";
+import {
+  getProductAssetState,
+  markInstanceGlbLoadFailed,
+  productAssetLabel,
+  type ProductAssetPresentation,
+  type ProductAssetState,
+} from "@/lib/productModel";
 import { CATEGORY_COLOR } from "@/lib/scenePalette";
 import {
   buildRoomFactSummary,
@@ -52,7 +57,8 @@ interface FurnitureBoxProps {
   mode: TransformMode;
   onSelect: () => void;
   onCommit: (transform: SceneTransform) => void;
-  modelAsset: ProductModelAsset | null;
+  asset: ProductAssetState;
+  onModelLoadFailure: () => void;
 }
 
 function FurnitureBox({
@@ -62,7 +68,8 @@ function FurnitureBox({
   mode,
   onSelect,
   onCommit,
-  modelAsset,
+  asset,
+  onModelLoadFailure,
 }: FurnitureBoxProps) {
   const groupRef = useRef<Group>(null);
   const [hovered, setHovered] = useState(false);
@@ -129,7 +136,7 @@ function FurnitureBox({
         onPointerOut={() => setHovered(false)}
       >
         <ProductModel3D
-          url={modelAsset?.url}
+          url={asset.model?.url}
           dimensions={dimensions}
           color={
             hovered
@@ -137,6 +144,7 @@ function FurnitureBox({
               : CATEGORY_COLOR[item.category ?? ""] ?? "#C3B49A"
           }
           selected={selected}
+          onLoadFailure={onModelLoadFailure}
         />
       </group>
       {(selected || hovered) && (
@@ -152,7 +160,8 @@ function FurnitureBox({
                 : "bg-stone-800/90 text-white"
             }`}
           >
-            {name}
+            <span>{name}</span>
+            <span className="ml-2 opacity-75">{productAssetLabel(asset)}</span>
           </div>
         </Html>
       )}
@@ -298,6 +307,9 @@ export default function RoomView3D({
 }) {
   const editor = useSceneEditor(plan, roomType, roomModel, onMovePersisted);
   const [agentInstruction, setAgentInstruction] = useState("");
+  const [runtimeAssetOverrides, setRuntimeAssetOverrides] = useState<
+    Record<string, ProductAssetPresentation>
+  >({});
   const [cameraPreset, setCameraPreset] =
     useState<RoomCameraPreset>("perspective");
   const scene = editor.history.present;
@@ -336,7 +348,7 @@ export default function RoomView3D({
       ),
     [plan.furnitureSuggestions, scene.items],
   );
-  const itemModels = useMemo(
+  const itemAssets = useMemo(
     () =>
       Object.fromEntries(
         scene.items.map((sceneItem) => {
@@ -344,14 +356,38 @@ export default function RoomView3D({
             (item) =>
               item.sku === sceneItem.sku || sceneItem.sku.endsWith(item.id),
           );
+          const declaredAsset = getProductAssetState({
+            ...furniture,
+            assetMode: sceneItem.assetMode ?? furniture?.assetMode,
+            fallbackReason:
+              sceneItem.fallbackReason ?? furniture?.fallbackReason,
+          });
+          const runtimeOverride = runtimeAssetOverrides[sceneItem.instanceId];
           return [
             sceneItem.instanceId,
-            furniture ? getProductModelAsset(furniture) : null,
+            runtimeOverride
+              ? { ...runtimeOverride, model: null }
+              : declaredAsset,
           ];
         }),
       ),
-    [plan.furnitureSuggestions, scene.items],
+    [plan.furnitureSuggestions, runtimeAssetOverrides, scene.items],
   );
+
+  const handleModelLoadFailure = (instanceId: string) => {
+    setRuntimeAssetOverrides((current) => {
+      const seeded = current[instanceId]
+        ? current
+        : {
+            ...current,
+            [instanceId]: {
+              assetMode: itemAssets[instanceId].assetMode,
+              fallbackReason: itemAssets[instanceId].fallbackReason,
+            },
+          };
+      return markInstanceGlbLoadFailed(seeded, instanceId);
+    });
+  };
 
   useEffect(() => {
     const timer = window.setTimeout(
@@ -519,7 +555,8 @@ export default function RoomView3D({
                 editor.transformMode === "translate",
               )
             }
-            modelAsset={itemModels[item.instanceId]}
+            asset={itemAssets[item.instanceId]}
+            onModelLoadFailure={() => handleModelLoadFailure(item.instanceId)}
           />
         ))}
         <RoomCameraControls scene={scene} preset={cameraPreset} />
@@ -618,6 +655,9 @@ export default function RoomView3D({
               </h3>
               <p className="mt-1 font-mono text-[10px] text-stone-400">
                 {selectedItem.sku}
+              </p>
+              <p className="mt-1 text-[10px] font-medium text-stone-500">
+                {productAssetLabel(itemAssets[selectedItem.instanceId])}
               </p>
             </div>
             <Box className="h-5 w-5 shrink-0 text-wood-500" />

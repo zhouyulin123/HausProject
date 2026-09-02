@@ -1,4 +1,10 @@
-import { Component, Suspense, useMemo, type ErrorInfo, type ReactNode } from "react";
+import {
+  Component,
+  Suspense,
+  useMemo,
+  type ErrorInfo,
+  type ReactNode,
+} from "react";
 import { useGLTF } from "@react-three/drei";
 import { Box3, Mesh, Vector3 } from "three";
 import type { SceneVector3 } from "@/types/scene";
@@ -6,6 +12,7 @@ import type { SceneVector3 } from "@/types/scene";
 interface ModelErrorBoundaryProps {
   fallback: ReactNode;
   children: ReactNode;
+  onFailure?: () => void;
 }
 
 class ModelErrorBoundary extends Component<
@@ -19,7 +26,12 @@ class ModelErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.warn("[3D] 商品模型加载失败，已降级为尺寸体块", error.message, info.componentStack);
+    console.warn(
+      "[3D] 商品模型加载失败，已降级为尺寸体块",
+      error.message,
+      info.componentStack,
+    );
+    this.props.onFailure?.();
   }
 
   render() {
@@ -91,25 +103,42 @@ export default function ProductModel3D({
   dimensions,
   color,
   selected,
+  onLoadFailure,
 }: {
   url?: string;
   dimensions: SceneVector3;
   color: string;
   selected: boolean;
+  onLoadFailure?: () => void;
 }) {
   const fallback = (
     <Placeholder dimensions={dimensions} color={color} selected={selected} />
   );
   if (!url) return fallback;
   return (
-    <ModelErrorBoundary key={url} fallback={fallback}>
+    <ModelErrorBoundary
+      key={url}
+      fallback={fallback}
+      onFailure={onLoadFailure}
+    >
       <Suspense fallback={fallback}>
         <LoadedModel url={url} dimensions={dimensions} />
       </Suspense>
       {selected && (
         <mesh>
-          <boxGeometry args={[dimensions.x * 1.02, dimensions.y * 1.02, dimensions.z * 1.02]} />
-          <meshBasicMaterial color="#70885E" wireframe transparent opacity={0.72} />
+          <boxGeometry
+            args={[
+              dimensions.x * 1.02,
+              dimensions.y * 1.02,
+              dimensions.z * 1.02,
+            ]}
+          />
+          <meshBasicMaterial
+            color="#70885E"
+            wireframe
+            transparent
+            opacity={0.72}
+          />
         </mesh>
       )}
     </ModelErrorBoundary>

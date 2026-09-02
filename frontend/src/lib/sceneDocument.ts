@@ -120,10 +120,15 @@ export function buildSceneDocument(
       const sku =
         furniture?.sku ??
         `${DEMO_SKU_PREFIX}${safeIdentifier(furniture?.id ?? layoutItem.id)}`;
+      const assetMode = furniture?.assetMode ?? "parametric";
       return {
         instanceId: `item-${safeIdentifier(sku)}-${index + 1}`,
         sku,
         category: layoutItem.category,
+        assetMode,
+        fallbackReason:
+          furniture?.fallbackReason ??
+          (furniture?.assetMode ? null : "asset_contract_missing"),
         dimensions: {
           x: layoutItem.size[0],
           y: layoutItem.size[1],
