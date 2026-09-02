@@ -662,6 +662,49 @@ def _run_turn(
             return deepcopy(existing.response_json)
         raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中") from exc
 
+    checkpoint = (
+        task.agent_state_json if isinstance(task.agent_state_json, dict) else {}
+    )
+    max_steps = checkpoint.get("max_steps", 12)
+    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
+        max_steps = 12
+    max_retries = checkpoint.get("max_retries", 2)
+    if (
+        not isinstance(max_retries, int)
+        or isinstance(max_retries, bool)
+        or max_retries < 0
+    ):
+        max_retries = 2
+    initial_step_count = checkpoint.get("step_count", 0)
+    if (
+        not isinstance(initial_step_count, int)
+        or isinstance(initial_step_count, bool)
+        or initial_step_count < 0
+    ):
+        initial_step_count = 0
+    initial_retry_count = checkpoint.get("retry_count", 0)
+    if (
+        not isinstance(initial_retry_count, int)
+        or isinstance(initial_retry_count, bool)
+        or initial_retry_count < 0
+    ):
+        initial_retry_count = 0
+    retry_budget_exhausted = (
+        checkpoint.get("status") == "needs_human"
+        and checkpoint.get("exit_reason")
+        in {"retry_exhausted", "safety_blocked", "tool_failed"}
+        and initial_retry_count >= max_retries
+    )
+    step_budget_exhausted = initial_step_count >= max_steps
+    budget_exhausted = retry_budget_exhausted or step_budget_exhausted
+    initial_hard_errors = list(checkpoint.get("hard_errors") or [])
+    initial_exit_reason = str(checkpoint.get("exit_reason") or "")
+    if step_budget_exhausted:
+        initial_hard_errors = list(
+            dict.fromkeys([*initial_hard_errors, "step_limit_exceeded"])
+        )
+        initial_exit_reason = "retry_exhausted"
+
     registry = DesignAgentToolRegistry()
     registry.register("catalog_search", _catalog_tool(db))
     registry.register("design_generation", _design_tool(db, task))
@@ -672,6 +715,8 @@ def _run_turn(
         execute_design=registry.get("design_generation"),
         execute_scene=registry.get("scene_edit"),
         execute_custom=registry.get("custom_furniture_preview"),
+        max_steps=max_steps,
+        max_retries=max_retries,
     )
     facts = _facts_for_turn(db, task, payload)
     custom_furniture_spec = _custom_spec_for_turn(task, payload)
@@ -694,6 +739,11 @@ def _run_turn(
         facts=facts,
         scene_context=scene_context,
         custom_furniture_spec=custom_furniture_spec,
+        initial_step_count=initial_step_count,
+        initial_retry_count=initial_retry_count,
+        initial_hard_errors=initial_hard_errors,
+        budget_exhausted=budget_exhausted,
+        initial_exit_reason=initial_exit_reason,
     )
 
     if state["status"] == "completed" and intent == "design":

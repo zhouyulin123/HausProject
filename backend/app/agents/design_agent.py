@@ -71,6 +71,7 @@ class DesignAgentState(TypedDict, total=False):
     retry_count: int
     max_steps: int
     max_retries: int
+    budget_exhausted: bool
     exit_reason: str
 
 
@@ -181,8 +182,8 @@ def _custom_spec_check(
 
 
 def _next_step(state: DesignAgentState, node: str) -> dict[str, Any]:
-    step_count = state.get("step_count", 0) + 1
-    if step_count > state.get("max_steps", 12):
+    step_count = state.get("step_count", 0)
+    if step_count >= state.get("max_steps", 12):
         return {
             "step_count": step_count,
             "current_node": node,
@@ -191,7 +192,7 @@ def _next_step(state: DesignAgentState, node: str) -> dict[str, Any]:
             "quality_outcome": "escalate",
             "hard_errors": ["step_limit_exceeded"],
         }
-    return {"step_count": step_count, "current_node": node}
+    return {"step_count": step_count + 1, "current_node": node}
 
 
 class DesignAgentWorkflow:
@@ -265,6 +266,13 @@ class DesignAgentWorkflow:
         return graph.compile()
 
     def _validate_facts(self, state: DesignAgentState) -> dict[str, Any]:
+        if state.get("budget_exhausted"):
+            return {
+                "current_node": "validate_facts",
+                "status": "needs_human",
+                "exit_reason": state.get("exit_reason") or "retry_exhausted",
+                "quality_outcome": "escalate",
+            }
         update = _next_step(state, "validate_facts")
         if update.get("exit_reason"):
             return update
@@ -300,7 +308,10 @@ class DesignAgentWorkflow:
 
     @staticmethod
     def _route_after_fact_check(state: DesignAgentState) -> str:
-        if state.get("exit_reason") == "retry_exhausted":
+        if (
+            state.get("budget_exhausted")
+            or state.get("exit_reason") == "retry_exhausted"
+        ):
             return "escalate"
         if state.get("pending_questions"):
             return "clarify"
@@ -477,8 +488,11 @@ class DesignAgentWorkflow:
         }
 
     def _finalize(self, state: DesignAgentState) -> dict[str, Any]:
+        update = _next_step(state, "finalize")
+        if update.get("exit_reason"):
+            return update
         return {
-            **_next_step(state, "finalize"),
+            **update,
             "status": "completed",
             "exit_reason": "goal_completed",
             "pending_questions": [],
@@ -495,6 +509,12 @@ class DesignAgentWorkflow:
         }
 
     def _escalate(self, state: DesignAgentState) -> dict[str, Any]:
+        if state.get("budget_exhausted"):
+            return {
+                "current_node": "escalate",
+                "status": "needs_human",
+                "exit_reason": state.get("exit_reason") or "retry_exhausted",
+            }
         exit_reason = state.get("exit_reason")
         if not exit_reason:
             scene_safety_codes = {
@@ -527,6 +547,11 @@ class DesignAgentWorkflow:
         facts: dict[str, Any],
         scene_context: dict[str, Any] | None = None,
         custom_furniture_spec: dict[str, Any] | None = None,
+        initial_step_count: int = 0,
+        initial_retry_count: int = 0,
+        initial_hard_errors: list[str] | None = None,
+        budget_exhausted: bool = False,
+        initial_exit_reason: str = "",
     ) -> DesignAgentState:
         effective_intent = (
             "scene_edit" if intent == "auto" and scene_context else intent
@@ -549,15 +574,16 @@ class DesignAgentWorkflow:
                 "pending_questions": [],
                 "tool_events": [],
                 "result": None,
-                "hard_errors": [],
+                "hard_errors": list(initial_hard_errors or []),
                 "quality_outcome": "",
                 "approval_required": False,
                 "rejection_message": "",
-                "step_count": 0,
-                "retry_count": 0,
+                "step_count": initial_step_count,
+                "retry_count": initial_retry_count,
                 "max_steps": self._max_steps,
                 "max_retries": self._max_retries,
-                "exit_reason": "",
+                "budget_exhausted": budget_exhausted,
+                "exit_reason": initial_exit_reason if budget_exhausted else "",
             },
             config={"recursion_limit": self._max_steps + 8},
         )
