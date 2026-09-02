@@ -47,6 +47,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "failure_clusters",
             "failure_triage_imports",
             "room_fact_confirmations",
+            "model_provider_circuits",
         } <= tables
         room_confirmation_columns = {
             column["name"]

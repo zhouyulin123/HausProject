@@ -1,4 +1,6 @@
 import pytest
+import httpx
+from openai import APIStatusError, APITimeoutError
 
 from app.core.request_context import bind_request_id
 from app.services import llm_service
@@ -76,3 +78,29 @@ def test_provider_request_uses_bound_client_request_id():
         "extra_headers": {"X-Client-Request-Id": "generation-request-001"}
     }
     assert llm_service._provider_request_kwargs() == {}
+
+
+def test_only_provider_availability_errors_are_classified_for_circuit():
+    request = httpx.Request("POST", "https://provider.example/v1/chat")
+    timeout = APITimeoutError(request=request)
+    rate_limit = APIStatusError(
+        "limited",
+        response=httpx.Response(429, request=request),
+        body=None,
+    )
+    server_error = APIStatusError(
+        "unavailable",
+        response=httpx.Response(503, request=request),
+        body=None,
+    )
+    bad_request = APIStatusError(
+        "invalid",
+        response=httpx.Response(400, request=request),
+        body=None,
+    )
+
+    assert llm_service.provider_failure_code(timeout) == "timeout"
+    assert llm_service.provider_failure_code(rate_limit) == "rate_limited"
+    assert llm_service.provider_failure_code(server_error) == "server_error"
+    assert llm_service.provider_failure_code(bad_request) is None
+    assert llm_service.provider_failure_code(ValueError("code bug")) is None

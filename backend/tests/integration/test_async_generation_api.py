@@ -275,3 +275,40 @@ def test_cost_limit_status_and_ledger_are_visible_to_owner(
     assert response.json()["cost_limit_cny"] == pytest.approx(1.0)
     assert duplicate.status_code == 202
     assert duplicate.json()["status"] == "cost_limit_exceeded"
+
+
+@pytest.mark.integration
+def test_provider_unavailable_status_is_visible_and_idempotent(
+    async_generation_context,
+):
+    client, owner_id, _, task_id, _, factory = async_generation_context
+    headers = {
+        "X-Session-ID": owner_id,
+        "Idempotency-Key": "provider-blocked-design-001",
+    }
+    queued = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers=headers,
+    )
+    with factory() as db:
+        run = db.get(GenerationRun, queued.json()["run_id"])
+        assert run is not None
+        run.status = "provider_unavailable"
+        run.current_node = "provider_circuit"
+        run.error_message = "模型供应商暂时不可用，需人工处理"
+        db.commit()
+
+    response = client.get(
+        f"/api/design/tasks/{task_id}/generation",
+        headers={"X-Session-ID": owner_id},
+    )
+    duplicate = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "provider_unavailable"
+    assert response.json()["current_node"] == "provider_circuit"
+    assert duplicate.status_code == 202
+    assert duplicate.json()["status"] == "provider_unavailable"

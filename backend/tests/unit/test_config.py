@@ -77,6 +77,20 @@ def test_generation_task_cost_limit_must_be_positive_and_bounded():
         Settings(_env_file=None, generation_task_cost_limit_cny=1001)
 
 
+def test_provider_circuit_settings_are_bounded_and_provider_key_is_stable():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, provider_circuit_failure_threshold=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, provider_circuit_cooldown_seconds=4)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, provider_circuit_probe_lease_seconds=301)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, llm_provider_key="invalid provider key")
+
+    config = Settings(_env_file=None, llm_provider_key="siliconflow-primary")
+    assert config.llm_provider_key == "siliconflow-primary"
+
+
 def test_production_llm_requires_positive_pricing_for_cost_guard():
     with pytest.raises(ValidationError, match="单价"):
         Settings(
