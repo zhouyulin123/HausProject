@@ -11,6 +11,7 @@ from evals.annotations import (
     ANNOTATION_SCHEMA_VERSION,
     AnnotationValidationError,
     load_case_annotation,
+    load_execution_review,
 )
 from evals.real_world import RealWorldCase, RealWorldDataset
 
@@ -97,48 +98,47 @@ def _payload(dataset: RealWorldDataset) -> dict:
             },
         ],
         "style_tags": ["现代简约", "原木"],
-        "human_evaluation": {
-            "overall_rating": 4,
-            "dimension_scores": [
-                {"metric": "functional_fit", "score": 5},
-                {"metric": "style_match", "score": 4},
-            ],
-            "edit_facts": [
-                {
-                    "edit_id": "edit-001",
-                    "action": "move",
-                    "target_type": "furniture",
-                    "target_id": "sofa-main",
-                    "axis": "x",
-                    "delta_mm": 200,
-                    "delta_degrees": None,
-                    "replacement_sku": None,
-                    "quantity_delta": None,
-                },
-                {
-                    "edit_id": "edit-002",
-                    "action": "replace",
-                    "target_type": "furniture",
-                    "target_id": "table-main",
-                    "axis": None,
-                    "delta_mm": None,
-                    "delta_degrees": None,
-                    "replacement_sku": "TABLE-002",
-                    "quantity_delta": None,
-                },
-                {
-                    "edit_id": "edit-003",
-                    "action": "remove",
-                    "target_type": "furniture",
-                    "target_id": "lamp-main",
-                    "axis": None,
-                    "delta_mm": None,
-                    "delta_degrees": None,
-                    "replacement_sku": None,
-                    "quantity_delta": None,
-                },
-            ],
-        },
+    }
+
+
+def _review_payload(dataset: RealWorldDataset, *, output_digest: str) -> dict:
+    case = dataset.cases[0]
+    return {
+        "schema_version": "1.0",
+        "review_type": "real_world_execution_review",
+        "case_id": case.id,
+        "label_version": case.label_version,
+        "output_digest": output_digest,
+        "reviewer_role": "designer",
+        "overall_rating": 4,
+        "dimension_scores": [
+            {"metric": "functional_fit", "score": 5},
+            {"metric": "style_match", "score": 4},
+        ],
+        "edit_facts": [
+            {
+                "edit_id": "edit-001",
+                "action": "move",
+                "target_type": "furniture",
+                "target_id": "sofa-main",
+                "axis": "x",
+                "delta_mm": 200,
+                "delta_degrees": None,
+                "replacement_sku": None,
+                "quantity_delta": None,
+            },
+            {
+                "edit_id": "edit-002",
+                "action": "replace",
+                "target_type": "furniture",
+                "target_id": "table-main",
+                "axis": None,
+                "delta_mm": None,
+                "delta_degrees": None,
+                "replacement_sku": "TABLE-002",
+                "quantity_delta": None,
+            },
+        ],
     }
 
 
@@ -184,7 +184,6 @@ def test_loads_complete_annotation_and_freezes_file_digest(tmp_path):
     assert annotation.budget.minimum == 10000
     assert annotation.budget.maximum == 30000
     assert annotation.style_tags == ("原木", "现代简约")
-    assert annotation.human_evaluation.overall_rating == 4
     assert annotation.content_fingerprint.startswith("sha256:")
 
 
@@ -206,8 +205,6 @@ def test_semantic_fingerprint_is_independent_of_set_like_input_order(tmp_path):
         "style_tags",
     ):
         payload[field].reverse()
-    payload["human_evaluation"]["dimension_scores"].reverse()
-    payload["human_evaluation"]["edit_facts"].reverse()
     second_path = _write_annotation(tmp_path, payload)
     second = load_case_annotation(
         second_path,
@@ -336,12 +333,6 @@ def test_rejects_nan_and_infinite_numbers(tmp_path, invalid_number):
             deepcopy(value["layout_hard_constraints"][0])
         ),
         lambda value: value["style_tags"].append(value["style_tags"][0]),
-        lambda value: value["human_evaluation"]["dimension_scores"].append(
-            deepcopy(value["human_evaluation"]["dimension_scores"][0])
-        ),
-        lambda value: value["human_evaluation"]["edit_facts"].append(
-            deepcopy(value["human_evaluation"]["edit_facts"][0])
-        ),
     ],
 )
 def test_rejects_duplicate_structured_facts(tmp_path, mutator):
@@ -364,7 +355,6 @@ def test_rejects_duplicate_structured_facts(tmp_path, mutator):
         ("allowed_skus", 0),
         ("requirements", 0, "value"),
         ("layout_hard_constraints", 0, "subject_id"),
-        ("human_evaluation", "edit_facts", 0, "target_id"),
     ],
 )
 def test_rejects_empty_labels(tmp_path, field_path):
@@ -387,7 +377,7 @@ def test_rejects_empty_labels(tmp_path, field_path):
 def test_rejects_raw_free_text_and_pii_fields(tmp_path, pii_field):
     dataset = _dataset(tmp_path)
     payload = _payload(dataset)
-    payload["human_evaluation"][pii_field] = "不应进入标注资产"
+    payload[pii_field] = "不应进入标注资产"
 
     with pytest.raises(AnnotationValidationError, match="PII|自由文本"):
         load_case_annotation(
@@ -463,6 +453,50 @@ def test_rejects_invalid_layout_constraint_contract(tmp_path, field, value):
         )
 
 
+def test_case_annotation_rejects_run_dependent_human_evaluation(tmp_path):
+    dataset = _dataset(tmp_path)
+    payload = _payload(dataset)
+    payload["human_evaluation"] = {
+        "overall_rating": 5,
+        "dimension_scores": [],
+        "edit_facts": [],
+    }
+
+    with pytest.raises(AnnotationValidationError, match="未知字段"):
+        load_case_annotation(
+            _write_annotation(tmp_path, payload),
+            dataset=dataset,
+            dataset_root=tmp_path,
+        )
+
+
+def test_execution_review_is_bound_to_exact_output_digest(tmp_path):
+    dataset = _dataset(tmp_path)
+    output_digest = "a" * 64
+    path = _write_annotation(tmp_path, _review_payload(dataset, output_digest=output_digest))
+
+    review = load_execution_review(
+        path,
+        dataset=dataset,
+        dataset_root=tmp_path,
+        expected_output_digest=output_digest,
+    )
+
+    assert review.case_id == dataset.cases[0].id
+    assert review.output_digest == output_digest
+    assert review.reviewer_role == "designer"
+    assert review.overall_rating == 4
+    assert review.content_fingerprint.startswith("sha256:")
+
+    with pytest.raises(AnnotationValidationError, match="输出 SHA-256"):
+        load_execution_review(
+            path,
+            dataset=dataset,
+            dataset_root=tmp_path,
+            expected_output_digest="b" * 64,
+        )
+
+
 @pytest.mark.parametrize(
     ("action", "field", "value"),
     [
@@ -473,21 +507,23 @@ def test_rejects_invalid_layout_constraint_contract(tmp_path, field, value):
         ("invent", "delta_mm", 1),
     ],
 )
-def test_rejects_incomplete_or_unknown_human_edit_facts(
+def test_execution_review_rejects_incomplete_or_unknown_edit_facts(
     tmp_path,
     action,
     field,
     value,
 ):
     dataset = _dataset(tmp_path)
-    payload = _payload(dataset)
-    edit = payload["human_evaluation"]["edit_facts"][0]
+    output_digest = "a" * 64
+    payload = _review_payload(dataset, output_digest=output_digest)
+    edit = payload["edit_facts"][0]
     edit["action"] = action
     edit[field] = value
 
     with pytest.raises(AnnotationValidationError, match="edit_facts"):
-        load_case_annotation(
+        load_execution_review(
             _write_annotation(tmp_path, payload),
             dataset=dataset,
             dataset_root=tmp_path,
+            expected_output_digest=output_digest,
         )
