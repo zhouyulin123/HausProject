@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.services.evaluation_binding_service import (
     EvaluationBindingError,
     normalize_task_input,
 )
+
+if TYPE_CHECKING:
+    from evals.annotations import CaseAnnotation
 
 
 CaseSplit = Literal["development", "regression", "blind", "unassigned"]
@@ -73,6 +77,9 @@ class RealWorldCase:
     failure_tags: tuple[str, ...]
     asset_sha256: str = ""
     task_input: dict[str, Any] | None = None
+    annotation_path: Path | None = None
+    annotation_sha256: str = ""
+    annotation: CaseAnnotation | None = None
 
     def ineligible_reasons(self) -> list[str]:
         reasons: list[str] = []
@@ -119,6 +126,10 @@ class RealWorldDataset:
                 "origin": case.origin,
                 "asset_sha256": case.asset_sha256,
                 "label_version": case.label_version,
+                "annotation_sha256": case.annotation_sha256,
+                "annotation_fingerprint": (
+                    case.annotation.content_fingerprint if case.annotation else None
+                ),
                 "allowed_purposes": sorted(case.allowed_purposes),
                 "task_input": case.task_input,
             }
@@ -201,7 +212,7 @@ def load_case_manifest(
         raise DatasetValidationError("案例清单根节点必须是对象")
     schema_version = payload.get("schema_version")
     dataset_version = payload.get("dataset_version")
-    if schema_version != "1.0":
+    if schema_version not in {"1.0", "2.0"}:
         raise DatasetValidationError(f"不支持的 schema_version：{schema_version}")
     if not isinstance(dataset_version, str) or not dataset_version.strip():
         raise DatasetValidationError("dataset_version 不能为空")
@@ -280,6 +291,28 @@ def load_case_manifest(
                     raise DatasetValidationError(
                         f"案例 {case_id} 的 task_input 不合法：{exc}"
                     ) from exc
+            annotation_path = None
+            annotation_sha256 = ""
+            if schema_version == "2.0" and annotation_status == "ready":
+                raw_annotation_path = raw.get("annotation_path")
+                if not isinstance(raw_annotation_path, str) or not raw_annotation_path.strip():
+                    raise DatasetValidationError(
+                        f"案例 {case_id} 的 ready 标注缺少 annotation_path"
+                    )
+                raw_annotation_sha256 = raw.get("annotation_sha256")
+                if (
+                    not isinstance(raw_annotation_sha256, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", raw_annotation_sha256)
+                ):
+                    raise DatasetValidationError(
+                        f"案例 {case_id} 的 ready 标注缺少合法 annotation_sha256"
+                    )
+                annotation_path = _resolve_asset(
+                    root,
+                    raw_annotation_path.strip(),
+                    case_id,
+                )
+                annotation_sha256 = raw_annotation_sha256
             cases.append(
                 RealWorldCase(
                     id=_required_text(raw, "id", case_id),
@@ -296,17 +329,43 @@ def load_case_manifest(
                     ),
                     failure_tags=_string_list(raw, "failure_tags", case_id),
                     task_input=task_input,
+                    annotation_path=annotation_path,
+                    annotation_sha256=annotation_sha256,
                 )
             )
         except DatasetValidationError as exc:
             errors.append(str(exc))
     if errors:
         raise DatasetValidationError("；".join(errors))
-    return RealWorldDataset(
+    dataset = RealWorldDataset(
         schema_version=schema_version,
         dataset_version=dataset_version.strip(),
         cases=tuple(cases),
     )
+    if schema_version == "2.0":
+        from evals.annotations import AnnotationValidationError, load_case_annotation
+
+        loaded_cases: list[RealWorldCase] = []
+        for case in dataset.cases:
+            if case.annotation_path is None:
+                loaded_cases.append(case)
+                continue
+            try:
+                annotation = load_case_annotation(
+                    case.annotation_path,
+                    dataset=dataset,
+                    dataset_root=root,
+                    expected_sha256=case.annotation_sha256,
+                )
+            except AnnotationValidationError as exc:
+                errors.append(f"案例 {case.id} 的标注资产不合法：{exc}")
+                loaded_cases.append(case)
+                continue
+            loaded_cases.append(replace(case, annotation=annotation))
+        if errors:
+            raise DatasetValidationError("；".join(errors))
+        dataset = replace(dataset, cases=tuple(loaded_cases))
+    return dataset
 
 
 @dataclass(frozen=True)
