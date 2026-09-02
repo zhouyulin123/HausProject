@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -118,6 +118,19 @@ def _clear_worker(run: GenerationRun) -> None:
     run.heartbeat_at = None
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _deadline_reached(run: GenerationRun, *, now: datetime) -> bool:
+    return (
+        run.execution_deadline_at is not None
+        and _as_utc(run.execution_deadline_at) <= _as_utc(now)
+    )
+
+
 def _set_task_state(
     db: Session,
     *,
@@ -134,51 +147,102 @@ def _set_task_state(
     task.error_message = error_message
 
 
+def _mark_dead_letter(
+    db: Session,
+    *,
+    run: GenerationRun,
+    now: datetime,
+    error_message: str,
+) -> None:
+    _clear_worker(run)
+    run.status = "dead_letter"
+    run.progress = 100
+    run.current_node = "dead_letter"
+    run.next_retry_at = None
+    run.completed_at = now
+    run.dead_lettered_at = now
+    run.error_message = error_message[:2000]
+    _set_task_state(
+        db,
+        run=run,
+        status="failed",
+        progress=0,
+        error_message=run.error_message,
+    )
+
+
 def recover_expired_runs(
     db: Session,
     *,
     now: datetime | None = None,
     retry_delay_seconds: int = 5,
 ) -> int:
-    """回收已过期租约；取消优先于重试，耗尽次数后进入失败终态。"""
-    current = now or datetime.now(timezone.utc)
+    """回收租约或硬截止时间过期的运行；取消始终优先。"""
+    current = _as_utc(now or datetime.now(timezone.utc))
     expired = db.scalars(
         select(GenerationRun)
         .where(
-            GenerationRun.status == "running",
-            GenerationRun.lease_expires_at.is_not(None),
-            GenerationRun.lease_expires_at < current,
+            GenerationRun.status.in_(("queued", "running")),
+            or_(
+                and_(
+                    GenerationRun.status == "queued",
+                    GenerationRun.attempt_count >= GenerationRun.max_attempts,
+                ),
+                and_(
+                    GenerationRun.execution_deadline_at.is_not(None),
+                    GenerationRun.execution_deadline_at <= current,
+                ),
+                and_(
+                    GenerationRun.status == "running",
+                    GenerationRun.lease_expires_at.is_not(None),
+                    GenerationRun.lease_expires_at < current,
+                ),
+            ),
         )
         .with_for_update(skip_locked=True)
     ).all()
     for run in expired:
-        _clear_worker(run)
         if run.cancel_requested_at is not None:
+            _clear_worker(run)
             run.status = "cancelled"
             run.current_node = "cancelled"
             run.completed_at = current
             run.next_retry_at = None
             _set_task_state(db, run=run, status="cancelled", progress=0)
-        elif run.attempt_count < run.max_attempts:
+            continue
+        if _deadline_reached(run, now=current):
+            _mark_dead_letter(
+                db,
+                run=run,
+                now=current,
+                error_message="方案生成超过硬执行截止时间",
+            )
+            continue
+
+        retry_at = current + timedelta(seconds=retry_delay_seconds)
+        retry_before_deadline = (
+            run.execution_deadline_at is None
+            or retry_at < _as_utc(run.execution_deadline_at)
+        )
+        if run.attempt_count < run.max_attempts and retry_before_deadline:
+            _clear_worker(run)
             run.status = "queued"
             run.progress = 0
             run.current_node = "queued"
-            run.next_retry_at = current + timedelta(seconds=retry_delay_seconds)
+            run.next_retry_at = retry_at
             run.error_message = "上次 Worker 租约过期，等待重试"
             _set_task_state(db, run=run, status="queued", progress=50)
         else:
-            run.status = "failed"
-            run.progress = 100
-            run.current_node = "failed"
-            run.next_retry_at = None
-            run.completed_at = current
-            run.error_message = "方案生成多次超时"
-            _set_task_state(
+            message = (
+                "方案生成多次超时"
+                if run.attempt_count >= run.max_attempts
+                else "方案生成无法在执行截止时间前重试"
+            )
+            _mark_dead_letter(
                 db,
                 run=run,
-                status="failed",
-                progress=0,
-                error_message=run.error_message,
+                now=current,
+                error_message=message,
             )
     db.commit()
     return len(expired)
@@ -189,6 +253,10 @@ def _claim_query(now: datetime, *, run_id: int | None = None):
         GenerationRun.status == "queued",
         GenerationRun.cancel_requested_at.is_(None),
         GenerationRun.attempt_count < GenerationRun.max_attempts,
+        (
+            GenerationRun.execution_deadline_at.is_(None)
+            | (GenerationRun.execution_deadline_at > now)
+        ),
         (
             GenerationRun.next_retry_at.is_(None)
             | (GenerationRun.next_retry_at <= now)
@@ -208,12 +276,15 @@ def claim_next_run(
     *,
     worker_id: str,
     lease_seconds: int,
+    execution_timeout_seconds: int = 900,
     now: datetime | None = None,
     run_id: int | None = None,
     retry_delay_seconds: int = 5,
 ) -> GenerationRun | None:
     """原子认领一个可执行任务，`run_id` 仅供显式开发回退使用。"""
-    current = now or datetime.now(timezone.utc)
+    if execution_timeout_seconds <= 0:
+        raise ValueError("方案生成执行超时必须为正数")
+    current = _as_utc(now or datetime.now(timezone.utc))
     recover_expired_runs(
         db,
         now=current,
@@ -228,7 +299,14 @@ def claim_next_run(
     run.current_node = "prepare_context"
     run.worker_id = worker_id
     run.heartbeat_at = current
-    run.lease_expires_at = current + timedelta(seconds=lease_seconds)
+    if run.execution_deadline_at is None:
+        run.execution_deadline_at = current + timedelta(
+            seconds=execution_timeout_seconds
+        )
+    lease_target = current + timedelta(seconds=lease_seconds)
+    if _as_utc(run.execution_deadline_at) < lease_target:
+        lease_target = run.execution_deadline_at
+    run.lease_expires_at = lease_target
     run.next_retry_at = None
     run.attempt_count += 1
     run.started_at = current
@@ -248,7 +326,7 @@ def _owned_run(
     now: datetime | None = None,
     lock: bool = False,
 ) -> GenerationRun | None:
-    current = now or datetime.now(timezone.utc)
+    current = _as_utc(now or datetime.now(timezone.utc))
     query = select(GenerationRun).where(
         GenerationRun.id == run_id,
         GenerationRun.status == "running",
@@ -256,6 +334,10 @@ def _owned_run(
         GenerationRun.cancel_requested_at.is_(None),
         GenerationRun.lease_expires_at.is_not(None),
         GenerationRun.lease_expires_at >= current,
+        (
+            GenerationRun.execution_deadline_at.is_(None)
+            | (GenerationRun.execution_deadline_at > current)
+        ),
     )
     if worker_attempt is not None:
         query = query.where(GenerationRun.attempt_count == worker_attempt)
@@ -293,7 +375,7 @@ def renew_lease(
     worker_attempt: int | None = None,
     now: datetime | None = None,
 ) -> bool:
-    current = now or datetime.now(timezone.utc)
+    current = _as_utc(now or datetime.now(timezone.utc))
     run = _owned_run(
         db,
         run_id=run_id,
@@ -305,7 +387,13 @@ def renew_lease(
         db.rollback()
         return False
     run.heartbeat_at = current
-    run.lease_expires_at = current + timedelta(seconds=lease_seconds)
+    lease_target = current + timedelta(seconds=lease_seconds)
+    if (
+        run.execution_deadline_at is not None
+        and _as_utc(run.execution_deadline_at) < lease_target
+    ):
+        lease_target = run.execution_deadline_at
+    run.lease_expires_at = lease_target
     db.commit()
     return True
 
@@ -317,6 +405,7 @@ def record_step(
     step: dict[str, Any],
     worker_id: str | None = None,
     worker_attempt: int | None = None,
+    now: datetime | None = None,
     commit: bool = True,
 ) -> GenerationRunEvent | None:
     if worker_id is not None and _owned_run(
@@ -324,6 +413,7 @@ def record_step(
         run_id=run.id,
         worker_id=worker_id,
         worker_attempt=worker_attempt,
+        now=now,
     ) is None:
         db.rollback()
         return None
@@ -371,7 +461,7 @@ def mark_completed(
     now: datetime | None = None,
     commit: bool = True,
 ) -> bool:
-    current = now or datetime.now(timezone.utc)
+    current = _as_utc(now or datetime.now(timezone.utc))
     if worker_id is not None:
         target_id = run_id or (run.id if run is not None else None)
         if target_id is None:
@@ -411,6 +501,7 @@ def record_generation_meta(
     output_snapshot: dict[str, Any],
     worker_id: str | None = None,
     worker_attempt: int | None = None,
+    now: datetime | None = None,
     commit: bool = True,
 ) -> bool:
     """把方案生成的模型 / Prompt / 输入 / 输出 / 用量 / 成本写入 generation_run。"""
@@ -419,6 +510,7 @@ def record_generation_meta(
         run_id=run.id,
         worker_id=worker_id,
         worker_attempt=worker_attempt,
+        now=now,
     ) is None:
         db.rollback()
         return False
@@ -446,7 +538,7 @@ def mark_failed(
     retry_delay_seconds: int = 5,
     now: datetime | None = None,
 ) -> str:
-    current = now or datetime.now(timezone.utc)
+    current = _as_utc(now or datetime.now(timezone.utc))
     if worker_id is not None:
         owned = _owned_run(
             db,
@@ -461,15 +553,32 @@ def mark_failed(
             return run.status
         run = owned
     run.error_message = error_message[:2000]
-    _clear_worker(run)
-    if retryable and run.attempt_count < run.max_attempts:
+    retry_at = current + timedelta(seconds=retry_delay_seconds)
+    retry_before_deadline = (
+        run.execution_deadline_at is None
+        or retry_at < _as_utc(run.execution_deadline_at)
+    )
+    if (
+        retryable
+        and run.attempt_count < run.max_attempts
+        and retry_before_deadline
+    ):
+        _clear_worker(run)
         run.status = "queued"
         run.progress = 0
         run.current_node = "queued"
-        run.next_retry_at = current + timedelta(seconds=retry_delay_seconds)
+        run.next_retry_at = retry_at
         run.completed_at = None
         _set_task_state(db, run=run, status="queued", progress=50)
+    elif retryable:
+        _mark_dead_letter(
+            db,
+            run=run,
+            now=current,
+            error_message=run.error_message,
+        )
     else:
+        _clear_worker(run)
         run.status = "failed"
         run.progress = 100
         run.current_node = "failed"
@@ -492,7 +601,7 @@ def request_cancel(
     run: GenerationRun,
     now: datetime | None = None,
 ) -> str:
-    current = now or datetime.now(timezone.utc)
+    current = _as_utc(now or datetime.now(timezone.utc))
     locked_run = db.scalar(
         select(GenerationRun)
         .where(GenerationRun.id == run.id)
@@ -503,7 +612,7 @@ def request_cancel(
         db.rollback()
         return "failed"
     run = locked_run
-    if run.status in {"completed", "failed", "cancelled"}:
+    if run.status in {"completed", "failed", "dead_letter", "cancelled"}:
         db.commit()
         return run.status
     run.cancel_requested_at = run.cancel_requested_at or current
@@ -526,7 +635,7 @@ def mark_cancelled_by_worker(
     worker_attempt: int,
     now: datetime | None = None,
 ) -> bool:
-    current = now or datetime.now(timezone.utc)
+    current = _as_utc(now or datetime.now(timezone.utc))
     run = db.scalar(
         select(GenerationRun)
         .where(

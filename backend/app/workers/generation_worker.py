@@ -56,6 +56,9 @@ def process_one_run(
             db,
             worker_id=worker_id,
             lease_seconds=settings.generation_worker_lease_seconds,
+            execution_timeout_seconds=(
+                settings.generation_worker_execution_timeout_seconds
+            ),
             run_id=run_id,
             retry_delay_seconds=settings.generation_worker_retry_base_seconds,
         )
@@ -191,12 +194,19 @@ def process_one_run(
     except generation_run_service.GenerationRunOwnershipError:
         logger.warning("方案生成执行已停止: run_id=%s", claimed_run_id)
         with SessionLocal() as db:
-            generation_run_service.mark_cancelled_by_worker(
+            cancelled = generation_run_service.mark_cancelled_by_worker(
                 db,
                 run_id=claimed_run_id,
                 worker_id=worker_id,
                 worker_attempt=worker_attempt,
             )
+            if not cancelled:
+                generation_run_service.recover_expired_runs(
+                    db,
+                    retry_delay_seconds=(
+                        settings.generation_worker_retry_base_seconds
+                    ),
+                )
     except Exception as exc:
         logger.exception("方案生成失败: run_id=%s", claimed_run_id)
         with SessionLocal() as db:

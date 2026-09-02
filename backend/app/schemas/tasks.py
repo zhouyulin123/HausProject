@@ -41,7 +41,14 @@ class GenerateResponse(BaseModel):
 
 class GenerationQueuedResponse(BaseModel):
     run_id: int
-    status: Literal["queued", "running", "completed", "failed", "cancelled"]
+    status: Literal[
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "dead_letter",
+        "cancelled",
+    ]
 
 
 class GenerationEventResponse(BaseModel):
@@ -65,6 +72,8 @@ class GenerationStatusResponse(BaseModel):
     error_message: Optional[str] = None
     cancel_requested_at: Optional[datetime] = None
     next_retry_at: Optional[datetime] = None
+    execution_deadline_at: Optional[datetime] = None
+    dead_lettered_at: Optional[datetime] = None
     events: List[GenerationEventResponse] = Field(default_factory=list)
 
 

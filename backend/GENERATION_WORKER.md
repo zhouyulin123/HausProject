@@ -28,8 +28,9 @@ Windows 也可以双击 `backend/start_generation_worker.bat`。生产部署应�
 
 - `queued`：等待认领，失败退避期间由 `next_retry_at` 控制再次执行时间。
 - `running`：Worker 已持有租约，并按固定间隔续租。
-- `completed`、`failed`、`cancelled`：不会再被 Worker 认领的终态。
-- Worker 异常退出后，其他 Worker 会回收过期租约；未耗尽次数则重新入队，否则标记失败。
+- `completed`、`failed`、`dead_letter`、`cancelled`：不会再被 Worker 认领的终态；其中 `dead_letter` 表示硬截止时间到期或可重试执行已耗尽。
+- 首次认领会固定整个运行的 `execution_deadline_at`。心跳只能把租约续到该时间，不能延长总执行窗口；后续 attempt 也沿用同一截止时间。
+- Worker 异常退出后，其他 Worker 会回收过期租约；仍有次数且能在截止时间前退避则重新入队，否则进入 `dead_letter`，对应设计任务状态为 `failed`。
 - `Idempotency-Key` 在同一设计任务内唯一，相同键重复请求会返回原运行，不会重复执行。
 - 运行中收到取消请求后，Worker 会在步骤写入或最终持久化前停止；最终结果提交与 `completed` 状态处于同一数据库事务。
 
@@ -39,7 +40,8 @@ Windows 也可以双击 `backend/start_generation_worker.bat`。生产部署应�
 - `GENERATION_WORKER_MAX_ATTEMPTS`：最大执行次数，默认 3 次。
 - `GENERATION_WORKER_LEASE_SECONDS`：租约有效期，默认 180 秒。
 - `GENERATION_WORKER_HEARTBEAT_SECONDS`：续租间隔，默认 15 秒，必须显著小于租约。
+- `GENERATION_WORKER_EXECUTION_TIMEOUT_SECONDS`：单个持久化运行的总执行窗口，默认 900 秒，范围 30–7200 秒；生产必须为正值。
 - `GENERATION_WORKER_RETRY_BASE_SECONDS`：指数退避基数，默认 5 秒。
 - `GENERATION_INLINE_FALLBACK`：仅用于显式本地调试，默认关闭，生产环境配置为 `true` 会拒绝启动。
 
-接口行为：`POST /api/design/tasks/{task_id}/generate-async` 入队，`GET /api/design/tasks/{task_id}/generation` 查询状态，`POST /api/design/tasks/{task_id}/generation/cancel` 请求取消。
+接口行为：`POST /api/design/tasks/{task_id}/generate-async` 入队，`GET /api/design/tasks/{task_id}/generation` 查询状态（含 `execution_deadline_at` 与 `dead_lettered_at`），`POST /api/design/tasks/{task_id}/generation/cancel` 请求取消。

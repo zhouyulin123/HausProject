@@ -721,6 +721,10 @@ class GenerationRun(Base):
     worker_id = Column(String(100), nullable=True, index=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
     heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    execution_deadline_at = Column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    dead_lettered_at = Column(DateTime(timezone=True), nullable=True, index=True)
     next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
     attempt_count = Column(Integer, nullable=False, default=0)
     max_attempts = Column(Integer, nullable=False, default=3)

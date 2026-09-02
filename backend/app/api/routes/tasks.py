@@ -467,6 +467,8 @@ def get_generation_status(
         error_message=run.error_message,
         cancel_requested_at=run.cancel_requested_at,
         next_retry_at=run.next_retry_at,
+        execution_deadline_at=run.execution_deadline_at,
+        dead_lettered_at=run.dead_lettered_at,
         events=[
             GenerationEventResponse(
                 node=event.node,
