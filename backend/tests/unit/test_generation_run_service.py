@@ -353,8 +353,30 @@ def test_recovery_dead_letters_execution_deadline_even_with_live_lease(db):
     db.refresh(claimed)
     db.refresh(task)
     assert claimed.status == "dead_letter"
-    assert claimed.dead_lettered_at == now + timedelta(seconds=31)
+    assert claimed.dead_lettered_at.replace(tzinfo=timezone.utc) == (
+        now + timedelta(seconds=31)
+    )
     assert claimed.worker_id is None
+    assert task.status == "failed"
+
+
+@pytest.mark.unit
+def test_recovery_dead_letters_queued_run_with_exhausted_attempts(db):
+    task = DesignTask(status="confirmed", progress=50)
+    db.add(task)
+    db.commit()
+    run = generation_run_service.create_run(db, task=task, max_attempts=2)
+    run.attempt_count = 2
+    db.commit()
+    now = datetime.now(timezone.utc)
+
+    recovered = generation_run_service.recover_expired_runs(db, now=now)
+
+    assert recovered == 1
+    db.refresh(run)
+    db.refresh(task)
+    assert run.status == "dead_letter"
+    assert run.dead_lettered_at.replace(tzinfo=timezone.utc) == now
     assert task.status == "failed"
 
 
@@ -373,7 +395,8 @@ def test_expired_lease_is_recovered_and_cancel_request_wins(db):
     claimed = generation_run_service.claim_next_run(
         db,
         worker_id="dead-worker",
-        lease_seconds=10,
+        lease_seconds=120,
+        execution_timeout_seconds=10,
         now=now,
     )
     assert claimed is not None
