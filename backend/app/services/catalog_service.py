@@ -52,6 +52,7 @@ def is_product_eligible(
     allow_draft: bool = False,
     max_unit_price: int | None = None,
     max_dimensions_mm: Mapping[str, int] | None = None,
+    required_quantity: int | None = None,
 ) -> ProductEligibility:
     """集中执行商用商品硬过滤，并返回可审计的原因代码。"""
     current = _as_utc(at) or datetime.now(timezone.utc)
@@ -88,6 +89,11 @@ def is_product_eligible(
         reasons.append("lead_time_unknown")
     elif availability not in AVAILABILITY_STATUSES:
         reasons.append("availability_invalid")
+    if required_quantity is not None and (
+        product.stock_quantity is None
+        or product.stock_quantity < required_quantity
+    ):
+        reasons.append("insufficient_stock")
 
     valid_from = _as_utc(product.price_valid_from)
     valid_to = _as_utc(product.price_valid_to)
@@ -133,6 +139,7 @@ def eligible_products(
     allow_draft: bool = False,
     max_unit_price: int | None = None,
     max_dimensions_mm: Mapping[str, int] | None = None,
+    required_quantity: int | None = None,
 ) -> list[Product]:
     products = db.scalars(select(Product).where(Product.is_active.is_(True))).all()
     return [
@@ -144,6 +151,7 @@ def eligible_products(
             allow_draft=allow_draft,
             max_unit_price=max_unit_price,
             max_dimensions_mm=max_dimensions_mm,
+            required_quantity=required_quantity,
         ).eligible
     ]
 
@@ -307,6 +315,7 @@ def find_product_alternatives(
     region: str | None = None,
     max_unit_price: int | None = None,
     max_dimensions_mm: Mapping[str, int] | None = None,
+    required_quantity: int | None = None,
     limit: int = 5,
 ) -> list[dict[str, Any]]:
     """按显式替代、同类/空间、价格接近度稳定排序，不使用 LLM。"""
@@ -318,6 +327,7 @@ def find_product_alternatives(
         region=region,
         max_unit_price=max_unit_price,
         max_dimensions_mm=max_dimensions_mm,
+        required_quantity=required_quantity,
     ):
         if product.id == source.id or product.sku == source.sku:
             continue
@@ -338,6 +348,8 @@ def find_product_alternatives(
         reasons.append(
             "dimensions_fit" if max_dimensions_mm else "dimensions_known"
         )
+        if required_quantity is not None:
+            reasons.append("stock_sufficient")
         sort_key = (
             0 if is_explicit else 1,
             explicit.get(product.sku, 9999),
@@ -368,6 +380,13 @@ def _match_rule(
     if len(matches) > 1:
         return None, "custom_quote_rule_ambiguous", matching_ids
     return None, "custom_quote_rule_missing", []
+
+
+def _normalize_furniture_quantity(value: Any) -> int:
+    try:
+        return max(1, min(10, int(value)))
+    except (TypeError, ValueError):
+        return 1
 
 
 def verify_and_enrich_plans(
@@ -402,7 +421,9 @@ def verify_and_enrich_plans(
         hard_errors: list[str] = []
         if not raw_items:
             hard_errors.append("missing_product_sku")
-        resolved_items: list[tuple[dict[str, Any], Product, str | None, list[str]]] = []
+        resolved_items: list[
+            tuple[dict[str, Any], Product, str | None, list[str], int]
+        ] = []
         rejected: list[dict[str, Any]] = []
         for item in raw_items:
             if not isinstance(item, dict):
@@ -416,11 +437,22 @@ def verify_and_enrich_plans(
                 )
                 hard_errors.append("missing_product_sku")
                 continue
+            quantity = _normalize_furniture_quantity(item.get("quantity", 1))
             product = eligible_by_sku.get(requested_sku)
+            source = by_sku.get(requested_sku)
+            if product is not None and not is_product_eligible(
+                product,
+                at=current,
+                region=region,
+                allow_draft=allow_draft,
+                max_unit_price=budget_max,
+                max_dimensions_mm=max_dimensions_mm,
+                required_quantity=quantity,
+            ).eligible:
+                product = None
             replaced_sku = None
             replacement_reasons: list[str] = []
             if product is None:
-                source = by_sku.get(requested_sku)
                 if source is not None:
                     alternatives = find_product_alternatives(
                         db,
@@ -429,6 +461,7 @@ def verify_and_enrich_plans(
                         region=region,
                         max_unit_price=budget_max,
                         max_dimensions_mm=max_dimensions_mm,
+                        required_quantity=quantity,
                         limit=1,
                     )
                     if alternatives:
@@ -445,23 +478,32 @@ def verify_and_enrich_plans(
                             allow_draft=allow_draft,
                             max_unit_price=budget_max,
                             max_dimensions_mm=max_dimensions_mm,
+                            required_quantity=quantity,
                         ).reason_codes
                         if source is not None
                         else ("sku_not_found",)
                     )
                     rejected.append({"sku": requested_sku, "reason_codes": list(reasons)})
-                    hard_errors.append("invalid_sku")
+                    hard_errors.append(
+                        "insufficient_stock"
+                        if "insufficient_stock" in reasons
+                        else "invalid_sku"
+                    )
                     continue
-            resolved_items.append((item, product, replaced_sku, replacement_reasons))
+            resolved_items.append(
+                (item, product, replaced_sku, replacement_reasons, quantity)
+            )
 
         enriched = []
         line_items = []
         furniture_total = 0
-        for index, (item, product, replaced_sku, replacement_reasons) in enumerate(resolved_items):
-            try:
-                quantity = max(1, min(10, int(item.get("quantity", 1))))
-            except (TypeError, ValueError):
-                quantity = 1
+        for index, (
+            item,
+            product,
+            replaced_sku,
+            replacement_reasons,
+            quantity,
+        ) in enumerate(resolved_items):
             subtotal = product.price * quantity
             if budget_max is not None and furniture_total + subtotal > budget_max:
                 remaining_budget = max(0, budget_max - furniture_total)
@@ -472,6 +514,7 @@ def verify_and_enrich_plans(
                     region=region,
                     max_unit_price=remaining_budget // quantity,
                     max_dimensions_mm=max_dimensions_mm,
+                    required_quantity=quantity,
                     limit=1,
                 )
                 if not alternatives:
