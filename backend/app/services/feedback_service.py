@@ -152,7 +152,7 @@ def create_feedback_event(
             ),
             instance_id=(
                 payload.instance_id
-                if payload.action_type == "glb_load_failed"
+                if payload.action_type in {"move", "glb_load_failed"}
                 else None
             ),
             source_sku=(

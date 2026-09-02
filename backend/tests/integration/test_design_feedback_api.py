@@ -235,6 +235,28 @@ def test_feedback_event_validates_action_specific_fields(
 
 
 @pytest.mark.integration
+def test_move_feedback_rejects_instance_missing_from_scene_version(
+    feedback_api_context,
+):
+    client, factory, context = feedback_api_context
+    response = client.post(
+        f"/api/design/tasks/{context['task_id']}/feedback-events",
+        headers={"X-Session-ID": context["owner_id"]},
+        json={
+            "client_event_id": "feedback-move-missing-instance",
+            "action_type": "move",
+            "scene_id": context["scene_id"],
+            "scene_version": 1,
+            "instance_id": "missing-instance",
+        },
+    )
+
+    assert response.status_code == 404
+    with factory() as db:
+        assert db.scalar(select(DesignFeedbackEvent.id)) is None
+
+
+@pytest.mark.integration
 def test_glb_load_failure_is_minimal_task_owned_and_idempotent(
     feedback_api_context,
 ):
