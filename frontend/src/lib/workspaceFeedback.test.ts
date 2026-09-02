@@ -3,6 +3,7 @@ import {
   buildFinalSelectFeedbackEvent,
   buildFurnitureFeedbackEvent,
   buildMoveFeedbackEvent,
+  buildReplaceFeedbackEvent,
   createFeedbackClientEventId,
   feedbackDeliveryReducer,
 } from "./workspaceFeedback";
@@ -78,6 +79,37 @@ describe("工作台结构化反馈事件", () => {
     expect(buildMoveFeedbackEvent("feedback-42-move-002", null, 7, "sofa-1", null)).toBeNull();
     expect(buildMoveFeedbackEvent("feedback-42-move-003", 3, null, "sofa-1", null)).toBeNull();
     expect(buildMoveFeedbackEvent("feedback-42-move-004", 3, 7, null, null)).toBeNull();
+  });
+
+  it("替换事件只接受真实方案版本和两个不同的 SKU", () => {
+    expect(buildReplaceFeedbackEvent({
+      clientEventId: "feedback-42-replace-001",
+      planVersionId: 8,
+      sourceSku: "SOFA-OLD",
+      targetSku: "SOFA-NEW",
+      roomId: "living-room",
+    })).toEqual({
+      client_event_id: "feedback-42-replace-001",
+      action_type: "replace",
+      plan_version_id: 8,
+      source_sku: "SOFA-OLD",
+      target_sku: "SOFA-NEW",
+      room_id: "living-room",
+    });
+    expect(buildReplaceFeedbackEvent({
+      clientEventId: "feedback-42-replace-002",
+      planVersionId: null,
+      sourceSku: "SOFA-OLD",
+      targetSku: "SOFA-NEW",
+      roomId: null,
+    })).toBeNull();
+    expect(buildReplaceFeedbackEvent({
+      clientEventId: "feedback-42-replace-003",
+      planVersionId: 8,
+      sourceSku: "SOFA-OLD",
+      targetSku: " sofa-old ",
+      roomId: null,
+    })).toBeNull();
   });
 
   it("重试保留首次请求的稳定幂等键", () => {

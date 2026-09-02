@@ -43,6 +43,36 @@ describe("useDesignProjectStore", () => {
     expect(useDesignProjectStore.getState().projects).toEqual({});
   });
 
+  it("原子替换已选家具，并拒绝无效或重复目标", () => {
+    const projectId = useDesignProjectStore
+      .getState()
+      .registerProject(44, "catalog_design", {
+        requirement: emptyRequirement,
+        roomModel: null,
+      });
+    useDesignProjectStore.getState().setFurnitureSelection(projectId, ["sofa-old", "lamp"]);
+
+    expect(
+      useDesignProjectStore.getState().replaceFurniture(projectId, "sofa-old", "sofa-new"),
+    ).toBe(true);
+    expect(
+      useDesignProjectStore.getState().projects[projectId]?.selectedFurnitureIds,
+    ).toEqual(["sofa-new", "lamp"]);
+
+    expect(
+      useDesignProjectStore.getState().replaceFurniture(projectId, "missing", "table"),
+    ).toBe(false);
+    expect(
+      useDesignProjectStore.getState().replaceFurniture(projectId, "sofa-new", "lamp"),
+    ).toBe(false);
+    expect(
+      useDesignProjectStore.getState().replaceFurniture(projectId, "sofa-new", "sofa-new"),
+    ).toBe(false);
+    expect(
+      useDesignProjectStore.getState().projects[projectId]?.selectedFurnitureIds,
+    ).toEqual(["sofa-new", "lamp"]);
+  });
+
   it("用服务端 checkpoint 恢复项目状态和待确认问题", () => {
     useDesignProjectStore.getState().registerProject(42, "room_reconstruction", {
       requirement: emptyRequirement,
