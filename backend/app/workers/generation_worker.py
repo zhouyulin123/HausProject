@@ -12,6 +12,7 @@ import threading
 import time
 
 from app.core.config import settings
+from app.core.request_context import bind_request_id
 from app.db.database import SessionLocal
 from app.db.models import DesignTask, GenerationRun
 from app.services import generation_run_service, llm_service
@@ -188,8 +189,9 @@ def process_one_run(
                     cost_limit_cny=settings.generation_task_cost_limit_cny,
                 )
 
-            with llm_service.model_cost_guard(reserve_model_call):
-                response = selected_executor(db, **executor_kwargs)
+            with bind_request_id(run.request_id):
+                with llm_service.model_cost_guard(reserve_model_call):
+                    response = selected_executor(db, **executor_kwargs)
             if finalized:
                 db.commit()
             elif not generation_run_service.mark_completed(

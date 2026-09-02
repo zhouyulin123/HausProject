@@ -103,6 +103,7 @@ def create_run(
     task: DesignTask,
     idempotency_key: str | None = None,
     max_attempts: int = 3,
+    request_id: str | None = None,
 ) -> GenerationRun:
     """创建持久化运行；同一幂等键在终态后也返回原记录。"""
     normalized_key = (idempotency_key or "").strip() or None
@@ -139,6 +140,7 @@ def create_run(
         progress=0,
         current_node="queued",
         idempotency_key=normalized_key,
+        request_id=request_id,
         max_attempts=max(1, max_attempts),
     )
     db.add(run)

@@ -1,5 +1,6 @@
 import pytest
 
+from app.core.request_context import bind_request_id
 from app.services import llm_service
 from app.services.llm_service import estimate_cost_cny
 
@@ -65,3 +66,13 @@ def test_model_cost_guard_runs_before_provider_and_is_not_converted(monkeypatch)
             llm_service._chat_json("system", "user", max_tokens=100)
 
     assert provider_called is False
+
+
+def test_provider_request_uses_bound_client_request_id():
+    with bind_request_id("generation-request-001"):
+        kwargs = llm_service._provider_request_kwargs()
+
+    assert kwargs == {
+        "extra_headers": {"X-Client-Request-Id": "generation-request-001"}
+    }
+    assert llm_service._provider_request_kwargs() == {}

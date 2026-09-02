@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import os
-import uuid
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.api.main import api_router
 from app.core.config import settings
+from app.core.request_context import bind_request_id, normalize_request_id
 from app.db.database import get_db
 
 
@@ -40,8 +40,10 @@ app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads"
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    response = await call_next(request)
+    request_id = normalize_request_id(request.headers.get("X-Request-ID"))
+    request.state.request_id = request_id
+    with bind_request_id(request_id):
+        response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"

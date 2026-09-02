@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from app.core.config import settings
+from app.core.request_context import current_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,13 @@ _model_cost_guard: ContextVar[ModelCostGuard | None] = ContextVar(
     "model_cost_guard",
     default=None,
 )
+
+
+def _provider_request_kwargs() -> dict[str, Any]:
+    request_id = current_request_id()
+    if not request_id:
+        return {}
+    return {"extra_headers": {"X-Client-Request-Id": request_id}}
 
 
 def last_generation_meta() -> Optional[Dict[str, Any]]:
@@ -147,6 +155,7 @@ def _chat_json(
             response_format={"type": "json_object"},
             max_tokens=max_tokens,
             temperature=temperature,
+            **_provider_request_kwargs(),
         )
         if usage_out is not None and resp.usage is not None:
             usage_out.update(
@@ -223,6 +232,7 @@ def chat_reply(
             messages=messages,
             max_tokens=500,
             temperature=0.8,
+            **_provider_request_kwargs(),
         )
         return resp.choices[0].message.content.strip()
     except LLMUnavailable:
@@ -565,6 +575,7 @@ def analyze_image(image_bytes: bytes, file_name: str) -> Dict[str, Any]:
             response_format={"type": "json_object"},
             max_tokens=1000,
             temperature=0.4,
+            **_provider_request_kwargs(),
         )
         data = json.loads(resp.choices[0].message.content)
         if not data.get("findings"):
@@ -663,6 +674,7 @@ def analyze_room_model(image_bytes: bytes, file_name: str) -> Dict[str, Any] | N
             response_format={"type": "json_object"},
             max_tokens=10000,
             temperature=0.3,
+            **_provider_request_kwargs(),
         )
         data = json.loads(resp.choices[0].message.content)
     except LLMUnavailable:

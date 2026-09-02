@@ -63,6 +63,7 @@ class GenerationEventResponse(BaseModel):
 
 class GenerationStatusResponse(BaseModel):
     run_id: int
+    request_id: Optional[str] = None
     attempt: int
     attempt_count: int
     max_attempts: int

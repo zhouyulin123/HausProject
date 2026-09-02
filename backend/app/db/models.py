@@ -801,6 +801,7 @@ class GenerationRun(Base):
         Float, nullable=False, default=0.0, server_default="0"
     )
     cost_limit_cny = Column(Float, nullable=True)
+    request_id = Column(String(100), nullable=True, index=True)
     worker_id = Column(String(100), nullable=True, index=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
     heartbeat_at = Column(DateTime(timezone=True), nullable=True)

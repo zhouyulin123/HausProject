@@ -38,3 +38,23 @@ def test_ready_returns_503_without_leaking_database_error():
     assert response.status_code == 503
     assert response.json()["checks"]["database"] == "unavailable"
     assert "database unavailable" not in response.text
+
+
+def test_request_id_is_preserved_when_safe_and_replaced_when_invalid():
+    app.dependency_overrides[get_db] = lambda: HealthySession()
+    try:
+        client = TestClient(app)
+        preserved = client.get(
+            "/ready",
+            headers={"X-Request-ID": "customer-trace-001"},
+        )
+        replaced = client.get(
+            "/ready",
+            headers={"X-Request-ID": "bad request id"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert preserved.headers["x-request-id"] == "customer-trace-001"
+    assert replaced.headers["x-request-id"] != "bad request id"
+    assert len(replaced.headers["x-request-id"]) == 36

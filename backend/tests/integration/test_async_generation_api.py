@@ -68,7 +68,10 @@ def test_owner_can_queue_and_query_persistent_generation(
 
     queued = client.post(
         f"/api/design/tasks/{task_id}/generate-async",
-        headers={"X-Session-ID": owner_id},
+        headers={
+            "X-Session-ID": owner_id,
+            "X-Request-ID": "design-request-001",
+        },
     )
     status = client.get(
         f"/api/design/tasks/{task_id}/generation",
@@ -81,6 +84,7 @@ def test_owner_can_queue_and_query_persistent_generation(
     assert status.status_code == 200
     assert status.json() == {
         "run_id": queued.json()["run_id"],
+        "request_id": "design-request-001",
         "attempt": 1,
         "attempt_count": 0,
         "max_attempts": 3,

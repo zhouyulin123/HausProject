@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
 from app.db.models import DesignResult, DesignTask
+from app.core.request_context import current_request_id
 from app.services import generation_run_service, llm_service
 from app.workers import generation_worker
 
@@ -24,6 +25,7 @@ def test_worker_claims_and_completes_one_generation(monkeypatch):
             task=task,
             idempotency_key="worker-success-001",
             max_attempts=3,
+            request_id="worker-request-001",
         )
         run_id = run.id
 
@@ -36,6 +38,7 @@ def test_worker_claims_and_completes_one_generation(monkeypatch):
     executed: list[int] = []
 
     def executor(db, *, task, on_step, on_meta, before_persist, on_success):
+        assert current_request_id() == "worker-request-001"
         executed.append(task.id)
         on_step({"node": "prepare_context", "status": "completed"})
         before_persist()

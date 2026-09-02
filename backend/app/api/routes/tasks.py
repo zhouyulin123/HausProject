@@ -2,7 +2,7 @@ import json
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,7 @@ from app.api.dependencies import (
     require_owned_design_task,
 )
 from app.core.config import settings
+from app.core.request_context import normalize_request_id
 from app.db.database import get_db
 from app.db.models import (
     DesignResult,
@@ -384,6 +385,7 @@ def execute_generation_run(run_id: int) -> None:
 def queue_design_generation(
     task_id: int,
     background_tasks: BackgroundTasks,
+    request: Request,
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
     idempotency_key: Annotated[
@@ -406,6 +408,8 @@ def queue_design_generation(
         task=task,
         idempotency_key=idempotency_key,
         max_attempts=settings.generation_worker_max_attempts,
+        request_id=getattr(request.state, "request_id", None)
+        or normalize_request_id(request.headers.get("X-Request-ID")),
     )
     if run.status == "queued":
         task.status = "queued"
@@ -457,6 +461,7 @@ def get_generation_status(
         raise HTTPException(status_code=404, detail="生成任务不存在")
     return GenerationStatusResponse(
         run_id=run.id,
+        request_id=run.request_id,
         attempt=run.attempt,
         attempt_count=run.attempt_count,
         max_attempts=run.max_attempts,
