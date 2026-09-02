@@ -188,3 +188,58 @@ def test_quality_gates_fail_closed_when_denominator_is_missing():
     assert by_name["severe_cross_user_access"].passed is False
     assert by_name["unbounded_retry_cases"].passed is False
     assert gates.passed is False
+
+
+def test_quality_report_includes_phase_four_baseline_only_metrics():
+    report = aggregate_quality_metrics(
+        [
+            CaseResult(
+                case_id="real-a",
+                space_fact_correct=9,
+                space_fact_total=10,
+                budget_checks=2,
+                budget_within_limit=2,
+                product_match_checks=5,
+                product_match_accepted=4,
+                style_checks=3,
+                style_consistent=2,
+                human_rating_count=2,
+                human_rating_sum=9,
+            ),
+            CaseResult(
+                case_id="real-b",
+                space_fact_correct=8,
+                space_fact_total=10,
+                budget_checks=1,
+                budget_within_limit=0,
+                product_match_checks=3,
+                product_match_accepted=2,
+                style_checks=1,
+                style_consistent=1,
+                human_rating_count=1,
+                human_rating_sum=3,
+            ),
+        ],
+        versions=EvaluationVersions(
+            model="model-a",
+            prompt="prompt-a",
+            rules="rules-a",
+            data="data-a",
+        ),
+    )
+
+    assert report.metrics["space_fact_accuracy"] == pytest.approx(0.85)
+    assert report.metrics["budget_compliance_rate"] == pytest.approx(2 / 3)
+    assert report.metrics["product_match_acceptance_rate"] == pytest.approx(0.75)
+    assert report.metrics["style_consistency_rate"] == pytest.approx(0.75)
+    assert report.metrics["human_satisfaction_mean"] == pytest.approx(4.0)
+    assert report.metrics["human_satisfaction_count"] == 3
+
+
+def test_case_result_rejects_invalid_human_rating_aggregate():
+    with pytest.raises(ValueError, match="人工满意度"):
+        CaseResult(
+            case_id="invalid-rating",
+            human_rating_count=2,
+            human_rating_sum=11,
+        )
