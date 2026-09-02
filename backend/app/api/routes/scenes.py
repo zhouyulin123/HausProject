@@ -39,9 +39,12 @@ from app.schemas.scene_agent import (
     SceneAgentCommandRequest,
     SceneAgentCommandResponse,
 )
+from app.schemas.feedback import DesignFeedbackEventRequest
 from app.services import (
     blender_job_service,
     design_version_service,
+    design_agent_service,
+    feedback_service,
     layout_generator,
     layout_service,
     llm_service,
@@ -333,13 +336,57 @@ def update_scene(
         raise _not_found("3D 场景")
 
     try:
-        version = scene_service.update_scene(
-            db,
-            scene=scene,
-            base_version=payload.base_version,
-            document=payload.scene,
-            source=payload.source,
-        )
+        if payload.client_mutation_id:
+            version, created = scene_service.update_scene_idempotent(
+                db,
+                scene=scene,
+                base_version=payload.base_version,
+                document=payload.scene,
+                source=payload.source,
+                client_mutation_id=payload.client_mutation_id,
+                mutation_metadata={
+                    "moved_instance_ids": payload.moved_instance_ids,
+                    "feedback_room_id": payload.feedback_room_id,
+                },
+            )
+        else:
+            version = scene_service.update_scene(
+                db,
+                scene=scene,
+                base_version=payload.base_version,
+                document=payload.scene,
+                source=payload.source,
+            )
+            created = True
+        if created and payload.client_mutation_id:
+            task_id = scene_service.get_scene_task_id(db, scene.id)
+            if task_id is None:
+                raise RuntimeError("场景缺少所属任务")
+            for index, instance_id in enumerate(payload.moved_instance_ids):
+                event_id = (
+                    payload.client_mutation_id
+                    if len(payload.moved_instance_ids) == 1
+                    else f"{payload.client_mutation_id[:88]}:{index}"
+                )
+                feedback_service.create_feedback_event(
+                    db,
+                    task_id=task_id,
+                    payload=DesignFeedbackEventRequest(
+                        client_event_id=event_id,
+                        action_type="move",
+                        scene_id=scene.id,
+                        scene_version=version.version,
+                        room_id=payload.feedback_room_id,
+                        instance_id=instance_id,
+                    ),
+                    commit=False,
+                )
+            design_agent_service.record_scene_reference(
+                db,
+                task_id=task_id,
+                scene_id=scene.id,
+                version=version.version,
+            )
         db.commit()
         db.refresh(scene)
         db.refresh(version)
@@ -349,6 +396,12 @@ def update_scene(
     except scene_service.SceneValidationError as error:
         db.rollback()
         raise _validation_error(error) from error
+    except (
+        feedback_service.FeedbackResourceNotFound,
+        feedback_service.FeedbackIdempotencyConflict,
+    ) as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
     return _scene_response(scene, version)
 
 

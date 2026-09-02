@@ -1,5 +1,8 @@
 """3D 场景的归属校验、语义验证与版本持久化。"""
 
+import hashlib
+import json
+
 from itertools import combinations
 from math import hypot
 
@@ -306,6 +309,60 @@ def update_scene(
     db.add(version)
     db.flush()
     return version
+
+
+def update_scene_idempotent(
+    db: Session,
+    *,
+    scene: DesignScene,
+    base_version: int,
+    document: SceneDocument,
+    source: str,
+    client_mutation_id: str,
+    mutation_metadata: dict,
+) -> tuple[DesignSceneVersion, bool]:
+    encoded = json.dumps(
+        {
+            "base_version": base_version,
+            "scene": _scene_json(document),
+            "source": source,
+            **mutation_metadata,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    existing = db.scalar(
+        select(DesignSceneVersion).where(
+            DesignSceneVersion.scene_id == scene.id,
+            DesignSceneVersion.client_mutation_id == client_mutation_id,
+        )
+    )
+    if existing is not None:
+        if existing.mutation_digest != digest:
+            raise SceneConflictError("client_mutation_id 已用于不同场景变更")
+        return existing, False
+    version = update_scene(
+        db,
+        scene=scene,
+        base_version=base_version,
+        document=document,
+        source=source,
+    )
+    version.client_mutation_id = client_mutation_id
+    version.mutation_digest = digest
+    db.flush()
+    return version, True
+
+
+def get_scene_task_id(db: Session, scene_id: int) -> int | None:
+    return db.scalar(
+        select(DesignRevision.task_id)
+        .join(DesignPlanVersion, DesignPlanVersion.revision_id == DesignRevision.id)
+        .join(DesignScene, DesignScene.plan_version_id == DesignPlanVersion.id)
+        .where(DesignScene.id == scene_id)
+    )
 
 
 def get_current_version(

@@ -865,6 +865,11 @@ export async function updateDesignScene(
   baseVersion: number,
   scene: SceneDocument,
   source: SceneSource = "manual",
+  mutation?: {
+    clientMutationId: string;
+    movedInstanceIds: string[];
+    roomId?: string | null;
+  },
 ): Promise<DesignScene> {
   return request<DesignScene>(`/api/design/scenes/${sceneId}`, {
     method: "PUT",
@@ -872,6 +877,13 @@ export async function updateDesignScene(
       base_version: baseVersion,
       scene,
       source,
+      ...(mutation
+        ? {
+            client_mutation_id: mutation.clientMutationId,
+            moved_instance_ids: mutation.movedInstanceIds,
+            feedback_room_id: mutation.roomId,
+          }
+        : {}),
     }),
   });
 }
@@ -1054,10 +1066,63 @@ export async function generateDesignsForTask(taskId: number): Promise<DesignPlan
 
 /** 读取指定任务已持久化的真实方案版本，不创建任务也不触发生成。 */
 export async function fetchDesignTaskPlans(taskId: number): Promise<DesignPlan[]> {
-  const result = await request<{ plans: DesignPlan[]; generator: string }>(
+  const result = await request<{
+    plans: DesignPlan[];
+    generator: string;
+    revision_version?: number;
+  }>(
     `/api/design/tasks/${taskId}/result`,
   );
-  return result.plans.map(decoratePlan);
+  return result.plans.map((plan, index) => ({
+    ...decoratePlan(plan, index),
+    revisionVersion: result.revision_version,
+  }));
+}
+
+export type PlanMutationAction = "adopt" | "remove" | "replace";
+
+export interface PlanMutationResponse {
+  revision_version: number;
+  plan: DesignPlan;
+  scene: DesignScene;
+  feedback: DesignFeedbackEventResponse;
+}
+
+export async function mutateWorkspacePlan(
+  taskId: number,
+  payload: {
+    clientMutationId: string;
+    baseRevisionVersion: number;
+    planVersionId: number;
+    action: PlanMutationAction;
+    sourceInstanceId?: string;
+    targetSku?: string;
+    roomId?: string | null;
+  },
+): Promise<PlanMutationResponse> {
+  const result = await request<PlanMutationResponse>(
+    `/api/design/tasks/${taskId}/plan-mutations`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        client_mutation_id: payload.clientMutationId,
+        base_revision_version: payload.baseRevisionVersion,
+        plan_version_id: payload.planVersionId,
+        action: payload.action,
+        source_instance_id: payload.sourceInstanceId,
+        target_sku: payload.targetSku,
+        placement_mode: payload.action === "adopt" ? "auto_place" : undefined,
+        room_id: payload.roomId,
+      }),
+    },
+  );
+  return {
+    ...result,
+    plan: {
+      ...decoratePlan(result.plan, 0),
+      revisionVersion: result.revision_version,
+    },
+  };
 }
 
 export type AgentActiveMode =
@@ -1170,6 +1235,7 @@ export interface DesignAgentStateResponse {
   max_retries: number;
   hard_errors: string[];
   custom_furniture_spec: CustomFurnitureSpecPatch | null;
+  custom_furniture_draft: CustomFurnitureSpecPatch | null;
   approval_required: boolean;
   scene_ref: AgentSceneReference | null;
   run_id: number | null;
@@ -1177,6 +1243,28 @@ export interface DesignAgentStateResponse {
   result: CustomFurniturePreviewResult | Record<string, unknown> | null;
   /** 服务端持久化历史；刷新时覆盖本地瞬时消息缓存。 */
   messages: { id: number; role: "user" | "ai"; content: string; created_at: string | null }[];
+}
+
+export async function saveCustomFurnitureDraft(
+  taskId: number,
+  payload: {
+    clientMutationId: string;
+    baseStateVersion: number;
+    spec: CustomFurnitureSpecPatch;
+  },
+): Promise<{
+  task_id: number;
+  state_version: number;
+  custom_furniture_spec: CustomFurnitureSpecPatch;
+}> {
+  return request(`/api/design/tasks/${taskId}/custom-furniture-draft`, {
+    method: "PUT",
+    body: JSON.stringify({
+      client_mutation_id: payload.clientMutationId,
+      base_state_version: payload.baseStateVersion,
+      custom_furniture_spec: payload.spec,
+    }),
+  });
 }
 
 /** 新工作台唯一对话写入口；client_turn_id 为服务端幂等键。 */

@@ -48,6 +48,8 @@ export interface DesignPlan {
   id: string;
   /** 服务端不可变方案版本编号，用于绑定 3D 场景。 */
   planVersionId?: number;
+  /** 所属任务的不可变 revision 版本，用于工作台乐观锁。 */
+  revisionVersion?: number;
   /** 方案所属设计任务编号，用于后续精修/发布。 */
   task_id?: number;
   name: string;

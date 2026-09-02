@@ -120,6 +120,7 @@ def create_feedback_event(
     *,
     task_id: int,
     payload: DesignFeedbackEventRequest,
+    commit: bool = True,
 ) -> DesignFeedbackEvent:
     digest = _payload_hash(payload)
     existing = db.scalar(
@@ -176,6 +177,9 @@ def create_feedback_event(
     )
     db.add(event)
     try:
+        if not commit:
+            db.flush()
+            return event
         db.commit()
         db.refresh(event)
     except IntegrityError as exc:

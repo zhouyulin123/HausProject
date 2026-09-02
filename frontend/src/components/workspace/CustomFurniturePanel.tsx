@@ -9,7 +9,11 @@ import {
   ShieldAlert,
   Table2,
 } from "lucide-react";
-import { sendAgentTurn, type AgentTurnResponse } from "@/api/designApi";
+import {
+  saveCustomFurnitureDraft,
+  sendAgentTurn,
+  type AgentTurnResponse,
+} from "@/api/designApi";
 import {
   CABINET_MATERIALS,
   CABINET_PURPOSES,
@@ -32,6 +36,7 @@ import type {
 
 interface CustomFurniturePanelProps {
   taskId: number;
+  stateVersion: number;
   initialSpec: CustomFurnitureSpecPatch | null;
   preview: CustomFurniturePreviewResult | null;
   approvalRequired: boolean;
@@ -99,6 +104,7 @@ function NumberField({
 
 export default function CustomFurniturePanel({
   taskId,
+  stateVersion,
   initialSpec,
   preview,
   approvalRequired,
@@ -111,7 +117,12 @@ export default function CustomFurniturePanel({
   );
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const [draftSaveError, setDraftSaveError] = useState("");
   const lastSubmissionRef = useRef<{ signature: string; turnId: string } | null>(null);
+  const initialDraftSignatureRef = useRef(JSON.stringify(draft));
+  const draftVersionRef = useRef(stateVersion);
+  const draftQueueRef = useRef(Promise.resolve());
+  const lastDraftSaveRef = useRef<{ signature: string; mutationId: string } | null>(null);
   const familyRef = useRef<HTMLButtonElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const purposeRef = useRef<HTMLSelectElement>(null);
@@ -121,8 +132,43 @@ export default function CustomFurniturePanel({
   const focusField = customFurnitureFocusField(pendingQuestions);
 
   useEffect(() => {
-    if (initialSpec) setDraft(customFurnitureDraftFromSpec(initialSpec));
+    if (initialSpec) {
+      const restored = customFurnitureDraftFromSpec(initialSpec);
+      initialDraftSignatureRef.current = JSON.stringify(restored);
+      setDraft(restored);
+    }
   }, [initialSpec]);
+
+  useEffect(() => {
+    draftVersionRef.current = Math.max(draftVersionRef.current, stateVersion);
+  }, [stateVersion]);
+
+  useEffect(() => {
+    const signature = JSON.stringify(draft);
+    if (signature === initialDraftSignatureRef.current) return;
+    const timer = window.setTimeout(() => {
+      const mutationId = lastDraftSaveRef.current?.signature === signature
+        ? lastDraftSaveRef.current.mutationId
+        : nextTurnId(taskId);
+      lastDraftSaveRef.current = { signature, mutationId };
+      draftQueueRef.current = draftQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const saved = await saveCustomFurnitureDraft(taskId, {
+            clientMutationId: mutationId,
+            baseStateVersion: draftVersionRef.current,
+            spec: draft,
+          });
+          draftVersionRef.current = saved.state_version;
+          initialDraftSignatureRef.current = signature;
+          setDraftSaveError("");
+        })
+        .catch(() => {
+          setDraftSaveError("草稿暂未同步到服务端，继续编辑后会重试。");
+        });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [draft, taskId]);
 
   useEffect(() => {
     if (!focusField) return;
@@ -204,7 +250,7 @@ export default function CustomFurniturePanel({
             <p className="font-mono text-[9px] tracking-[0.16em] text-[#7f8b81] uppercase">Custom furniture</p>
             <h2 className="mt-1 text-sm font-medium !text-[#eef1ea]">结构化参数</h2>
           </div>
-          <span className="border border-[#d5ff67]/30 px-2 py-1 font-mono text-[9px] text-[#d5ff67]">LOCAL DRAFT</span>
+          <span className="border border-[#d5ff67]/30 px-2 py-1 font-mono text-[9px] text-[#d5ff67]">SERVER DRAFT</span>
         </div>
 
         <section className="mt-5">
@@ -370,6 +416,7 @@ export default function CustomFurniturePanel({
         )}
 
         {submitError && <p role="alert" className="mt-4 border border-[#8f4938] bg-[#2b1c18] px-3 py-2 text-xs text-[#f1b59e]">{submitError}</p>}
+        {draftSaveError && <p role="alert" className="mt-4 border border-[#8f7040] bg-[#2b2718] px-3 py-2 text-xs text-[#f0d39e]">{draftSaveError}</p>}
         <button
           type="submit"
           disabled={submitting || !draft.name.trim()}

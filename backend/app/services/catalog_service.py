@@ -399,6 +399,7 @@ def verify_and_enrich_plans(
     allow_draft: bool = False,
     budget_max: int | None = None,
     max_dimensions_mm: Mapping[str, int] | None = None,
+    allow_empty_furniture: bool = False,
 ) -> None:
     """统一校验 SKU、确定性替代、回填价格并生成版本化报价。"""
     current = _as_utc(at) or datetime.now(timezone.utc)
@@ -420,7 +421,7 @@ def verify_and_enrich_plans(
     for plan in plans:
         raw_items = plan.get("furnitureSuggestions") or []
         hard_errors: list[str] = []
-        if not raw_items:
+        if not raw_items and not allow_empty_furniture:
             hard_errors.append("missing_product_sku")
         resolved_items: list[
             tuple[dict[str, Any], Product, str | None, list[str], int]

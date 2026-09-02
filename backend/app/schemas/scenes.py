@@ -284,6 +284,24 @@ class SceneUpdateRequest(BaseModel):
     base_version: int = Field(ge=1)
     scene: SceneDocument
     source: SceneSource = "manual"
+    client_mutation_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    moved_instance_ids: list[str] = Field(default_factory=list, max_length=50)
+    feedback_room_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_mutation_metadata(self) -> "SceneUpdateRequest":
+        if self.moved_instance_ids and self.client_mutation_id is None:
+            raise ValueError("移动实例反馈必须提供 client_mutation_id")
+        scene_ids = {item.instance_id for item in self.scene.items}
+        missing = sorted(set(self.moved_instance_ids) - scene_ids)
+        if missing:
+            raise ValueError(f"moved_instance_ids 不存在于场景：{', '.join(missing)}")
+        return self
 
 
 class SceneResponse(BaseModel):

@@ -16,8 +16,10 @@ import DesignWorkspaceInspector from "@/components/workspace/DesignWorkspaceInsp
 import WorkspaceFeedbackControls from "@/components/workspace/WorkspaceFeedbackControls";
 import {
   fetchDesignAgentState,
+  fetchDesignScene,
   fetchDesignTaskPlans,
   fetchFurnitureCatalog,
+  mutateWorkspacePlan,
   resumeAgentGeneration,
   type AgentTurnResponse,
 } from "@/api/designApi";
@@ -26,7 +28,6 @@ import { useFeedbackDelivery } from "@/hooks/useFeedbackDelivery";
 import {
   buildFinalSelectFeedbackEvent,
   buildGlbLoadFailureFeedbackEvent,
-  buildMoveFeedbackEvent,
   createFeedbackClientEventId,
 } from "@/lib/workspaceFeedback";
 import { buildWorkspacePlan, DESIGN_ENTRY_MODES } from "@/lib/designProject";
@@ -56,6 +57,7 @@ export default function DesignWorkspacePage() {
   const applyAgentState = useDesignProjectStore((state) => state.applyAgentState);
   const attachPlan = useDesignProjectStore((state) => state.attachPlan);
   const setSceneReference = useDesignProjectStore((state) => state.setSceneReference);
+  const setFurnitureSelection = useDesignProjectStore((state) => state.setFurnitureSelection);
   const generatedPlans = useDesignStore((state) => state.generatedPlans);
   const setGeneratedPlans = useDesignStore((state) => state.setGeneratedPlans);
   const [catalog, setCatalog] = useState<FurnitureItem[]>([]);
@@ -141,7 +143,8 @@ export default function DesignWorkspacePage() {
           sceneRef: checkpoint.scene_ref,
           exitReason: checkpoint.exit_reason,
           activeRoomId: checkpoint.active_room_id,
-          customFurnitureSpec: checkpoint.custom_furniture_spec,
+          customFurnitureSpec:
+            checkpoint.custom_furniture_draft ?? checkpoint.custom_furniture_spec,
           customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
           approvalRequired: checkpoint.approval_required,
           generationRunId: checkpoint.run_id,
@@ -186,7 +189,8 @@ export default function DesignWorkspacePage() {
           sceneRef: checkpoint.scene_ref,
           exitReason: checkpoint.exit_reason,
           activeRoomId: checkpoint.active_room_id,
-          customFurnitureSpec: checkpoint.custom_furniture_spec,
+          customFurnitureSpec:
+            checkpoint.custom_furniture_draft ?? checkpoint.custom_furniture_spec,
           customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
           approvalRequired: checkpoint.approval_required,
           generationRunId: checkpoint.run_id,
@@ -260,7 +264,9 @@ export default function DesignWorkspacePage() {
   }, [project?.mode]);
 
   const activePlan = project?.activePlanId
-    ? generatedPlans.find((item) => item.id === project.activePlanId)
+    ? generatedPlans.find(
+        (item) => item.id === project.activePlanId && item.task_id === project.id,
+      )
     : undefined;
   const selectedFurniture = useMemo(
     () =>
@@ -277,6 +283,59 @@ export default function DesignWorkspacePage() {
     : null;
   const planVersionId = plan?.planVersionId ?? null;
 
+  useEffect(() => {
+    if (!project || !activePlan || !catalog.length) return;
+    const selectedSkus = new Set(
+      activePlan.furnitureSuggestions.map((item) => item.sku).filter(Boolean),
+    );
+    setFurnitureSelection(
+      project.id,
+      catalog.filter((item) => item.sku && selectedSkus.has(item.sku)).map((item) => item.id),
+    );
+  }, [activePlan, catalog, project?.id, setFurnitureSelection]);
+
+  const handlePlanMutation = useCallback(async (mutation: {
+    action: "adopt" | "remove" | "replace";
+    sourceSku?: string;
+    targetSku?: string;
+  }) => {
+    if (!project || !activePlan?.planVersionId || !activePlan.revisionVersion) {
+      throw new Error("当前方案尚未恢复完成，请稍后重试。");
+    }
+    let sourceInstanceId: string | undefined;
+    if (mutation.sourceSku) {
+      if (!project.sceneRef) {
+        throw new Error("3D 场景尚未恢复，不能确定要操作的家具实例。");
+      }
+      const currentScene = await fetchDesignScene(project.sceneRef.scene_id);
+      const matches = currentScene.scene.items.filter(
+        (item) => item.sku === mutation.sourceSku,
+      );
+      if (matches.length !== 1) {
+        throw new Error(
+          matches.length === 0
+            ? "当前场景中没有该家具实例，请刷新后重试。"
+            : "同款家具有多个实例，请先在 3D 场景中明确选择一件。",
+        );
+      }
+      sourceInstanceId = matches[0].instanceId;
+    }
+    const response = await mutateWorkspacePlan(project.id, {
+      clientMutationId: createFeedbackClientEventId(project.id, mutation.action),
+      baseRevisionVersion: activePlan.revisionVersion,
+      planVersionId: activePlan.planVersionId,
+      action: mutation.action,
+      sourceInstanceId,
+      targetSku: mutation.targetSku,
+      roomId: project.activeRoomId,
+    });
+    setSceneReference(project.id, {
+      scene_id: response.scene.id,
+      version: response.scene.current_version,
+    });
+    await restoreServerPlans(project.id);
+  }, [activePlan, project, restoreServerPlans, setSceneReference]);
+
   const confirmCurrentPlan = useCallback(() => {
     if (!projectId || !planVersionId) return;
     const signature = `${planVersionId}:${satisfaction ?? "none"}`;
@@ -291,22 +350,6 @@ export default function DesignWorkspacePage() {
     );
     if (event) feedback.submit(event, "确认当前方案");
   }, [feedback.submit, planVersionId, projectId, satisfaction]);
-
-  const reportPersistedMove = useCallback((saved: {
-    sceneId: number;
-    sceneVersion: number;
-    instanceId: string;
-  }) => {
-    if (!projectId) return;
-    const event = buildMoveFeedbackEvent(
-      createFeedbackClientEventId(projectId, "move"),
-      saved.sceneId,
-      saved.sceneVersion,
-      saved.instanceId,
-      project?.activeRoomId,
-    );
-    if (event) feedback.submit(event, "家具位置调整");
-  }, [feedback.submit, project?.activeRoomId, projectId]);
 
   const reportGlbLoadFailure = useCallback((failure: {
     planVersionId: number;
@@ -493,7 +536,6 @@ export default function DesignWorkspacePage() {
                 plan={plan}
                 roomType={roomType}
                 roomModel={project.roomModel}
-                onMovePersisted={reportPersistedMove}
                 onGlbLoadFailed={reportGlbLoadFailure}
                 onSceneReferenceChange={handleSceneReferenceChange}
               />
@@ -504,6 +546,7 @@ export default function DesignWorkspacePage() {
             {project.mode === "custom_furniture" ? (
               <CustomFurniturePanel
                 taskId={project.id}
+                stateVersion={project.stateVersion}
                 initialSpec={project.customFurnitureSpec}
                 preview={project.customFurnitureResult}
                 approvalRequired={project.approvalRequired}
@@ -517,8 +560,7 @@ export default function DesignWorkspacePage() {
                 catalog={catalog}
                 catalogLoading={catalogLoading}
                 budget={plan.budget}
-                planVersionId={planVersionId}
-                onFeedbackEvent={feedback.submit}
+                onPlanMutation={handlePlanMutation}
               />
             )}
           </div>

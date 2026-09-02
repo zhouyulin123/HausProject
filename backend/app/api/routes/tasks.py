@@ -1,5 +1,6 @@
 import json
 import logging
+from copy import deepcopy
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
@@ -17,6 +18,7 @@ from app.core.config import settings
 from app.core.request_context import normalize_request_id
 from app.db.database import get_db
 from app.db.models import (
+    DesignPlanVersion,
     DesignResult,
     DesignTask,
     RequirementParseResult,
@@ -32,6 +34,8 @@ from app.schemas.tasks import (
     GenerationQueuedResponse,
     GenerationStatusResponse,
     GenerateResponse,
+    PlanMutationRequest,
+    PlanMutationResponse,
     RefinePlanRequest,
     RefinePlanResponse,
     RequirementResponse,
@@ -49,12 +53,80 @@ from app.services import (
     generation_run_service,
     llm_service,
     plan_refine_service,
+    plan_mutation_service,
     profile_service,
     task_service,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.post(
+    "/{task_id}/plan-mutations",
+    response_model=PlanMutationResponse,
+)
+def mutate_plan(
+    task_id: int,
+    payload: PlanMutationRequest,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    task = require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
+    try:
+        revision, plan, scene, version, feedback = plan_mutation_service.mutate_plan(
+            db,
+            task=task,
+            payload=payload,
+        )
+        db.commit()
+        db.refresh(revision)
+        db.refresh(scene)
+        db.refresh(version)
+        db.refresh(feedback)
+    except plan_mutation_service.PlanMutationConflict as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except plan_mutation_service.PlacementNotFound as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except plan_mutation_service.PlanMutationError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    target_plan = db.get(DesignPlanVersion, scene.plan_version_id)
+    if target_plan is None:
+        raise RuntimeError("工作台变更缺少方案版本")
+    plan = deepcopy(plan)
+    plan["planVersionId"] = target_plan.id
+    plan["planKey"] = target_plan.plan_key
+    return {
+        "revision_version": revision.version,
+        "plan": plan,
+        "scene": {
+            "id": scene.id,
+            "plan_version_id": scene.plan_version_id,
+            "current_version": scene.current_version,
+            "scene": version.scene_json,
+            "validation": version.validation_json,
+            "source": version.source,
+            "created_at": scene.created_at,
+            "updated_at": scene.updated_at,
+        },
+        "feedback": feedback,
+    }
 
 
 def _get_task(db: Session, task_id: int) -> DesignTask:

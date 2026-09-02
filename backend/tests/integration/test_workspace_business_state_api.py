@@ -185,7 +185,7 @@ def test_adopt_creates_versioned_plan_scene_and_derived_feedback_idempotently(
 ):
     context = workspace_state_context
     payload = {
-        "client_mutation_id": "workspace-adopt-001",
+        "client_mutation_id": "workspace:adopt:001",
         "base_revision_version": 1,
         "plan_version_id": context["plan_version_id"],
         "action": "adopt",

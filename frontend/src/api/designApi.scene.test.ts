@@ -94,7 +94,11 @@ describe("3D 场景 API", () => {
     } = await import("./designApi");
     const created = await createDesignScene(7, scene);
     const restored = await fetchDesignSceneByPlanVersion(7);
-    const updated = await updateDesignScene(9, 1, scene, "scene_agent");
+    const updated = await updateDesignScene(9, 1, scene, "scene_agent", {
+      clientMutationId: "move-request-001",
+      movedInstanceIds: [],
+      roomId: "living-room",
+    });
 
     expect(created.current_version).toBe(1);
     expect(restored.id).toBe(9);
@@ -123,7 +127,90 @@ describe("3D 场景 API", () => {
           base_version: 1,
           scene,
           source: "scene_agent",
+          client_mutation_id: "move-request-001",
+          moved_instance_ids: [],
+          feedback_room_id: "living-room",
         }),
+      }),
+    );
+  });
+
+  it("方案商品变更和定制草稿只调用服务端版本化入口", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const plan = {
+      id: "plan-a",
+      planVersionId: 12,
+      name: "方案 A",
+      style: "现代",
+      coverGradient: "",
+      score: 90,
+      budget: 8000,
+      tags: [],
+      suitableFor: [],
+      description: "",
+      layoutSuggestions: [],
+      furnitureSuggestions: [],
+      colorPalette: [],
+      materials: [],
+      lightingSuggestions: [],
+      budgetBreakdown: [],
+      aiTips: [],
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(jsonResponse({
+        revision_version: 3,
+        plan,
+        scene: {
+          id: 15,
+          plan_version_id: 12,
+          current_version: 1,
+          scene,
+          validation: { valid: true, errors: [], warnings: [] },
+          source: "manual",
+        },
+        feedback: {},
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        task_id: 42,
+        state_version: 5,
+        custom_furniture_spec: { family: "table" },
+      }));
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { mutateWorkspacePlan, saveCustomFurnitureDraft } = await import("./designApi");
+    const mutation = await mutateWorkspacePlan(42, {
+      clientMutationId: "adopt-request-001",
+      baseRevisionVersion: 2,
+      planVersionId: 10,
+      action: "adopt",
+      targetSku: "TABLE-001",
+      roomId: "living-room",
+    });
+    await saveCustomFurnitureDraft(42, {
+      clientMutationId: "draft-request-001",
+      baseStateVersion: 4,
+      spec: { family: "table" },
+    });
+
+    expect(mutation.plan.revisionVersion).toBe(3);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/design/tasks/42/plan-mutations",
+      expect.objectContaining({
+        body: expect.stringContaining('"placement_mode":"auto_place"'),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/design/tasks/42/custom-furniture-draft",
+      expect.objectContaining({
+        body: expect.stringContaining('"base_state_version":4'),
       }),
     );
   });

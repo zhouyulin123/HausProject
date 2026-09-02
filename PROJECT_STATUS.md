@@ -8,12 +8,23 @@
 - 新增真实案例清单 `2.0`：`ready` 案例必须显式提供 `annotation_path` 与 `annotation_sha256`，加载后将标注语义指纹纳入数据集指纹；历史 `1.0` 仅保留读取兼容，不能绕过后续 3.0 可信证据准入。
 - 可信 bind/collect/verify/report 的数据集指纹现在拒绝 `manifest/1.0`，并同时绑定标注文件摘要与规范化语义指纹；测试中的正式评测数据也改为生成真实 2.0 标注资产，不再靠单个 `ready` 字符串冒充已标注案例。
 - JSON 解析拒绝未知字段、重复键、重复语义事实、NaN/无穷值、空标签、路径穿越和原始自由文本/PII 字段；集合型事实按固定顺序规范化，并输出与文件排版无关的语义指纹。
-- 本次仅新增独立契约模块，不接入正在并行修改的现有评测入口；仓库当前 4 个案例及其 `pending` 状态均未修改，也未新增伪造标注。
+- 仓库当前 4 个案例及其 `pending` 状态均未修改，也未新增伪造标注；执行评审仍将在完整输出版本关联完成后接入指标计算。
 
 ### 验证
 
 - RED `2fdabc0` 先定义基础标注契约，集成审查 RED `d1e0c03` 锁定案例真值与执行评审分离，RED `1193860` 锁定清单 2.0 的冻结标注引用，RED `deec847` 锁定可信入口不得接受旧清单或忽略标注语义；当前 52 项标注测试和 41 项可信评测回归通过。
-- 本次无数据库迁移、依赖或评测 eligibility 变更；后端全量 553 项、Python 编译和差异检查均通过。
+- 本次无数据库迁移或依赖；可信评测准入已升级为 `manifest/2.0`。
+
+## 2026-09-02 阶段 4 第三轮 P0：失败分母、执行前版本与 split 隔离
+
+- 真实评测证据升级为 3.0，绑定、收集、验签、报告 CLI 和基线比较都必须显式指定 `development`、`regression` 或 `blind`，拒绝空分组、混合集及跨分组比较。
+- `completed` 之外，可信绑定的 `failed`、`dead_letter`、`cost_limit_exceeded`、`provider_unavailable`、`cancelled` 终态也进入 `generation_success_rate` 分母；取消不能用于剔除差样本，失败运行不伪造其余质量指标。
+- 证据收集严格校验 run/task 终态映射：`completed -> completed`、`failed/dead_letter -> failed`、`cost_limit_exceeded/provider_unavailable -> needs_human`、`cancelled -> cancelled`，任何错配均拒绝签发。
+- 评测运行在 Worker 执行前冻结模型、静态 Prompt/Schema/工具配置、完整动态请求、规则源码制品及完整商品/定制价目上下文。来源摘要不再依赖成功后选出的 plans 或报价字段，模型调用前失败也保留可比较版本。
+- `EvaluationRunBinding` 保留原案例/资产/任务输入字段，并新增 split 与冻结版本摘要。Worker 领取和证据收集双重核验；绑定后模型、规则、商品上下文或任务输入变化会失败关闭。
+- 评测幂等身份新增模型和静态制品版本，同一案例的新候选版本会创建独立运行，不会错误复用旧基线。普通生成与 Agent 的 `create_run(commit=False)` 路径不变。
+- 新增 Alembic 迁移 `7b8c9d0e1f2a`，线性接在 `6a7b8c9d0e1f` 后；历史绑定因缺少 split 和执行前版本字段，按设计不能作为 3.0 可信证据。
+- 当前未导入任何真实客户案例，也未生成或宣称真实验收指标；真实授权、人工标签与受控盲测执行仍是外部前置条件。
 
 ## 2026-09-02 阶段 1：统一 Agent turn 并发与崩溃恢复
 
@@ -1826,13 +1837,12 @@
 3. 接入真实 LLM 需求解析，并保留当前规则解析作为 fallback。
 4. 接入真实 PDF 生成能力。
 5. 接入真实效果图生成服务或明确半自动占位流程。
-# 2026-09-02 阶段 4 第三轮 P0：失败分母、执行前版本与 split 隔离
+## 2026-09-02 工作台业务状态版本化
 
-- 真实评测证据升级为 3.0，绑定、收集、验签、报告 CLI 和基线比较都必须显式指定 `development`、`regression` 或 `blind`，拒绝空分组、混合集及跨分组比较。
-- `completed` 之外，可信绑定的 `failed`、`dead_letter`、`cost_limit_exceeded`、`provider_unavailable`、`cancelled` 终态也进入 `generation_success_rate` 分母；取消不能用于剔除差样本，失败运行不伪造其余质量指标。
-- 证据收集严格校验 run/task 终态映射：`completed -> completed`、`failed/dead_letter -> failed`、`cost_limit_exceeded/provider_unavailable -> needs_human`、`cancelled -> cancelled`，任何错配均拒绝签发。
-- 评测运行在 Worker 执行前冻结模型、静态 Prompt/Schema/工具配置、完整动态请求、规则源码制品及完整商品/定制价目上下文。来源摘要不再依赖成功后选出的 plans 或报价字段，模型调用前失败也保留可比较版本。
-- `EvaluationRunBinding` 保留原案例/资产/任务输入字段，并新增 split 与冻结版本摘要。Worker 领取和证据收集双重核验；绑定后模型、规则、商品上下文或任务输入变化会失败关闭。
-- 评测幂等身份新增模型和静态制品版本，同一案例的新候选版本会创建独立运行，不会错误复用旧基线。普通生成与 Agent 的 `create_run(commit=False)` 路径不变。
-- 新增 Alembic 迁移 `7b8c9d0e1f2a`，线性接在 `6a7b8c9d0e1f` 后；历史绑定因缺少 split 和执行前版本字段，按设计不能作为 3.0 可信证据。
-- 当前未导入任何真实客户案例，也未生成或宣称真实验收指标；真实授权、人工标签与受控盲测执行仍是外部前置条件。
+- 商品采用、移除、替换改为服务端 `plan-mutations`：校验任务归属、最新 revision、商品生命周期、地区、库存和累计预算，并在同一事务生成新 revision、plan version、scene version 与派生反馈。
+- 采用商品只对新增实例执行确定性 `auto_place`；保留现有实例全部 transform。无合法落点返回稳定 `placement_not_found`，不写入任何方案、场景或反馈记录。
+- 移除精确实例，替换保留原 transform；同一客户端幂等键不会重复生成版本或反馈，过期基线返回冲突。
+- 场景移动保存增加幂等键并在同事务推进 Agent `scene_ref`、写入结构化 move 反馈；刷新或后续 Agent turn 读取最新场景版本。
+- 定制家具编辑草稿通过任务归属的版本化接口自动保存，复用 Agent turn 幂等审计记录，checkpoint 可跨刷新和设备恢复；本地缓存不再作为业务事实源。
+- 前端目录操作成功后才刷新服务端方案投影，不再先修改 Zustand 或单独上报采用/移除/替换反馈；同 SKU 多实例不做启发式选择。
+- 数据库迁移 head：`8c9d0e1f2a3b`。

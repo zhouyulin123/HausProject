@@ -33,7 +33,7 @@ from app.db.models import (
     RoomFactConfirmation,
     UploadedImage,
 )
-from app.schemas.design_agent import AgentTurnRequest
+from app.schemas.design_agent import AgentTurnRequest, CustomFurnitureDraftRequest
 from app.schemas.custom_furniture import CustomFurniturePreviewRequest
 from app.schemas.room_model import RoomModel
 from app.schemas.scene_agent import SceneOperationBatch
@@ -1422,31 +1422,7 @@ def run_turn(
 
 def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
     generation_run_service.synchronize_agent_checkpoint(db, task=task)
-    state = deepcopy(task.agent_state_json or {})
-    if not state:
-        state = {
-            "status": "draft",
-            "active_mode": task.active_mode or "catalog_design",
-            "active_room_id": None,
-            "intent": "unknown",
-            "current_node": "start",
-            "facts": _normalize_requirement_facts(
-                task.confirmed_requirement_json or {}
-            ),
-            "fact_evidence": {},
-            "pending_questions": [],
-            "step_count": 0,
-            "retry_count": 0,
-            "max_steps": 12,
-            "max_retries": 2,
-            "hard_errors": [],
-            "custom_furniture_spec": None,
-            "approval_required": False,
-            "exit_reason": "missing_facts",
-            "scene_ref": None,
-            "run_id": None,
-            "result": None,
-        }
+    state = _checkpoint_state(task)
     messages = db.scalars(
         select(ChatLog)
         .where(ChatLog.task_id == task.id)
@@ -1466,3 +1442,121 @@ def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
             for message in messages
         ],
     }
+
+
+def _checkpoint_state(task: DesignTask) -> dict[str, Any]:
+    defaults = {
+        "status": "draft",
+        "active_mode": task.active_mode or "catalog_design",
+        "active_room_id": None,
+        "intent": "unknown",
+        "current_node": "start",
+        "facts": _normalize_requirement_facts(task.confirmed_requirement_json or {}),
+        "fact_evidence": {},
+        "pending_questions": [],
+        "step_count": 0,
+        "retry_count": 0,
+        "max_steps": 12,
+        "max_retries": 2,
+        "hard_errors": [],
+        "custom_furniture_spec": None,
+        "custom_furniture_draft": None,
+        "approval_required": False,
+        "exit_reason": "missing_facts",
+        "scene_ref": None,
+        "run_id": None,
+        "result": None,
+    }
+    defaults.update(deepcopy(task.agent_state_json or {}))
+    return defaults
+
+
+def record_scene_reference(
+    db: Session,
+    *,
+    task_id: int,
+    scene_id: int,
+    version: int,
+) -> None:
+    task = db.scalar(
+        select(DesignTask).where(DesignTask.id == task_id).with_for_update()
+    )
+    if task is None:
+        raise AgentSceneNotFound("设计任务不存在")
+    checkpoint = _checkpoint_state(task)
+    checkpoint["scene_ref"] = {"scene_id": scene_id, "version": version}
+    task.agent_state_json = checkpoint
+    task.agent_state_version = int(task.agent_state_version or 0) + 1
+    db.flush()
+
+
+def save_custom_furniture_draft(
+    db: Session,
+    *,
+    task: DesignTask,
+    payload: CustomFurnitureDraftRequest,
+) -> dict[str, Any]:
+    request_json = payload.model_dump(mode="json")
+    existing = db.scalar(
+        select(DesignAgentTurn).where(
+            DesignAgentTurn.task_id == task.id,
+            DesignAgentTurn.client_turn_id == payload.client_mutation_id,
+        )
+    )
+    if existing is not None:
+        if existing.request_json != request_json or existing.intent != "custom_furniture_draft":
+            raise AgentIdempotencyConflict("client_mutation_id 已用于不同请求")
+        if existing.response_json is None:
+            raise AgentTurnInProgress("定制家具草稿仍在保存中")
+        return deepcopy(existing.response_json)
+
+    locked = db.scalar(
+        select(DesignTask)
+        .where(DesignTask.id == task.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked is None:
+        raise AgentSceneNotFound("设计任务不存在")
+    existing = db.scalar(
+        select(DesignAgentTurn).where(
+            DesignAgentTurn.task_id == locked.id,
+            DesignAgentTurn.client_turn_id == payload.client_mutation_id,
+        )
+    )
+    if existing is not None:
+        if existing.request_json != request_json or existing.intent != "custom_furniture_draft":
+            raise AgentIdempotencyConflict("client_mutation_id 已用于不同请求")
+        if existing.response_json is None:
+            raise AgentTurnInProgress("定制家具草稿仍在保存中")
+        return deepcopy(existing.response_json)
+    current_version = int(locked.agent_state_version or 0)
+    if current_version != payload.base_state_version:
+        raise AgentStateVersionConflict(
+            "定制家具草稿已更新，请刷新后重试",
+            state_version=current_version,
+        )
+    next_version = current_version + 1
+    spec = payload.custom_furniture_spec.model_dump(mode="json")
+    checkpoint = _checkpoint_state(locked)
+    checkpoint["custom_furniture_draft"] = deepcopy(spec)
+    locked.agent_state_json = checkpoint
+    locked.agent_state_version = next_version
+    response = {
+        "task_id": locked.id,
+        "state_version": next_version,
+        "custom_furniture_spec": spec,
+    }
+    turn = DesignAgentTurn(
+        task_id=locked.id,
+        client_turn_id=payload.client_mutation_id,
+        active_mode="custom_furniture",
+        intent="custom_furniture_draft",
+        status="completed",
+        request_json=request_json,
+        response_json=deepcopy(response),
+        completed_at=_utc_now(),
+    )
+    db.add(turn)
+    db.flush()
+    return response

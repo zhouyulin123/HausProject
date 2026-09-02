@@ -1,7 +1,10 @@
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.schemas.feedback import DesignFeedbackEventResponse
+from app.schemas.scenes import SceneResponse, Transform
 
 
 class TaskCreate(BaseModel):
@@ -156,3 +159,43 @@ class RefinePlanResponse(BaseModel):
     plan: Dict[str, Any]
     version: int
     message: str = ""
+
+
+class PlanMutationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_mutation_id: str = Field(
+        min_length=8,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    base_revision_version: int = Field(ge=1)
+    plan_version_id: int = Field(ge=1)
+    action: Literal["adopt", "remove", "replace"]
+    source_instance_id: str | None = Field(default=None, min_length=1, max_length=100)
+    target_sku: str | None = Field(default=None, min_length=1, max_length=50)
+    placement_mode: Literal["auto_place", "explicit"] | None = None
+    placement_transform: Transform | None = None
+    room_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_action_fields(self) -> "PlanMutationRequest":
+        if self.action == "adopt":
+            if self.target_sku is None or self.placement_mode is None:
+                raise ValueError("采用商品必须提供 target_sku 和 placement_mode")
+            if self.placement_mode == "explicit" and self.placement_transform is None:
+                raise ValueError("显式落位必须提供 placement_transform")
+        elif self.action == "remove" and self.source_instance_id is None:
+            raise ValueError("移除商品必须提供 source_instance_id")
+        elif self.action == "replace" and (
+            self.source_instance_id is None or self.target_sku is None
+        ):
+            raise ValueError("替换商品必须提供 source_instance_id 和 target_sku")
+        return self
+
+
+class PlanMutationResponse(BaseModel):
+    revision_version: int
+    plan: Dict[str, Any]
+    scene: SceneResponse
+    feedback: DesignFeedbackEventResponse

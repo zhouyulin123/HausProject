@@ -57,6 +57,7 @@ describe("自定义家具结构化面板", () => {
     const html = renderToStaticMarkup(
       <CustomFurniturePanel
         taskId={42}
+        stateVersion={0}
         initialSpec={null}
         preview={null}
         approvalRequired={false}
@@ -89,6 +90,7 @@ describe("自定义家具结构化面板", () => {
     const html = renderToStaticMarkup(
       <CustomFurniturePanel
         taskId={42}
+        stateVersion={0}
         initialSpec={preview.spec}
         preview={preview}
         approvalRequired={false}
@@ -119,6 +121,7 @@ describe("自定义家具结构化面板", () => {
     const html = renderToStaticMarkup(
       <CustomFurniturePanel
         taskId={42}
+        stateVersion={0}
         initialSpec={preview.spec}
         preview={preview}
         approvalRequired

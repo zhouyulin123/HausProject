@@ -3,7 +3,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas.custom_furniture import CustomFurnitureSpecPatch
+from app.schemas.custom_furniture import CustomFurnitureSpec, CustomFurnitureSpecPatch
 
 
 ActiveMode = Literal[
@@ -141,9 +141,28 @@ class AgentCheckpointResponse(BaseModel):
     max_retries: int = 2
     hard_errors: list[str] = Field(default_factory=list)
     custom_furniture_spec: dict[str, Any] | None = None
+    custom_furniture_draft: dict[str, Any] | None = None
     approval_required: bool = False
     exit_reason: str
     scene_ref: dict[str, Any] | None = None
     run_id: int | None = None
     result: dict[str, Any] | None = None
     messages: list[AgentMessageResponse] = Field(default_factory=list)
+
+
+class CustomFurnitureDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_mutation_id: str = Field(
+        min_length=8,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    base_state_version: int = Field(ge=0)
+    custom_furniture_spec: CustomFurnitureSpec
+
+
+class CustomFurnitureDraftResponse(BaseModel):
+    task_id: int
+    state_version: int
+    custom_furniture_spec: dict[str, Any]

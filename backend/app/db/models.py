@@ -529,6 +529,11 @@ class DesignRevision(Base):
             "version",
             name="uq_design_revisions_task_version",
         ),
+        UniqueConstraint(
+            "task_id",
+            "client_mutation_id",
+            name="uq_design_revisions_task_client_mutation",
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -544,6 +549,8 @@ class DesignRevision(Base):
     workflow_trace_snapshot = Column(JSON, nullable=True)
     generator = Column(String(20), nullable=False)
     status = Column(String(20), nullable=False, default="completed")
+    client_mutation_id = Column(String(100), nullable=True)
+    mutation_digest = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     plans = relationship(
@@ -634,6 +641,11 @@ class DesignSceneVersion(Base):
             "version",
             name="uq_design_scene_versions_scene_version",
         ),
+        UniqueConstraint(
+            "scene_id",
+            "client_mutation_id",
+            name="uq_scene_versions_scene_client_mutation",
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -647,6 +659,8 @@ class DesignSceneVersion(Base):
     scene_json = Column(JSON, nullable=False)
     validation_json = Column(JSON, nullable=False)
     source = Column(String(20), nullable=False, default="manual")
+    client_mutation_id = Column(String(100), nullable=True)
+    mutation_digest = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     scene = relationship("DesignScene", back_populates="versions")

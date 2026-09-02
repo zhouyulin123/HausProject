@@ -120,6 +120,10 @@ export function useSceneEditor(
   const blenderRenderInFlightRef = useRef(false);
   const lastSavedChangeIdRef = useRef(0);
   const savePromiseRef = useRef<Promise<void> | null>(null);
+  const pendingSaveMutationRef = useRef<{
+    changeId: number;
+    clientMutationId: string;
+  } | null>(null);
   const pendingMoveChangeIdsRef = useRef(new Map<string, number>());
   const onMovePersistedRef = useRef(onMovePersisted);
   const onSceneReferenceChangeRef = useRef(onSceneReferenceChange);
@@ -153,6 +157,7 @@ export function useSceneEditor(
     publishSceneReference(null);
     lastSavedChangeIdRef.current = 0;
     pendingMoveChangeIdsRef.current.clear();
+    pendingSaveMutationRef.current = null;
     setValidation(null);
     setSceneAgentState("idle");
     setSceneAgentMessage("");
@@ -210,6 +215,15 @@ export function useSceneEditor(
     const persistedMoveCandidates = [...pendingMoveChangeIdsRef.current.entries()]
       .filter(([, changeId]) => changeId <= savingChangeId)
       .map(([instanceId]) => instanceId);
+    const pendingMutation = pendingSaveMutationRef.current?.changeId === savingChangeId
+      ? pendingSaveMutationRef.current
+      : {
+          changeId: savingChangeId,
+          clientMutationId: typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `scene-${sceneId}-${baseVersion}-${savingChangeId}-${Date.now()}`,
+        };
+    pendingSaveMutationRef.current = pendingMutation;
     syncStateRef.current = "saving";
     setSyncState("saving");
     let shouldFlushAgain = false;
@@ -219,9 +233,16 @@ export function useSceneEditor(
           sceneId,
           baseVersion,
           currentHistory.present,
+          "manual",
+          {
+            clientMutationId: pendingMutation.clientMutationId,
+            movedInstanceIds: persistedMoveCandidates,
+            roomId: currentHistory.present.room.id,
+          },
         );
         publishSceneReference({ id: saved.id, version: saved.current_version });
         lastSavedChangeIdRef.current = savingChangeId;
+        pendingSaveMutationRef.current = null;
         for (const instanceId of persistedMoveCandidates) {
           const latestChangeId = pendingMoveChangeIdsRef.current.get(instanceId);
           if (latestChangeId !== undefined && latestChangeId <= savingChangeId) {

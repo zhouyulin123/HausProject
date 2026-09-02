@@ -12,31 +12,14 @@ import {
   X,
 } from "lucide-react";
 import { analyzeRoomImage } from "@/api/designApi";
+import type { PlanMutationAction } from "@/api/designApi";
 import type { DesignProject } from "@/lib/designProject";
 import { useDesignProjectStore } from "@/store/useDesignProjectStore";
 import { useRoomModelStore } from "@/store/useRoomModelStore";
 import type { FurnitureItem } from "@/types/furniture";
 import { getFurnitureDataOriginLabel } from "@/lib/furnitureDataOrigin";
-import {
-  buildFurnitureFeedbackEvent,
-  buildReplaceFeedbackEvent,
-  createFeedbackClientEventId,
-} from "@/lib/workspaceFeedback";
-import type { DesignFeedbackEventRequest } from "@/types/feedback";
 
 type InspectorTab = "room" | "catalog" | "budget";
-
-export function commitFurnitureReplacement(input: {
-  replaceSelection: () => boolean;
-  clientEventId: string;
-  planVersionId: number | null;
-  sourceSku: string | undefined;
-  targetSku: string | undefined;
-  roomId: string | null;
-}): { completed: boolean; event: DesignFeedbackEventRequest | null } {
-  if (!input.replaceSelection()) return { completed: false, event: null };
-  return { completed: true, event: buildReplaceFeedbackEvent(input) };
-}
 
 function amountFromPrice(text: string): number {
   const values = text.replace(/,/g, "").match(/\d+(?:\.\d+)?/g);
@@ -48,15 +31,17 @@ export default function DesignWorkspaceInspector({
   catalog,
   catalogLoading,
   budget,
-  planVersionId,
-  onFeedbackEvent,
+  onPlanMutation,
 }: {
   project: DesignProject;
   catalog: FurnitureItem[];
   catalogLoading: boolean;
   budget: number;
-  planVersionId: number | null;
-  onFeedbackEvent: (event: DesignFeedbackEventRequest, label: string) => void;
+  onPlanMutation: (mutation: {
+    action: PlanMutationAction;
+    sourceSku?: string;
+    targetSku?: string;
+  }) => Promise<void>;
 }) {
   const [tab, setTab] = useState<InspectorTab>(
     project.mode === "room_reconstruction" ? "room" : "catalog",
@@ -65,9 +50,9 @@ export default function DesignWorkspaceInspector({
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [replacementSourceId, setReplacementSourceId] = useState<string | null>(null);
+  const [mutationPending, setMutationPending] = useState(false);
+  const [mutationError, setMutationError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
-  const toggleFurniture = useDesignProjectStore((state) => state.toggleFurniture);
-  const replaceFurniture = useDesignProjectStore((state) => state.replaceFurniture);
   const setProjectRoomModel = useDesignProjectStore((state) => state.setRoomModel);
 
   const selectedItems = catalog.filter((item) =>
@@ -88,48 +73,42 @@ export default function DesignWorkspaceInspector({
     ? selectedItems.find((item) => item.id === replacementSourceId) ?? null
     : null;
 
-  const toggleCatalogItem = (item: FurnitureItem) => {
-    const currentProject = useDesignProjectStore.getState().projects[project.id];
-    const selectedBeforeToggle = currentProject?.selectedFurnitureIds.includes(item.id) ?? false;
-    toggleFurniture(project.id, item.id);
-    const action = selectedBeforeToggle ? "remove" : "adopt";
-    const request = buildFurnitureFeedbackEvent({
-      clientEventId: createFeedbackClientEventId(project.id, action),
-      selectedBeforeToggle,
-      planVersionId,
-      sku: item.sku,
-      roomId: project.activeRoomId,
-    });
-    if (request) {
-      onFeedbackEvent(
-        request,
-        selectedBeforeToggle ? `移除“${item.name}”` : `采用“${item.name}”`,
-      );
+  const runMutation = async (mutation: {
+    action: PlanMutationAction;
+    sourceSku?: string;
+    targetSku?: string;
+  }) => {
+    if (mutationPending) return false;
+    setMutationPending(true);
+    setMutationError("");
+    try {
+      await onPlanMutation(mutation);
+      return true;
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : "方案更新失败，请重试。");
+      return false;
+    } finally {
+      setMutationPending(false);
     }
   };
 
-  const replaceWithCatalogItem = (target: FurnitureItem) => {
+  const toggleCatalogItem = async (item: FurnitureItem) => {
+    const selected = project.selectedFurnitureIds.includes(item.id);
+    await runMutation({
+      action: selected ? "remove" : "adopt",
+      sourceSku: selected ? item.sku : undefined,
+      targetSku: selected ? undefined : item.sku,
+    });
+  };
+
+  const replaceWithCatalogItem = async (target: FurnitureItem) => {
     if (!replacementSource) return;
-    const replacement = commitFurnitureReplacement({
-      replaceSelection: () => replaceFurniture(
-        project.id,
-        replacementSource.id,
-        target.id,
-      ),
-      clientEventId: createFeedbackClientEventId(project.id, "replace"),
-      planVersionId,
+    const completed = await runMutation({
+      action: "replace",
       sourceSku: replacementSource.sku,
       targetSku: target.sku,
-      roomId: project.activeRoomId,
     });
-    if (!replacement.completed) return;
-    setReplacementSourceId(null);
-    if (replacement.event) {
-      onFeedbackEvent(
-        replacement.event,
-        `用“${target.name}”替换“${replacementSource.name}”`,
-      );
-    }
+    if (completed) setReplacementSourceId(null);
   };
 
   const uploadRoom = async (file: File) => {
@@ -231,6 +210,11 @@ export default function DesignWorkspaceInspector({
 
         {tab === "catalog" && (
           <div>
+            {mutationError && (
+              <p role="alert" className="mb-3 border border-[#8f7040] bg-[#2b2718] px-3 py-2 text-xs text-[#f0d39e]">
+                {mutationError}
+              </p>
+            )}
             {selectedItems.length > 0 && (
               <section className="mb-4 border-b border-white/10 pb-4" aria-label="已选家具替换">
                 <div className="flex items-center justify-between gap-3">
@@ -307,16 +291,16 @@ export default function DesignWorkspaceInspector({
                     </div>
                     <button
                       type="button"
-                      disabled={replacementDisabled}
+                      disabled={replacementDisabled || mutationPending || !item.sku}
                       title={choosingReplacement
                         ? selected ? "已在当前方案中" : `替换为${item.name}`
                         : selected ? "从项目移除" : "加入当前项目"}
                       aria-label={choosingReplacement
                         ? selected ? `${item.name}已在当前方案中` : `用${item.name}替换${replacementSource.name}`
                         : selected ? `移除${item.name}` : `加入${item.name}`}
-                      onClick={() => choosingReplacement
+                      onClick={() => void (choosingReplacement
                         ? replaceWithCatalogItem(item)
-                        : toggleCatalogItem(item)}
+                        : toggleCatalogItem(item))}
                       className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${selected ? "bg-[#d5ff67] text-[#111713]" : "border border-white/15 text-[#9ca69d] hover:border-[#d5ff67] hover:text-[#d5ff67]"}`}
                     >
                       {choosingReplacement && !selected
