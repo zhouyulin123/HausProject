@@ -25,6 +25,11 @@ from evals.run_real_world_eval import (
     load_case_results,
     main as run_eval_main,
 )
+from evals.security_access_attestation import (
+    AccessTarget,
+    HttpObservation,
+    collect_security_access_attestation,
+)
 from evals.trusted_evidence import (
     RunBinding,
     _signature,
@@ -39,6 +44,8 @@ from tests.scene_fixtures import attach_scene_versions
 
 
 SIGNING_KEY = "eval-test-signing-key-that-is-at-least-32-bytes"
+SECURITY_SIGNING_KEY = "security-test-signing-key-that-is-at-least-32-bytes"
+APP_BUILD_DIGEST = "sha256:" + "a" * 64
 
 
 def _task_input() -> dict:
@@ -629,6 +636,130 @@ def test_loader_rejects_tampered_signed_result(db, tmp_path):
             split="regression",
             verification_keys={"quality-ci-1": SIGNING_KEY},
         )
+
+
+def test_verifier_rejects_self_reported_cross_user_metrics_without_security_evidence(
+    db,
+    tmp_path,
+):
+    dataset = _dataset(tmp_path)
+    run = _completed_system_run(
+        db,
+        dataset=dataset,
+        case_id="private-case-alias",
+    )
+    bundle = collect_trusted_evidence(
+        db,
+        dataset=dataset,
+        split="regression",
+        bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
+        signing_key=SIGNING_KEY,
+        key_id="quality-ci-1",
+    )
+    result = bundle["executions"][0]["result"]
+    result["cross_user_access_checks"] = 1
+    result["severe_cross_user_access"] = 0
+    bundle["executions"][0]["result_digest"] = canonical_digest(result)
+    unsigned = {key: value for key, value in bundle.items() if key != "attestation"}
+    bundle["attestation"]["signature"] = _signature(unsigned, SIGNING_KEY)
+
+    with pytest.raises(EvaluationInputError, match="独立安全证据"):
+        verify_trusted_evidence(
+            bundle,
+            dataset=dataset,
+            split="regression",
+            verification_keys={"quality-ci-1": SIGNING_KEY},
+        )
+
+
+def test_collector_and_verifier_fill_cross_user_metrics_only_from_security_attestation(
+    db,
+    tmp_path,
+):
+    dataset = _dataset(tmp_path)
+    run = _completed_system_run(
+        db,
+        dataset=dataset,
+        case_id="private-case-alias",
+    )
+    versions = {
+        "model": run.model,
+        "prompt": run.prompt_digest,
+        "rules": run.rules_digest,
+        "data": run.data_digest,
+    }
+    owner_session = "00000000-0000-0000-0000-000000000001"
+    foreign_session = "10000000-0000-0000-0000-000000000001"
+
+    class DeploymentTransport:
+        def get(self, url, *, headers):
+            common = {"x-app-build-digest": APP_BUILD_DIGEST}
+            if url.endswith("/health"):
+                return HttpObservation(200, common, {"environment": "staging"})
+            if "/api/sessions/" in url:
+                return HttpObservation(
+                    200,
+                    common,
+                    {"session_id": url.rsplit("/", 1)[-1], "status": "active"},
+                )
+            if headers["X-Session-ID"] == owner_session:
+                return HttpObservation(200, common, {"run_id": run.id})
+            return HttpObservation(404, common, {"detail": "not found"})
+
+    from evals.real_world import EvaluationVersions
+
+    security_bundle = collect_security_access_attestation(
+        dataset=dataset,
+        split="regression",
+        targets=(
+            AccessTarget(
+                case_id="private-case-alias",
+                task_id=run.task_id,
+                owner_session_env="OWNER_SESSION",
+                foreign_session_env="FOREIGN_SESSION",
+            ),
+        ),
+        versions=EvaluationVersions(**versions),
+        base_url="https://controlled.example",
+        app_build_digest=APP_BUILD_DIGEST,
+        credentials={
+            "OWNER_SESSION": owner_session,
+            "FOREIGN_SESSION": foreign_session,
+        },
+        transport=DeploymentTransport(),
+        signing_key=SECURITY_SIGNING_KEY,
+        key_id="security-ci-1",
+    )
+    bundle = collect_trusted_evidence(
+        db,
+        dataset=dataset,
+        split="regression",
+        bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
+        signing_key=SIGNING_KEY,
+        key_id="quality-ci-1",
+        security_access_attestation=security_bundle,
+        security_verification_keys={"security-ci-1": SECURITY_SIGNING_KEY},
+        expected_app_build_digest=APP_BUILD_DIGEST,
+    )
+    evidence = verify_trusted_evidence(
+        bundle,
+        dataset=dataset,
+        split="regression",
+        verification_keys={"quality-ci-1": SIGNING_KEY},
+        security_verification_keys={"security-ci-1": SECURITY_SIGNING_KEY},
+        expected_app_build_digest=APP_BUILD_DIGEST,
+    )
+    report = build_evaluation_report(
+        dataset=dataset,
+        split="regression",
+        evidence=evidence,
+    )
+
+    assert evidence.results[0].cross_user_access_checks == 1
+    assert evidence.results[0].severe_cross_user_access == 0
+    assert report["metrics"]["cross_user_access_checks"] == 1
+    assert report["metrics"]["severe_cross_user_access"] == 0
+    assert report["evidence_gaps"] == []
 
 
 def test_loader_and_cli_fail_closed_without_verification_key(
