@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from evals import collect_security_access_evidence
 from evals.real_world import EvaluationInputError, EvaluationVersions, load_case_manifest
 from evals.security_access_attestation import (
     AccessTarget,
@@ -98,7 +99,7 @@ class FakeTransport:
 def _inputs(dataset):
     targets = []
     credentials = {}
-    expected_run_ids = {}
+    expected_run_bindings = {}
     for index, case in enumerate(dataset.eligible_cases("regression"), start=1):
         owner_name = f"CASE_{index}_OWNER_SESSION"
         foreign_name = f"CASE_{index}_FOREIGN_SESSION"
@@ -113,12 +114,12 @@ def _inputs(dataset):
                 foreign_session_env=foreign_name,
             )
         )
-        expected_run_ids[case.id] = task_id + 1000
-    return tuple(targets), credentials, expected_run_ids
+        expected_run_bindings[case.id] = (task_id, task_id + 1000)
+    return tuple(targets), credentials, expected_run_bindings
 
 
 def _collect(dataset, *, foreign_access=False):
-    targets, credentials, expected_run_ids = _inputs(dataset)
+    targets, credentials, expected_run_bindings = _inputs(dataset)
     payload = collect_security_access_attestation(
         dataset=dataset,
         split="regression",
@@ -133,7 +134,7 @@ def _collect(dataset, *, foreign_access=False):
         now=NOW,
         ttl_seconds=900,
     )
-    return payload, expected_run_ids, credentials
+    return payload, expected_run_bindings, credentials
 
 
 def _resign(payload):
@@ -152,14 +153,14 @@ def _resign(payload):
     ).hexdigest()
 
 
-def _verify(payload, dataset, expected_run_ids, **overrides):
+def _verify(payload, dataset, expected_run_bindings, **overrides):
     kwargs = {
         "payload": payload,
         "dataset": dataset,
         "split": "regression",
         "versions": VERSIONS,
         "expected_app_build_digest": BUILD_DIGEST,
-        "expected_run_ids": expected_run_ids,
+        "expected_run_bindings": expected_run_bindings,
         "verification_keys": {SECURITY_KEY_ID: SECURITY_KEY},
         "evaluation_key_id": EVALUATION_KEY_ID,
         "now": NOW + timedelta(minutes=1),
@@ -180,9 +181,9 @@ def _all_mapping_keys(value):
 
 def test_http_suite_signs_only_anonymous_owner_and_foreign_observations(tmp_path):
     dataset = _dataset(tmp_path)
-    payload, expected_run_ids, credentials = _collect(dataset)
+    payload, expected_run_bindings, credentials = _collect(dataset)
 
-    verified = _verify(payload, dataset, expected_run_ids)
+    verified = _verify(payload, dataset, expected_run_bindings)
     serialized = json.dumps(payload, ensure_ascii=False)
 
     assert verified.check_count == 2
@@ -202,9 +203,9 @@ def test_http_suite_signs_only_anonymous_owner_and_foreign_observations(tmp_path
 
 def test_http_suite_records_actual_cross_user_disclosure_as_severe(tmp_path):
     dataset = _dataset(tmp_path)
-    payload, expected_run_ids, _ = _collect(dataset, foreign_access=True)
+    payload, expected_run_bindings, _ = _collect(dataset, foreign_access=True)
 
-    verified = _verify(payload, dataset, expected_run_ids)
+    verified = _verify(payload, dataset, expected_run_bindings)
 
     assert verified.check_count == 2
     assert verified.severe_count == 2
@@ -233,50 +234,51 @@ def test_http_suite_rejects_missing_eligible_case_target(tmp_path):
 
 def test_verifier_rejects_forgery_replay_and_wrong_binding(tmp_path):
     dataset = _dataset(tmp_path)
-    payload, expected_run_ids, _ = _collect(dataset)
+    payload, expected_run_bindings, _ = _collect(dataset)
 
     forged = json.loads(json.dumps(payload))
     forged["cases"][0]["severe_count"] = 1
     with pytest.raises(EvaluationInputError, match="签名无效"):
-        _verify(forged, dataset, expected_run_ids)
+        _verify(forged, dataset, expected_run_bindings)
 
     with pytest.raises(EvaluationInputError, match="过期"):
         _verify(
             payload,
             dataset,
-            expected_run_ids,
+            expected_run_bindings,
             now=NOW + timedelta(minutes=16),
         )
 
-    replayed_run_ids = dict(expected_run_ids)
-    replayed_run_ids["private-case-1"] += 1
+    replayed_run_ids = dict(expected_run_bindings)
+    task_id, run_id = replayed_run_ids["private-case-1"]
+    replayed_run_ids["private-case-1"] = (task_id, run_id + 1)
     with pytest.raises(EvaluationInputError, match="运行绑定"):
         _verify(payload, dataset, replayed_run_ids)
 
 
 def test_verifier_rejects_build_version_key_domain_and_case_mismatch(tmp_path):
     dataset = _dataset(tmp_path)
-    payload, expected_run_ids, _ = _collect(dataset)
+    payload, expected_run_bindings, _ = _collect(dataset)
 
     with pytest.raises(EvaluationInputError, match="应用构建"):
         _verify(
             payload,
             dataset,
-            expected_run_ids,
+            expected_run_bindings,
             expected_app_build_digest="sha256:" + "b" * 64,
         )
     with pytest.raises(EvaluationInputError, match="评测版本"):
         _verify(
             payload,
             dataset,
-            expected_run_ids,
+            expected_run_bindings,
             versions=replace(VERSIONS, rules="sha256:" + "9" * 64),
         )
     with pytest.raises(EvaluationInputError, match="独立"):
         _verify(
             payload,
             dataset,
-            expected_run_ids,
+            expected_run_bindings,
             evaluation_key_id=SECURITY_KEY_ID,
         )
 
@@ -284,15 +286,69 @@ def test_verifier_rejects_build_version_key_domain_and_case_mismatch(tmp_path):
     missing_case["cases"].pop()
     _resign(missing_case)
     with pytest.raises(EvaluationInputError, match="缺少已准入案例"):
-        _verify(missing_case, dataset, expected_run_ids)
+        _verify(missing_case, dataset, expected_run_bindings)
 
 
 def test_verifier_derives_counts_from_signed_http_statuses(tmp_path):
     dataset = _dataset(tmp_path)
-    payload, expected_run_ids, _ = _collect(dataset)
+    payload, expected_run_bindings, _ = _collect(dataset)
     fabricated = json.loads(json.dumps(payload))
     fabricated["cases"][0]["check_count"] = 99
     _resign(fabricated)
 
     with pytest.raises(EvaluationInputError, match="HTTP 事实"):
-        _verify(fabricated, dataset, expected_run_ids)
+        _verify(fabricated, dataset, expected_run_bindings)
+
+
+def test_independent_cli_reads_credentials_from_environment_and_writes_no_secrets(
+    tmp_path,
+    monkeypatch,
+):
+    dataset = _dataset(tmp_path)
+    targets, credentials, _ = _inputs(dataset)
+    target_file = tmp_path / "security-targets.json"
+    target_file.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "split": "regression",
+                "versions": VERSIONS.__dict__,
+                "targets": [target.__dict__ for target in targets],
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "security-evidence.json"
+    monkeypatch.setenv("SECURITY_EVIDENCE_HMAC_KEY", SECURITY_KEY)
+    monkeypatch.setenv("SECURITY_EVIDENCE_KEY_ID", SECURITY_KEY_ID)
+    for name, value in credentials.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        collect_security_access_evidence,
+        "UrllibHttpTransport",
+        lambda **_: FakeTransport(),
+    )
+
+    exit_code = collect_security_access_evidence.main(
+        [
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--split",
+            "regression",
+            "--targets",
+            str(target_file),
+            "--base-url",
+            "https://controlled.example",
+            "--app-build-digest",
+            BUILD_DIGEST,
+            "--output",
+            str(output),
+        ]
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    serialized = json.dumps(payload)
+
+    assert exit_code == 0
+    assert payload["attestation"]["key_id"] == SECURITY_KEY_ID
+    assert all(value not in serialized for value in credentials.values())
+    assert all(case.id not in serialized for case in dataset.cases)
