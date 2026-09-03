@@ -11,6 +11,8 @@ describe("公开分享页数据边界", () => {
     expect(page).not.toContain("@/data/mock");
     expect(page).not.toContain("localStorage");
     expect(page).not.toContain("sessionStorage");
+    expect(page).not.toContain("plan.score");
+    expect(page).not.toContain("方案匹配度");
   });
 
   it("公开 token 路由位于鉴权布局之外", () => {

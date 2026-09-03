@@ -231,3 +231,28 @@ def test_generation_meta_separates_static_prompt_version_from_full_dynamic_input
         "budgetBreakdown"
         in prompt_contract["output_contract"]["required_plan_keys"]
     )
+
+
+def test_generated_plans_do_not_publish_model_self_reported_match_scores(monkeypatch):
+    required_plan = {
+        "name": "方案",
+        "style": "现代",
+        "score": 99,
+        "budget": 10000,
+        "furnitureSuggestions": [{"sku": "SKU-1"}],
+        "customItems": [],
+        "colorPalette": ["白色"],
+        "budgetBreakdown": [{"name": "家具", "percent": 100, "amount": 10000}],
+    }
+    monkeypatch.setattr(
+        llm_service,
+        "_chat_json",
+        lambda *_args, **_kwargs: {
+            "plans": [dict(required_plan), dict(required_plan)]
+        },
+    )
+
+    plans = llm_service.generate_plans({}, "catalog-context")
+
+    assert all("score" not in plan for plan in plans)
+    assert '"score"' not in llm_service._PLAN_SYSTEM
