@@ -38,6 +38,7 @@ backend/uploads/*
 !backend/uploads/.gitkeep
 backend/.runtime/
 backend/*.xlsx
+outputs/backups/
 *.log
 
 # 本地模型与缓存
