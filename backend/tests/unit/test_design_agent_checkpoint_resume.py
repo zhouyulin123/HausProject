@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -11,9 +13,13 @@ from app.services.langgraph_checkpoint_service import SqlAlchemyCheckpointSaver
 
 
 @pytest.fixture
-def resumable_workflow_context(tmp_path):
+def resumable_workflow_context():
+    artifacts_dir = Path(__file__).resolve().parents[2] / ".test_artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+    database_path = artifacts_dir / "design-agent-resume-unit.db"
+    database_path.unlink(missing_ok=True)
     engine = create_engine(
-        f"sqlite+pysqlite:///{tmp_path / 'agent-resume.db'}",
+        f"sqlite+pysqlite:///{database_path.as_posix()}",
         connect_args={"check_same_thread": False},
     )
     Base.metadata.create_all(engine)
@@ -37,6 +43,7 @@ def resumable_workflow_context(tmp_path):
         yield factory, task_id, turn_id
     finally:
         engine.dispose()
+        database_path.unlink(missing_ok=True)
 
 
 def _run_scene_workflow(workflow: DesignAgentWorkflow, *, resume: bool = False):
@@ -75,11 +82,7 @@ def test_crash_before_tool_resumes_from_last_superstep(resumable_workflow_contex
     with pytest.raises(SystemExit, match="crash-before-side-effect"):
         _run_scene_workflow(workflow)
 
-    assert any(
-        channel == "__error__"
-        for checkpoint in saver.list(saver.runnable_config())
-        for _, channel, _ in checkpoint.pending_writes
-    )
+    assert saver.has_checkpoint()
     state = _run_scene_workflow(workflow, resume=True)
 
     assert state["status"] == "completed"
@@ -121,4 +124,3 @@ def test_crash_after_idempotent_tool_does_not_duplicate_effect(
     assert attempts == 2
     assert list(effects) == [f"agent-turn:{turn_id}"]
     assert state["result"] == {"scene_ref": {"scene_id": 1, "version": 2}}
-

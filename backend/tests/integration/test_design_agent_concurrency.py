@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from threading import Event, Thread
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
@@ -263,6 +263,78 @@ def test_completed_business_running_turn_does_not_hold_execution_lease(
             select(DesignAgentTurn).where(DesignAgentTurn.task_id == task_id)
         ).all()
         assert len(turns) == 2
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("crash_position", ["before", "after"])
+def test_expired_turn_resumes_from_persisted_graph_checkpoint_without_duplicate_run(
+    concurrent_agent_context,
+    monkeypatch,
+    crash_position,
+):
+    factory, task_id = concurrent_agent_context
+    payload = _payload(f"checkpoint-crash-{crash_position}-001")
+    original_create_run = design_agent_service.generation_run_service.create_run
+    attempts = 0
+
+    def crash_once(db, *args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1 and crash_position == "before":
+            raise SystemExit("crash-before-generation-run")
+        run = original_create_run(db, *args, **kwargs)
+        if attempts == 1 and crash_position == "after":
+            # 模拟外部副作用已提交、但节点结果尚未写入 pending writes。
+            db.commit()
+            raise SystemExit("crash-after-generation-run")
+        return run
+
+    monkeypatch.setattr(
+        design_agent_service.generation_run_service,
+        "create_run",
+        crash_once,
+    )
+
+    with factory() as db:
+        with pytest.raises(SystemExit, match=f"crash-{crash_position}"):
+            design_agent_service.run_turn(
+                db,
+                task=db.get(DesignTask, task_id),
+                payload=payload,
+            )
+
+    with factory() as db:
+        turn = db.scalar(
+            select(DesignAgentTurn).where(
+                DesignAgentTurn.task_id == task_id,
+                DesignAgentTurn.client_turn_id == payload.client_turn_id,
+            )
+        )
+        turn.created_at = datetime.now(timezone.utc) - timedelta(days=1)
+        db.commit()
+
+    with factory() as db:
+        response = design_agent_service.run_turn(
+            db,
+            task=db.get(DesignTask, task_id),
+            payload=payload,
+        )
+
+    assert response["exit_reason"] == "generation_queued"
+    assert attempts == 2
+    with factory() as db:
+        assert db.scalar(
+            select(func.count())
+            .select_from(GenerationRun)
+            .where(GenerationRun.task_id == task_id)
+        ) == 1
+        turn = db.scalar(
+            select(DesignAgentTurn).where(
+                DesignAgentTurn.task_id == task_id,
+                DesignAgentTurn.client_turn_id == payload.client_turn_id,
+            )
+        )
+        assert turn.response_json["run_id"] == response["run_id"]
 
 
 @pytest.mark.integration

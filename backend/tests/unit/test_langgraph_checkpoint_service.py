@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from threading import Barrier, Thread
 from typing import Any
 
@@ -24,9 +25,13 @@ class CounterState(TypedDict):
 
 
 @pytest.fixture
-def checkpoint_context(tmp_path):
+def checkpoint_context():
+    artifacts_dir = Path(__file__).resolve().parents[2] / ".test_artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+    database_path = artifacts_dir / "langgraph-checkpoints-unit.db"
+    database_path.unlink(missing_ok=True)
     engine = create_engine(
-        f"sqlite+pysqlite:///{tmp_path / 'langgraph-checkpoints.db'}",
+        f"sqlite+pysqlite:///{database_path.as_posix()}",
         connect_args={"check_same_thread": False, "timeout": 5},
     )
     Base.metadata.create_all(engine)
@@ -54,6 +59,7 @@ def checkpoint_context(tmp_path):
         yield factory, task_id, turn_ids
     finally:
         engine.dispose()
+        database_path.unlink(missing_ok=True)
 
 
 def _counter_graph(saver: SqlAlchemyCheckpointSaver):
@@ -178,4 +184,3 @@ def test_saver_rejects_cross_task_thread_scope(checkpoint_context):
         saver.get_tuple(
             {"configurable": {"thread_id": "design-task:999", "checkpoint_ns": ""}}
         )
-

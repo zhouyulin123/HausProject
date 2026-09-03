@@ -7,12 +7,14 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.mysql import MEDIUMBLOB
 
 from app.db.database import Base
 
@@ -208,6 +210,89 @@ class DesignAgentTurn(Base):
     response_json = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class LangGraphCheckpoint(Base):
+    """绑定 DesignTask 与单轮 turn 的 LangGraph 完整 superstep 快照。"""
+
+    __tablename__ = "langgraph_checkpoints"
+    __table_args__ = (
+        UniqueConstraint(
+            "thread_id",
+            "checkpoint_ns",
+            "checkpoint_id",
+            name="uq_langgraph_checkpoint_scope_id",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    turn_id = Column(
+        Integer,
+        ForeignKey("design_agent_turns.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    thread_id = Column(String(191), nullable=False, index=True)
+    checkpoint_ns = Column(String(191), nullable=False, index=True)
+    checkpoint_id = Column(String(64), nullable=False)
+    parent_checkpoint_id = Column(String(64), nullable=True)
+    checkpoint_type = Column(String(32), nullable=False)
+    checkpoint_blob = Column(
+        LargeBinary().with_variant(MEDIUMBLOB(), "mysql"),
+        nullable=False,
+    )
+    metadata_type = Column(String(32), nullable=False)
+    metadata_blob = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class LangGraphCheckpointWrite(Base):
+    """节点完成后、下一 superstep 提交前的可恢复 channel writes。"""
+
+    __tablename__ = "langgraph_checkpoint_writes"
+    __table_args__ = (
+        UniqueConstraint(
+            "thread_id",
+            "checkpoint_ns",
+            "checkpoint_id",
+            "writer_task_id",
+            "write_index",
+            name="uq_langgraph_checkpoint_write_task_index",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    turn_id = Column(
+        Integer,
+        ForeignKey("design_agent_turns.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    thread_id = Column(String(191), nullable=False, index=True)
+    checkpoint_ns = Column(String(191), nullable=False, index=True)
+    checkpoint_id = Column(String(64), nullable=False)
+    writer_task_id = Column(String(191), nullable=False)
+    task_path = Column(String(500), nullable=False, default="")
+    write_index = Column(Integer, nullable=False)
+    channel = Column(String(191), nullable=False)
+    value_type = Column(String(32), nullable=False)
+    value_blob = Column(
+        LargeBinary().with_variant(MEDIUMBLOB(), "mysql"),
+        nullable=False,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CustomFurnitureDraftMutation(Base):

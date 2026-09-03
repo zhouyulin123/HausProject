@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.design_agent import (
     AgentToolRejected,
@@ -30,6 +30,7 @@ from app.db.models import (
     DesignPlanVersion,
     DesignRevision,
     DesignScene,
+    DesignSceneVersion,
     DesignTask,
     RoomFactConfirmation,
     UploadedImage,
@@ -50,6 +51,7 @@ from app.services import (
     scene_tools,
 )
 from app.services.llm_service import LLMUnavailable
+from app.services.langgraph_checkpoint_service import SqlAlchemyCheckpointSaver
 
 logger = logging.getLogger(__name__)
 ROOM_FACT_CONFIDENCE_THRESHOLD = 0.8
@@ -561,7 +563,12 @@ def _load_task_scene(
     ).first()
 
 
-def _scene_tool(db: Session, task: DesignTask, payload: AgentTurnRequest):
+def _scene_tool(
+    db: Session,
+    task: DesignTask,
+    payload: AgentTurnRequest,
+    turn_id: int,
+):
     def execute(state: dict[str, Any]) -> dict[str, Any]:
         if payload.scene_id is None or payload.base_scene_version is None:
             raise AgentToolRejected(
@@ -571,6 +578,19 @@ def _scene_tool(db: Session, task: DesignTask, payload: AgentTurnRequest):
         scene = _load_task_scene(db, task_id=task.id, scene_id=payload.scene_id)
         if scene is None:
             raise AgentSceneNotFound("场景不存在或不属于当前任务")
+        mutation_id = f"agent-turn:{turn_id}"
+        replayed = db.scalar(
+            select(DesignSceneVersion).where(
+                DesignSceneVersion.scene_id == scene.id,
+                DesignSceneVersion.client_mutation_id == mutation_id,
+            )
+        )
+        if replayed is not None:
+            return {
+                "operation_count": 0,
+                "message": "已从幂等记录恢复场景修改。",
+                "scene_ref": {"scene_id": scene.id, "version": replayed.version},
+            }
         if scene.current_version != payload.base_scene_version:
             raise AgentSceneVersionConflict(
                 f"场景已经更新到版本 {scene.current_version}"
@@ -618,12 +638,18 @@ def _scene_tool(db: Session, task: DesignTask, payload: AgentTurnRequest):
         if proposed is None:
             raise AgentToolRejected("未生成候选场景", codes=["empty_scene"])
         try:
-            version = scene_service.update_scene(
+            version, _ = scene_service.update_scene_idempotent(
                 db,
                 scene=refreshed,
                 base_version=payload.base_scene_version,
                 document=proposed,
                 source="scene_agent",
+                client_mutation_id=mutation_id,
+                mutation_metadata={
+                    "task_id": task.id,
+                    "turn_id": turn_id,
+                    "instruction": state["message"],
+                },
             )
         except scene_service.SceneConflictError as exc:
             raise AgentSceneVersionConflict(str(exc)) from exc
@@ -953,7 +979,7 @@ def _claim_turn(
     *,
     task_id: int,
     payload: AgentTurnRequest,
-) -> tuple[DesignTask, DesignAgentTurn, dict[str, Any] | None]:
+) -> tuple[DesignTask, DesignAgentTurn, dict[str, Any] | None, bool]:
     task = _lock_task_for_turn(db, task_id)
     now = _utc_now()
     running_turns = db.scalars(
@@ -980,12 +1006,24 @@ def _claim_turn(
     if existing is not None:
         _assert_same_turn_request(existing, payload)
         if existing.response_json is not None:
-            return task, existing, _existing_turn_result(existing, payload)
+            return task, existing, _existing_turn_result(existing, payload), False
         if not _turn_lease_expired(existing, now=now):
             raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中")
+        checkpoint_saver = _checkpoint_saver(
+            db,
+            task_id=task.id,
+            turn_id=existing.id,
+        )
+        if checkpoint_saver.has_checkpoint():
+            # 任务行锁保护租约重领；created_at 目前也是既有租约起点。
+            existing.created_at = now
+            db.commit()
+            db.refresh(existing)
+            db.refresh(task)
+            return task, existing, None, True
         response = _recover_stale_turn(db, task=task, turn=existing)
         db.commit()
-        return task, existing, response
+        return task, existing, response, False
 
     for running in running_turns:
         if not _turn_lease_expired(running, now=now):
@@ -1014,9 +1052,23 @@ def _claim_turn(
             )
         )
         if existing is not None:
-            return task, existing, _existing_turn_result(existing, payload)
+            return task, existing, _existing_turn_result(existing, payload), False
         raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中") from exc
-    return task, turn, None
+    return task, turn, None, False
+
+
+def _checkpoint_saver(
+    db: Session,
+    *,
+    task_id: int,
+    turn_id: int,
+) -> SqlAlchemyCheckpointSaver:
+    factory = sessionmaker(
+        bind=db.get_bind(),
+        autoflush=False,
+        expire_on_commit=False,
+    )
+    return SqlAlchemyCheckpointSaver(factory, task_id=task_id, turn_id=turn_id)
 
 
 def _record_state_conflict(
@@ -1083,7 +1135,7 @@ def _run_turn(
     task: DesignTask,
     payload: AgentTurnRequest,
 ) -> dict[str, Any]:
-    task, turn, claimed_response = _claim_turn(
+    task, turn, claimed_response, resume_turn = _claim_turn(
         db,
         task_id=task.id,
         payload=payload,
@@ -1147,13 +1199,32 @@ def _run_turn(
         initial_exit_reason = "retry_exhausted"
 
     next_state_version = (task.agent_state_version or 0) + 1
+    checkpoint_saver = _checkpoint_saver(
+        db,
+        task_id=task.id,
+        turn_id=turn.id,
+    )
+
+    def defer_after_side_effect(callback):
+        def execute(state):
+            result = callback(state)
+            checkpoint_saver.defer()
+            return result
+
+        return execute
+
     registry = DesignAgentToolRegistry()
     registry.register("catalog_search", _catalog_tool(db))
     registry.register(
         "design_generation",
-        _design_tool(db, task, next_state_version=next_state_version),
+        defer_after_side_effect(
+            _design_tool(db, task, next_state_version=next_state_version)
+        ),
     )
-    registry.register("scene_edit", _scene_tool(db, task, payload))
+    registry.register(
+        "scene_edit",
+        defer_after_side_effect(_scene_tool(db, task, payload, turn.id)),
+    )
     registry.register("custom_furniture_preview", _custom_furniture_tool(db))
     workflow = DesignAgentWorkflow(
         retrieve_catalog=registry.get("catalog_search"),
@@ -1162,6 +1233,7 @@ def _run_turn(
         execute_custom=registry.get("custom_furniture_preview"),
         max_steps=max_steps,
         max_retries=max_retries,
+        checkpointer=checkpoint_saver,
     )
     facts, fact_evidence = _facts_for_turn(
         db,
@@ -1195,6 +1267,7 @@ def _run_turn(
         initial_hard_errors=initial_hard_errors,
         budget_exhausted=budget_exhausted,
         initial_exit_reason=initial_exit_reason,
+        resume=resume_turn,
     )
 
     requirement = deepcopy(task.confirmed_requirement_json or {})
@@ -1286,6 +1359,7 @@ def _run_turn(
     db.add(ChatLog(task_id=task.id, role="user", content=payload.message))
     db.add(ChatLog(task_id=task.id, role="ai", content=reply))
     db.commit()
+    checkpoint_saver.flush_deferred()
     return response
 
 

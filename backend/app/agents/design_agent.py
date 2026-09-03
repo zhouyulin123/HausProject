@@ -7,6 +7,7 @@ import re
 from copy import deepcopy
 from typing import Annotated, Any, Callable, TypedDict
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import TypeAdapter, ValidationError
 
@@ -369,6 +370,7 @@ class DesignAgentWorkflow:
         execute_custom: AgentTool | None = None,
         max_steps: int = 12,
         max_retries: int = 2,
+        checkpointer: BaseCheckpointSaver | None = None,
     ) -> None:
         self._retrieve_catalog = retrieve_catalog
         self._execute_design = execute_design
@@ -376,6 +378,7 @@ class DesignAgentWorkflow:
         self._execute_custom = execute_custom
         self._max_steps = max_steps
         self._max_retries = max_retries
+        self._checkpointer = checkpointer
         self._graph = self._build_graph()
 
     def _build_graph(self):
@@ -425,7 +428,7 @@ class DesignAgentWorkflow:
         graph.add_edge("finalize", END)
         graph.add_edge("request_approval", END)
         graph.add_edge("escalate", END)
-        return graph.compile()
+        return graph.compile(checkpointer=self._checkpointer)
 
     def _validate_facts(self, state: DesignAgentState) -> dict[str, Any]:
         construction_risks = classify_high_risk_construction_intent(
@@ -772,39 +775,55 @@ class DesignAgentWorkflow:
         initial_hard_errors: list[str] | None = None,
         budget_exhausted: bool = False,
         initial_exit_reason: str = "",
+        resume: bool = False,
     ) -> DesignAgentState:
+        config = {
+            "recursion_limit": self._max_steps + 8,
+            "configurable": {
+                "thread_id": f"design-task:{task_id}",
+                # 顶层 namespace 由绑定 turn 的持久化 saver 映射。
+                "checkpoint_ns": "",
+            },
+        }
+        if resume:
+            if self._checkpointer is None:
+                raise RuntimeError("恢复 LangGraph 执行必须配置持久化 checkpointer")
+            state = self._graph.invoke(None, config=config, durability="sync")
+            if state is None:
+                raise RuntimeError("没有可恢复的 LangGraph checkpoint")
+            return state
         effective_intent = (
             "scene_edit" if intent == "auto" and scene_context else intent
         )
         if effective_intent == "auto":
             effective_intent = "design"
-        return self._graph.invoke(
-            {
-                "task_id": task_id,
-                "turn_id": turn_id,
-                "active_mode": active_mode,
-                "intent": effective_intent,
-                "message": message,
-                "facts": deepcopy(facts),
-                "fact_evidence": deepcopy(fact_evidence or {}),
-                "scene_context": deepcopy(scene_context or {}),
-                "custom_furniture_spec": deepcopy(custom_furniture_spec or {}),
-                "custom_spec_invalid": False,
-                "status": "running",
-                "current_node": "start",
-                "pending_questions": [],
-                "tool_events": [],
-                "result": None,
-                "hard_errors": list(initial_hard_errors or []),
-                "quality_outcome": "",
-                "approval_required": False,
-                "rejection_message": "",
-                "step_count": initial_step_count,
-                "retry_count": initial_retry_count,
-                "max_steps": self._max_steps,
-                "max_retries": self._max_retries,
-                "budget_exhausted": budget_exhausted,
-                "exit_reason": initial_exit_reason if budget_exhausted else "",
-            },
-            config={"recursion_limit": self._max_steps + 8},
-        )
+        initial_state = {
+            "task_id": task_id,
+            "turn_id": turn_id,
+            "active_mode": active_mode,
+            "intent": effective_intent,
+            "message": message,
+            "facts": deepcopy(facts),
+            "fact_evidence": deepcopy(fact_evidence or {}),
+            "scene_context": deepcopy(scene_context or {}),
+            "custom_furniture_spec": deepcopy(custom_furniture_spec or {}),
+            "custom_spec_invalid": False,
+            "status": "running",
+            "current_node": "start",
+            "pending_questions": [],
+            "tool_events": [],
+            "result": None,
+            "hard_errors": list(initial_hard_errors or []),
+            "quality_outcome": "",
+            "approval_required": False,
+            "rejection_message": "",
+            "step_count": initial_step_count,
+            "retry_count": initial_retry_count,
+            "max_steps": self._max_steps,
+            "max_retries": self._max_retries,
+            "budget_exhausted": budget_exhausted,
+            "exit_reason": initial_exit_reason if budget_exhausted else "",
+        }
+        if self._checkpointer is None:
+            return self._graph.invoke(initial_state, config=config)
+        return self._graph.invoke(initial_state, config=config, durability="sync")
