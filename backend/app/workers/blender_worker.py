@@ -21,7 +21,7 @@ from app.core.logging_config import configure_logging
 from app.db.database import SessionLocal
 from app.db.models import BlenderRenderJob, DesignSceneVersion, Product
 from app.schemas.scenes import SceneDocument
-from app.services import blender_job_service
+from app.services import blender_job_service, product_asset_service
 from app.services.blender_render_service import (
     BlenderOutputError,
     build_blender_command,
@@ -36,6 +36,26 @@ ProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 class BlenderProcessError(RuntimeError):
     """受监管 Blender 子进程未成功结束。"""
+
+
+def approved_product_model_urls(
+    products: list[Product],
+    *,
+    allow_uploaded_models: bool,
+) -> dict[str, str | None]:
+    """在统一审核门禁之后应用当前 Blender 部署的路径策略。"""
+    result: dict[str, str | None] = {}
+    for product in products:
+        if not product.sku:
+            continue
+        contract = product_asset_service.product_asset_contract(product)
+        model_url = contract["approved_model_url"]
+        if model_url and not (
+            model_url.startswith("/models/") or allow_uploaded_models
+        ):
+            model_url = None
+        result[product.sku] = model_url
+    return result
 
 
 def resolve_blender_executable(configured: str) -> Path:
@@ -122,18 +142,10 @@ def _load_job_payload(job_id: int) -> tuple[SceneDocument, dict[str, str | None]
                 Product.is_active.is_(True),
             )
         ).all() if skus else []
-        model_urls = {
-            product.sku: (
-                product.model_url
-                if product.model_status == "ready"
-                and (
-                    (product.model_url or "").startswith("/models/")
-                    or settings.blender_allow_uploaded_models
-                )
-                else None
-            )
-            for product in products
-        }
+        model_urls = approved_product_model_urls(
+            products,
+            allow_uploaded_models=settings.blender_allow_uploaded_models,
+        )
         db.expunge(job)
         return scene, model_urls, job
 

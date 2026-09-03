@@ -567,7 +567,7 @@ def verify_and_enrich_plans(
                 "alternative": product.alternative or "",
                 "alternativeSkus": list(product.alternative_skus or []),
                 "imageUrl": product.image_url,
-                "modelUrl": product.model_url,
+                "modelUrl": asset_contract["approved_model_url"],
                 "modelStatus": product.model_status,
                 "modelDimensionsMm": {
                     "width": product.model_width_mm,
@@ -577,6 +577,7 @@ def verify_and_enrich_plans(
                 "modelSpecJson": product.model_spec_json,
                 "assetMode": asset_contract["asset_mode"],
                 "fallbackReason": asset_contract["fallback_reason"],
+                "assetReview": asset_contract["asset_review"],
                 "dataOrigin": product.data_origin,
                 "sourceName": product.source_name,
                 "sourceUrl": product.source_url,

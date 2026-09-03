@@ -2036,3 +2036,11 @@
 - 生成工具沿用稳定 Agent operation key；场景工具改用 `agent-turn:{turn_id}` 的既有场景 CAS/幂等接口。工具前检查点同步落库；工具产生未提交业务写入后，后续检查点暂存到业务 CAS 提交成功再刷盘，崩溃时业务事务与暂存进度共同回滚并从工具前检查点重放。
 - Alembic 从 `d2e3f4a5b6c7` 线性升级到 `e3f4a5b6c7d8`，空 SQLite 数据库 upgrade/downgrade/upgrade 通过且保持单 head。RED 为 `b2957f6`，GREEN 为 `b85b821`；Agent/API 75 项、检查点与崩溃恢复 6 项、SQLite 租约/CAS/工具前后崩溃 7 项、迁移 3 项通过，目标模块编译与 MySQL DDL 离线编译通过。
 - 当前剩余风险：尚未对真实 MySQL 做并发与故障注入压测；saver 仅实现当前同步图使用的接口，未实现异步 `aput/aget`；历史 checkpoint 尚无按保留期清理策略，需在上线容量规划中补充。
+
+## 2026-09-03 阶段 3：正式交付资产统一门禁 v1
+
+- `product_asset_service` 成为 Web 方案、服务端方案快照与 Blender 的 GLB 审核单一事实源；只有具备合法内部 GLB 路径、真实尺寸、授权、来源、审核时间和审核人的 `ready` 资产才返回可交付 URL。
+- 方案富化不再写入待审核、拒绝、失败、元数据不完整或路径非法的 GLB URL，并携带稳定 `fallbackReason` 与 `assetReview` 状态。
+- Blender Worker 移除仅凭 `model_status == ready` 的旁路判断，先执行统一审核门禁，再应用部署是否允许上传模型的路径策略。
+- 图片、CAD 和材质当前统一标记 `review_evidence_missing/unavailable`，不伪造尚不存在的授权审核事实；本轮没有新增或改写任何真实业务数据。
+- TDD RED 为 `03cd635`；相关商品生命周期、资产契约、场景、布局、Blender 与商品模型 API 回归 68 项通过，目标模块 Python 编译通过。完整图片/CAD/材质审核持久化、上传扫描和真实授权录入仍是外部后续工作。

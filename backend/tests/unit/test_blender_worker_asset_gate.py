@@ -27,7 +27,9 @@ def _product(**overrides) -> Product:
     return Product(**values)
 
 
-def test_blender_rejects_ready_glb_when_shared_review_gate_rejects_it():
+def test_blender_rejects_ready_glb_when_shared_review_gate_rejects_it(
+    monkeypatch,
+):
     product = _product()
     original = product_asset_service.product_asset_contract
 
@@ -40,14 +42,11 @@ def test_blender_rejects_ready_glb_when_shared_review_gate_rejects_it():
             "approved_model_url": None,
         }
 
-    product_asset_service.product_asset_contract = reject
-    try:
-        urls = blender_worker.approved_product_model_urls(
-            [product],
-            allow_uploaded_models=True,
-        )
-    finally:
-        product_asset_service.product_asset_contract = original
+    monkeypatch.setattr(product_asset_service, "product_asset_contract", reject)
+    urls = blender_worker.approved_product_model_urls(
+        [product],
+        allow_uploaded_models=True,
+    )
 
     assert urls == {"SOFA-001": None}
 
