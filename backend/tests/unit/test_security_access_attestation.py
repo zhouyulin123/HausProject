@@ -74,15 +74,9 @@ class FakeTransport:
                 headers={"x-app-build-digest": BUILD_DIGEST},
                 json_body={"status": "ok", "environment": "staging"},
             )
-        if "/api/sessions/" in url:
-            return HttpObservation(
-                status_code=200,
-                headers={"x-app-build-digest": BUILD_DIGEST},
-                json_body={"session_id": url.rsplit("/", 1)[-1], "status": "active"},
-            )
         task_id = int(url.split("/api/design/tasks/", 1)[1].split("/", 1)[0])
         session_id = headers["X-Session-ID"]
-        is_owner = session_id == f"00000000-0000-0000-0000-{task_id:012d}"
+        is_owner = int(session_id.rsplit("-", 1)[-1]) == task_id
         if is_owner or self.foreign_access:
             return HttpObservation(
                 status_code=200,
@@ -104,12 +98,16 @@ def _inputs(dataset):
         owner_name = f"CASE_{index}_OWNER_SESSION"
         foreign_name = f"CASE_{index}_FOREIGN_SESSION"
         task_id = 100 + index
+        foreign_control_task_id = task_id + 500
         credentials[owner_name] = f"00000000-0000-0000-0000-{task_id:012d}"
-        credentials[foreign_name] = f"10000000-0000-0000-0000-{task_id:012d}"
+        credentials[foreign_name] = (
+            f"10000000-0000-0000-0000-{foreign_control_task_id:012d}"
+        )
         targets.append(
             AccessTarget(
                 case_id=case.id,
                 task_id=task_id,
+                foreign_control_task_id=foreign_control_task_id,
                 owner_session_env=owner_name,
                 foreign_session_env=foreign_name,
             )
@@ -120,6 +118,7 @@ def _inputs(dataset):
 
 def _collect(dataset, *, foreign_access=False):
     targets, credentials, expected_run_bindings = _inputs(dataset)
+    transport = FakeTransport(foreign_access=foreign_access)
     payload = collect_security_access_attestation(
         dataset=dataset,
         split="regression",
@@ -128,13 +127,13 @@ def _collect(dataset, *, foreign_access=False):
         base_url="https://controlled.example",
         app_build_digest=BUILD_DIGEST,
         credentials=credentials,
-        transport=FakeTransport(foreign_access=foreign_access),
+        transport=transport,
         signing_key=SECURITY_KEY,
         key_id=SECURITY_KEY_ID,
         now=NOW,
         ttl_seconds=900,
     )
-    return payload, expected_run_bindings, credentials
+    return payload, expected_run_bindings, credentials, transport
 
 
 def _resign(payload):
@@ -181,7 +180,7 @@ def _all_mapping_keys(value):
 
 def test_http_suite_signs_only_anonymous_owner_and_foreign_observations(tmp_path):
     dataset = _dataset(tmp_path)
-    payload, expected_run_bindings, credentials = _collect(dataset)
+    payload, expected_run_bindings, credentials, transport = _collect(dataset)
 
     verified = _verify(payload, dataset, expected_run_bindings)
     serialized = json.dumps(payload, ensure_ascii=False)
@@ -199,11 +198,12 @@ def test_http_suite_signs_only_anonymous_owner_and_foreign_observations(tmp_path
     assert {"task_id", "run_id", "session_id"}.isdisjoint(
         set(_all_mapping_keys(payload))
     )
+    assert all("/api/sessions/" not in url for url, _ in transport.calls)
 
 
 def test_http_suite_records_actual_cross_user_disclosure_as_severe(tmp_path):
     dataset = _dataset(tmp_path)
-    payload, expected_run_bindings, _ = _collect(dataset, foreign_access=True)
+    payload, expected_run_bindings, _, _ = _collect(dataset, foreign_access=True)
 
     verified = _verify(payload, dataset, expected_run_bindings)
 
@@ -234,7 +234,7 @@ def test_http_suite_rejects_missing_eligible_case_target(tmp_path):
 
 def test_verifier_rejects_forgery_replay_and_wrong_binding(tmp_path):
     dataset = _dataset(tmp_path)
-    payload, expected_run_bindings, _ = _collect(dataset)
+    payload, expected_run_bindings, _, _ = _collect(dataset)
 
     forged = json.loads(json.dumps(payload))
     forged["cases"][0]["severe_count"] = 1
@@ -258,7 +258,7 @@ def test_verifier_rejects_forgery_replay_and_wrong_binding(tmp_path):
 
 def test_verifier_rejects_build_version_key_domain_and_case_mismatch(tmp_path):
     dataset = _dataset(tmp_path)
-    payload, expected_run_bindings, _ = _collect(dataset)
+    payload, expected_run_bindings, _, _ = _collect(dataset)
 
     with pytest.raises(EvaluationInputError, match="应用构建"):
         _verify(
@@ -291,7 +291,7 @@ def test_verifier_rejects_build_version_key_domain_and_case_mismatch(tmp_path):
 
 def test_verifier_derives_counts_from_signed_http_statuses(tmp_path):
     dataset = _dataset(tmp_path)
-    payload, expected_run_bindings, _ = _collect(dataset)
+    payload, expected_run_bindings, _, _ = _collect(dataset)
     fabricated = json.loads(json.dumps(payload))
     fabricated["cases"][0]["check_count"] = 99
     _resign(fabricated)

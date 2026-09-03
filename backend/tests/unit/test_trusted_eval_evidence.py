@@ -696,14 +696,12 @@ def test_collector_and_verifier_fill_cross_user_metrics_only_from_security_attes
             common = {"x-app-build-digest": APP_BUILD_DIGEST}
             if url.endswith("/health"):
                 return HttpObservation(200, common, {"environment": "staging"})
-            if "/api/sessions/" in url:
-                return HttpObservation(
-                    200,
-                    common,
-                    {"session_id": url.rsplit("/", 1)[-1], "status": "active"},
-                )
-            if headers["X-Session-ID"] == owner_session:
+            task_id = int(url.split("/api/design/tasks/", 1)[1].split("/", 1)[0])
+            session_id = headers["X-Session-ID"]
+            if session_id == owner_session and task_id == run.task_id:
                 return HttpObservation(200, common, {"run_id": run.id})
+            if session_id == foreign_session and task_id == run.task_id + 1000:
+                return HttpObservation(200, common, {"run_id": run.id + 1000})
             return HttpObservation(404, common, {"detail": "not found"})
 
     from evals.real_world import EvaluationVersions
@@ -715,6 +713,7 @@ def test_collector_and_verifier_fill_cross_user_metrics_only_from_security_attes
             AccessTarget(
                 case_id="private-case-alias",
                 task_id=run.task_id,
+                foreign_control_task_id=run.task_id + 1000,
                 owner_session_env="OWNER_SESSION",
                 foreign_session_env="FOREIGN_SESSION",
             ),
