@@ -38,7 +38,7 @@ if not exist "frontend\node_modules" (
 )
 
 echo [1/2] 启动后端服务 ^(端口 8081^)...
-start "豪斯-后端" cmd /k "cd /d backend && %PYTHON_CMD% -m alembic upgrade head && %PYTHON_CMD% -m uvicorn app.main:app --port 8081"
+start "豪斯-后端" cmd /k "cd /d backend && %PYTHON_CMD% -m alembic upgrade head && %PYTHON_CMD% -m app.run_api --port 8081"
 
 echo [2/2] 启动前端服务 ^(端口 8080^)...
 start "豪斯-前端" cmd /k "npm --prefix frontend run dev"
