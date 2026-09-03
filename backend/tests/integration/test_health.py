@@ -1,3 +1,5 @@
+import logging
+
 from fastapi.testclient import TestClient
 
 from app.db.database import get_db
@@ -93,3 +95,26 @@ def test_controlled_deployment_exposes_configured_build_digest(monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["x-app-build-digest"] == build_digest
+
+
+def test_http_completion_log_keeps_request_correlation_and_dimensions(caplog):
+    with caplog.at_level(logging.INFO, logger="app.http"):
+        response = TestClient(app).get(
+            "/health",
+            headers={"X-Request-ID": "customer-trace-log-001"},
+        )
+
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "http_request_completed"
+    ]
+    assert response.status_code == 200
+    assert len(records) == 1
+    record = records[0]
+    assert record.request_id == "customer-trace-log-001"
+    assert record.http_method == "GET"
+    assert record.http_path == "/health"
+    assert record.status_code == 200
+    assert isinstance(record.duration_ms, float)
+    assert record.duration_ms >= 0
