@@ -1,7 +1,9 @@
 from pathlib import Path
 
+import logging
 import os
 import re
+from time import perf_counter
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +20,7 @@ from app.db.schema_readiness import database_schema_is_current
 
 
 _BUILD_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+http_logger = logging.getLogger("app.http")
 
 
 app = FastAPI(
@@ -47,8 +50,34 @@ app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads"
 async def add_security_headers(request: Request, call_next):
     request_id = normalize_request_id(request.headers.get("X-Request-ID"))
     request.state.request_id = request_id
+    started_at = perf_counter()
     with bind_request_id(request_id):
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            http_logger.exception(
+                "HTTP request failed",
+                extra={
+                    "event": "http_request_completed",
+                    "request_id": request_id,
+                    "http_method": request.method,
+                    "http_path": request.url.path,
+                    "status_code": 500,
+                    "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+                },
+            )
+            raise
+        http_logger.info(
+            "HTTP request completed",
+            extra={
+                "event": "http_request_completed",
+                "request_id": request_id,
+                "http_method": request.method,
+                "http_path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+            },
+        )
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
