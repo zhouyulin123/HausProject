@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.db.database import Base
 from app.db.models import DesignTask, EvaluationRunBinding, UploadedImage
-from app.services import generation_run_service
+from app.api.routes import tasks as task_routes
+from app.services import evaluation_binding_service, generation_run_service
 from evals.real_world import EvaluationInputError, load_case_manifest
 from evals.trusted_evidence import (
     bind_evaluation_run,
@@ -232,6 +234,112 @@ def test_worker_claim_rejects_image_analysis_mutated_after_binding(db, tmp_path)
     db.refresh(run)
     assert run.status == "dead_letter"
     assert run.current_node == "evaluation_binding_invalid"
+
+
+def test_budget_replan_preserves_initial_evaluation_input_and_provenance(
+    db,
+    tmp_path,
+    monkeypatch,
+):
+    dataset = _dataset(tmp_path)
+    case = dataset.eligible_cases()[0]
+    task = _task(db, asset_digest=f"sha256:{case.asset_sha256}")
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
+    frozen = {
+        field: deepcopy(getattr(run, field))
+        for field in (
+            "model",
+            "prompt_snapshot",
+            "prompt_digest",
+            "rules_digest",
+            "data_digest",
+            "input_snapshot",
+            "input_digest",
+            "provenance_schema_version",
+        )
+    }
+    totals = iter((25_000, 19_000))
+    generation_inputs: list[dict] = []
+
+    class BudgetReplanWorkflow:
+        def __init__(self, **_):
+            pass
+
+        def run(self, *, requirement, **_):
+            generation_inputs.append(deepcopy(requirement))
+            total = next(totals)
+            return {
+                "plans": [{
+                    "id": "plan-a",
+                    "name": "评测预算方案",
+                    "style": "现代",
+                    "furnitureSuggestions": [{"id": "SOFA-001"}],
+                    "shopQuote": {
+                        "furnitureTotal": total,
+                        "customTotal": 0,
+                        "total": total,
+                    },
+                }],
+                "generator": "llm",
+                "node_trace": [],
+            }
+
+    def current_meta():
+        input_snapshot = deepcopy(frozen["input_snapshot"])
+        if len(generation_inputs) > 1:
+            input_snapshot["budget_replan"] = generation_inputs[-1]["budget_replan"]
+        return {
+            "model": frozen["model"],
+            "prompt_snapshot": frozen["prompt_snapshot"],
+            "input_snapshot": input_snapshot,
+            "provenance_schema_version": frozen["provenance_schema_version"],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            },
+            "cost_cny": 0.1,
+        }
+
+    monkeypatch.setattr(task_routes, "DesignWorkflow", BudgetReplanWorkflow)
+    monkeypatch.setattr(task_routes.llm_service, "last_generation_meta", current_meta)
+
+    def persist_meta(payload):
+        generation_run_service.record_generation_meta(
+            db,
+            run=run,
+            meta=payload["meta"],
+            output_snapshot=payload["output_snapshot"],
+        )
+
+    task_routes._execute_generation(
+        db,
+        task=task,
+        on_step=lambda step: generation_run_service.record_step(
+            db,
+            run=run,
+            step=step,
+        ),
+        on_meta=persist_meta,
+    )
+
+    evaluation_binding_service.validate_persisted_binding(db, run=run)
+    for field, value in frozen.items():
+        assert getattr(run, field) == value
+    assert run.usage_json == {
+        "prompt_tokens": 20,
+        "completion_tokens": 10,
+        "total_tokens": 30,
+    }
+    assert run.cost_cny == pytest.approx(0.2)
+    assert run.output_snapshot["retry_count"] == 1
+    assert [event.node for event in run.events].count("budget_replan") == 1
 
 
 def test_collector_requires_binding_even_when_idempotency_key_is_correct(db, tmp_path):

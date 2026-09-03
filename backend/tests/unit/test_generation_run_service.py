@@ -563,6 +563,74 @@ def test_generation_run_accumulates_usage_and_cost_across_budget_replans(db):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    [
+        ("model", "provider/changed-model"),
+        ("prompt_snapshot", "changed prompt"),
+        ("prompt_digest", "sha256:" + "9" * 64),
+        ("rules_digest", "sha256:" + "8" * 64),
+        ("data_digest", "sha256:" + "7" * 64),
+        ("provenance_schema_version", 999),
+    ],
+)
+def test_generation_meta_fails_closed_when_replan_static_version_drifts(
+    db,
+    field,
+    changed_value,
+):
+    task = DesignTask(status="confirmed", progress=50)
+    db.add(task)
+    db.commit()
+    run = generation_run_service.create_run(db, task=task)
+    initial_meta = {
+        "model": "provider/model",
+        "prompt_snapshot": "initial prompt",
+        "prompt_digest": "sha256:" + "1" * 64,
+        "rules_digest": "sha256:" + "2" * 64,
+        "data_digest": "sha256:" + "3" * 64,
+        "input_snapshot": {"requirement": {"budget_max": 10_000}},
+        "input_digest": "sha256:" + "4" * 64,
+        "provenance_schema_version": 3,
+        "usage": {"total_tokens": 15},
+        "cost_cny": 0.1,
+    }
+    generation_run_service.record_generation_meta(
+        db,
+        run=run,
+        meta=initial_meta,
+        output_snapshot={"retry_count": 0},
+    )
+    changed_meta = {
+        **initial_meta,
+        field: changed_value,
+        "input_snapshot": {
+            "requirement": {"budget_max": 10_000},
+            "budget_replan": {"retry_count": 1},
+        },
+        "input_digest": "sha256:" + "5" * 64,
+    }
+
+    with pytest.raises(
+        generation_run_service.GenerationMetadataDriftError,
+        match="静态版本",
+    ):
+        generation_run_service.record_generation_meta(
+            db,
+            run=run,
+            meta=changed_meta,
+            output_snapshot={"retry_count": 1},
+        )
+
+    assert getattr(run, field) == initial_meta[field]
+    assert run.input_snapshot == initial_meta["input_snapshot"]
+    assert run.input_digest == initial_meta["input_digest"]
+    assert run.usage_json == {"total_tokens": 15}
+    assert run.cost_cny == pytest.approx(0.1)
+    assert run.output_snapshot == {"retry_count": 0}
+
+
+@pytest.mark.unit
 def test_model_cost_reservation_accumulates_and_rejects_over_task_limit(db):
     task = DesignTask(status="confirmed", progress=50)
     db.add(task)
