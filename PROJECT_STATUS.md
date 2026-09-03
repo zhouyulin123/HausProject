@@ -1,5 +1,16 @@
 # 项目开发状态记录
 
+## 2026-09-03 阶段 1 P0：生成事实与布局完成门禁
+
+- 旧同步 `POST /api/design/tasks/{task_id}/generate` 已明确停用并返回 `410 synchronous_generation_removed`，不再进入模型、模板或持久化副作用链路。
+- 兼容异步 `generate-async` 在创建 `GenerationRun` 前复用 Agent 的需求事实规范化规则；缺少已确认最高预算或完整房间宽深时返回结构化 `422 generation_facts_incomplete` 及稳定 `missing_fields`。
+- Worker 冻结逐方案场景前必须确认布局 evaluator 的最佳候选 `valid=true`；越界、完整占地越界、碰撞、堵门等统一硬错误或总体质量不合格时抛出可信输出校验失败，不创建场景证据、不绑定 revision/digest，也不能进入 `completed`。绑定 Agent 的运行会沿现有失败同步路径进入 `needs_human`。
+
+### 验证
+
+- RED `a829555`：4 种 `HARD_FAIL_CODES` 均错误完成、两种不完整事实均错误入队、同步入口仍被执行，共 7 项按预期失败。
+- GREEN `c2335ba`：同一目标 7 项通过；Worker、不可变输出、布局生成/评分、异步路由、Agent API 与路由注册相关回归共 86 项通过。
+
 ## 2026-09-03 运行数据库迁移门禁
 
 - `/ready` 新增 `database_schema` 必需检查：数据库可连接但 Alembic 当前版本不等于代码仓库全部 head 时返回 `503` 和 `migration_required`，避免直到商品或评测接口访问新增字段时才暴露 HTTP 500。
