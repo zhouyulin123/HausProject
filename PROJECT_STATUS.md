@@ -2019,4 +2019,20 @@
 - 受控门禁逐组执行真实 HTTPS 跨用户回归、从持久化系统运行签发 trusted evidence 5.0、验签独立安全证明、绑定当前 `APP_BUILD_DIGEST` 和模型/Prompt/规则/数据版本，并从目标提交复算 Prompt/规则摘要、核对受控部署模型名；证据签发还会按当前数据库重建完整商品上下文和动态输入，版本变化后旧运行不能冒充候选。之后再与相同真实案例集的已签名基线比较。缺案例、含 synthetic、缺基线、证据重放/错配、三组候选版本不一致或任一绝对/回归门禁失败都会关闭发布门禁。
 - 修正版本比较契约：被测商品数据版本允许在基线与候选之间变化并分别进入报告；评测数据集内容指纹、split 和匿名案例集合仍必须相同，避免把“商品数据升级”错误地当成不可比较。
 - 失败路径也会生成不含原始异常、会话、数据库 ID 或私有路径的脱敏 JSON/Markdown，工作流始终上传该报告；候选安全/评测证据只存在临时目录，不作为 CI 附件。
+- TDD RED：`29d419a`、`6b46c16`；GREEN 为本次功能提交。阶段 4 相关单元测试 139 项、异步生成/质量/失败分诊集成测试 23 项通过，评测模块编译、workflow YAML 解析与 diff 校验通过。
 - 当前仓库四个候选案例仍未授权、未标注、未分组，三个 split 的准入数均为 0，因此受控门禁按设计只能失败，不能声明阶段 4 的真实业务指标已验收。代码无法代替的外部操作仍包括真实数据治理、受控部署/runner/密钥配置、历史基线审批及把 `real-world-release-proof` 配成分支或发布环境必需检查。
+
+## 2026-09-03 阶段 1 P0：重规划生成元数据冻结
+
+- `GenerationRun` 首次生成调用冻结 model、Prompt、规则、数据、输入与 provenance 版本；预算重规划只累计 usage/cost 并更新输出快照，不再覆盖首次输入摘要。
+- 后续重规划若发生任一静态版本漂移会以 `generation_metadata_drift` 失败关闭，不能签发与执行前 `EvaluationRunBinding` 不一致的可信证据。
+- RED 为 `006854c`，GREEN 为 `8aca5ed`；真实预算重规划绑定、六类静态版本漂移及 Worker 非重试失败相关回归 62 项通过。
+
+## 2026-09-03 阶段 1：LangGraph 节点级持久化检查点
+
+- 新增 SQLAlchemy `SqlAlchemyCheckpointSaver`，实际接入 `DesignAgentWorkflow.compile(checkpointer=...)`；按 `design-task:{task_id}` thread 与 `turn:{turn_id}` namespace 隔离并持久化每个 superstep 的完整 channel 状态、metadata、父检查点与 pending writes。
+- saver 实现 `get_tuple/list/put/put_writes/delete_thread`，类型化二进制快照在 SQLite 使用 BLOB、MySQL 使用 MEDIUMBLOB；同一 checkpoint 内容漂移拒绝覆盖，pending writes 依靠自然唯一键支持 LangGraph 并发写入与幂等重放。
+- 过期但存在节点检查点的同一 `client_turn_id` 会重领租约并用 `invoke(None)` 从最近持久点恢复；没有节点检查点的旧 turn 继续明确转为 `needs_human/turn_lease_expired`，不猜测执行进度。
+- 生成工具沿用稳定 Agent operation key；场景工具改用 `agent-turn:{turn_id}` 的既有场景 CAS/幂等接口。工具前检查点同步落库；工具产生未提交业务写入后，后续检查点暂存到业务 CAS 提交成功再刷盘，崩溃时业务事务与暂存进度共同回滚并从工具前检查点重放。
+- Alembic 从 `d2e3f4a5b6c7` 线性升级到 `e3f4a5b6c7d8`，空 SQLite 数据库 upgrade/downgrade/upgrade 通过且保持单 head。RED 为 `b2957f6`，GREEN 为 `b85b821`；Agent/API 75 项、检查点与崩溃恢复 6 项、SQLite 租约/CAS/工具前后崩溃 7 项、迁移 3 项通过，目标模块编译与 MySQL DDL 离线编译通过。
+- 当前剩余风险：尚未对真实 MySQL 做并发与故障注入压测；saver 仅实现当前同步图使用的接口，未实现异步 `aput/aget`；历史 checkpoint 尚无按保留期清理策略，需在上线容量规划中补充。
