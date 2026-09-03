@@ -2009,5 +2009,5 @@
 - 创建时从服务端不可变方案版本与报价快照生成白名单公开快照；公开接口不返回用户、任务、数据库内部 ID、模型/来源 URL 或本地路径，并对快照摘要做完整性校验。
 - 未知、过期、已撤销以及非所有者撤销统一返回不可用，不泄露分享状态；历史分享与后续 revision、商品价格及原方案行变化解耦。
 - 新增顶层公开路由 `/share/:token`，页面仅以 URL token 读取公开接口，不读取会话、本地设计 store 或 mock；方案页提供创建、复制及撤销操作。
-- 新迁移从 `c1d2e3f4a5b6` 线性升级到 `d2e3f4a5b6c7`，空 SQLite 数据库已完成 upgrade、downgrade、upgrade 验证。TDD RED 为 `e22d729`；相关后端 10 项、前端 6 项、前端全量 189 项、类型检查及生产构建通过。
+- 新迁移从 `c1d2e3f4a5b6` 线性升级到 `d2e3f4a5b6c7`，空 SQLite 数据库已完成 upgrade、downgrade、upgrade 验证。TDD RED 为 `e22d729`，GREEN 实现进入 `e623633`；相关后端 10 项、前端 6 项、前端全量 189 项、类型检查及生产构建通过。
 - 后端全量测试当前被并行阶段 3 的 LangGraph checkpoint RED 用例阻断在收集阶段（缺少尚未实现的 `LangGraphCheckpoint` 与 checkpoint service），与本分享模块无关。
