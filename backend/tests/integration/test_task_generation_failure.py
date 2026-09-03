@@ -8,6 +8,7 @@ from app.db.database import Base
 from app.db.models import DesignTask
 from app.services.design_version_service import get_latest_revision
 from app.services.generation_provenance import build_generation_provenance
+from app.services import generation_run_service
 from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
@@ -234,3 +235,149 @@ def test_generation_emits_provenance_from_actual_prompt_rules_and_catalog(monkey
             "cost_cny": None,
             **expected,
         }
+
+
+@pytest.mark.integration
+def test_generation_replans_once_when_first_deterministic_quote_exceeds_budget(
+    monkeypatch,
+):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    workflow_requirements: list[dict] = []
+    totals = iter((12_000, 9_000))
+
+    class FakeWorkflow:
+        def __init__(self, **_):
+            pass
+
+        def run(self, *, requirement, **_):
+            workflow_requirements.append(requirement)
+            total = next(totals)
+            return {
+                "plans": [{
+                    "id": "plan-a",
+                    "name": "预算重规划方案",
+                    "style": "现代简约",
+                    "furnitureSuggestions": [{"id": "SOFA-001"}],
+                    "shopQuote": {
+                        "furnitureTotal": total,
+                        "customTotal": 0,
+                        "total": total,
+                    },
+                }],
+                "generator": "llm",
+                "node_trace": [],
+            }
+
+    monkeypatch.setattr(task_routes, "DesignWorkflow", FakeWorkflow)
+    monkeypatch.setattr(
+        task_routes.catalog_service,
+        "build_catalog_context",
+        lambda _: "SOFA-001|测试沙发",
+    )
+    monkeypatch.setattr(
+        task_routes.llm_service,
+        "last_generation_meta",
+        lambda: {
+            "model": "provider/model",
+            "prompt_snapshot": "prompt",
+            "input_snapshot": {"requirement": {"budget_max": 10_000}},
+            "usage": {"total_tokens": 10},
+            "cost_cny": 0.1,
+        },
+    )
+
+    with session_factory() as db:
+        task = DesignTask(
+            status="confirmed",
+            progress=50,
+            confirmed_requirement_json={"budget_max": 10_000},
+        )
+        db.add(task)
+        db.commit()
+        emitted_steps: list[dict] = []
+        emitted_meta: list[dict] = []
+
+        response = task_routes._execute_generation(
+            db,
+            task=task,
+            on_step=emitted_steps.append,
+            on_meta=emitted_meta.append,
+        )
+
+        revision = get_latest_revision(db, task_id=task.id)
+        assert response.status == "completed"
+        assert revision is not None
+        assert revision.plans[0].quote_snapshot.grand_total == 9_000
+
+    assert len(workflow_requirements) == 2
+    assert workflow_requirements[1]["budget_replan"] == {
+        "reason_code": "budget_exceeded",
+        "retry_count": 1,
+        "max_retries": 2,
+        "budget_max": 10_000,
+        "previous_plan_totals": [12_000],
+    }
+    assert [step for step in emitted_steps if step["node"] == "budget_replan"] == [
+        {
+            "node": "budget_replan",
+            "status": "completed",
+            "source": "deterministic",
+            "reason_code": "budget_exceeded",
+            "retry_count": 1,
+            "max_retries": 2,
+            "budget_max": 10_000,
+            "previous_plan_totals": [12_000],
+        }
+    ]
+    assert len(emitted_meta) == 2
+
+
+@pytest.mark.integration
+def test_generation_budget_replan_exhaustion_is_not_wrapped_as_http_500(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    class AlwaysOverBudgetWorkflow:
+        def __init__(self, **_):
+            pass
+
+        def run(self, **_):
+            return {
+                "plans": [{
+                    "id": "plan-a",
+                    "name": "超预算方案",
+                    "furnitureSuggestions": [{"id": "SOFA-001"}],
+                    "shopQuote": {
+                        "furnitureTotal": 12_000,
+                        "customTotal": 0,
+                        "total": 12_000,
+                    },
+                }],
+                "generator": "llm",
+                "node_trace": [],
+            }
+
+    monkeypatch.setattr(task_routes, "DesignWorkflow", AlwaysOverBudgetWorkflow)
+    monkeypatch.setattr(
+        task_routes.catalog_service,
+        "build_catalog_context",
+        lambda _: "SOFA-001|测试沙发",
+    )
+    with session_factory() as db:
+        task = DesignTask(
+            status="confirmed",
+            progress=50,
+            confirmed_requirement_json={"budget_max": 10_000},
+        )
+        db.add(task)
+        db.commit()
+
+        with pytest.raises(generation_run_service.GenerationBudgetReplanExhausted) as caught:
+            task_routes._execute_generation(db, task=task)
+
+        assert caught.value.reason_code == "budget_replan_exhausted"
+        assert caught.value.retry_count == 2

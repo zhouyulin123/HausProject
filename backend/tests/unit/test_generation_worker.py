@@ -292,6 +292,231 @@ def test_agent_generation_run_disables_template_fallback_in_default_worker(
     assert allow_template_values == [False]
 
 
+def test_worker_budget_replan_exhaustion_moves_agent_to_explicit_needs_human(
+    monkeypatch,
+):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(
+            status="running",
+            progress=50,
+            confirmed_requirement_json={"budget_max": 10_000},
+        )
+        db.add(task)
+        db.commit()
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key="agent-generation:1:budget-exhausted",
+            request_digest="sha256:" + "e" * 64,
+        )
+        task.agent_state_json = {
+            "status": "running",
+            "current_node": "generation_queued",
+            "exit_reason": "generation_queued",
+            "retry_count": 0,
+            "run_id": run.id,
+            "result": {"run_id": run.id, "generation_status": "queued"},
+        }
+        db.commit()
+        task_id = task.id
+        run_id = run.id
+
+    model_calls = 0
+
+    class AlwaysOverBudgetWorkflow:
+        def __init__(self, **_):
+            pass
+
+        def run(self, **_):
+            nonlocal model_calls
+            model_calls += 1
+            guard = llm_service._model_cost_guard.get()
+            assert guard is not None
+            guard(0.1)
+            return {
+                "plans": [{
+                    "id": "plan-a",
+                    "name": "超预算方案",
+                    "furnitureSuggestions": [{"id": "SOFA-001"}],
+                    "shopQuote": {
+                        "furnitureTotal": 12_000,
+                        "customTotal": 0,
+                        "total": 12_000,
+                    },
+                }],
+                "generator": "llm",
+                "node_trace": [],
+            }
+
+    worker_settings = SimpleNamespace(**generation_worker.settings.model_dump())
+    worker_settings.generation_task_cost_limit_cny = 1.0
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+    monkeypatch.setattr(generation_worker, "settings", worker_settings)
+    monkeypatch.setattr(task_routes, "DesignWorkflow", AlwaysOverBudgetWorkflow)
+    monkeypatch.setattr(
+        task_routes.catalog_service,
+        "build_catalog_context",
+        lambda _: "SOFA-001|测试沙发",
+    )
+    monkeypatch.setattr(
+        task_routes.llm_service,
+        "last_generation_meta",
+        lambda: {
+            "model": "provider/model",
+            "prompt_snapshot": "prompt",
+            "input_snapshot": {"requirement": {"budget_max": 10_000}},
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            },
+            "cost_cny": 0.1,
+        },
+    )
+
+    assert generation_worker.process_one_run(
+        worker_id="agent-worker-budget-exhausted",
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        failed = db.get(type(run), run_id)
+        assert task is not None
+        assert failed is not None
+        assert failed.status == "failed"
+        assert failed.current_node == "budget_guard"
+        assert failed.attempt_count == 1
+        assert failed.cost_reserved_cny == pytest.approx(0.3)
+        assert failed.cost_cny == pytest.approx(0.3)
+        assert failed.usage_json["total_tokens"] == 45
+        assert failed.result_revision_id is None
+        assert task.status == "needs_human"
+        assert task.agent_state_json["status"] == "needs_human"
+        assert task.agent_state_json["current_node"] == "budget_guard"
+        assert task.agent_state_json["exit_reason"] == "budget_replan_exhausted"
+        assert task.agent_state_json["retry_count"] == 2
+        assert task.agent_state_json["result"]["reason_code"] == (
+            "budget_replan_exhausted"
+        )
+        assert [event.node for event in failed.events].count("budget_replan") == 2
+        assert failed.events[-1].node == "budget_guard"
+        assert failed.events[-1].detail_json["reason_code"] == (
+            "budget_replan_exhausted"
+        )
+    assert model_calls == 3
+
+
+@pytest.mark.parametrize(
+    ("boundary", "lease_seconds", "timeout_seconds", "advance_seconds", "expected"),
+    [
+        ("lease", 10, 120, 11, "queued"),
+        ("deadline", 120, 10, 11, "dead_letter"),
+    ],
+)
+def test_budget_replan_never_starts_after_worker_boundary_expires(
+    monkeypatch,
+    boundary,
+    lease_seconds,
+    timeout_seconds,
+    advance_seconds,
+    expected,
+):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(
+            status="confirmed",
+            progress=50,
+            confirmed_requirement_json={"budget_max": 10_000},
+        )
+        db.add(task)
+        db.commit()
+        run = generation_run_service.create_run(db, task=task, max_attempts=3)
+        run_id = run.id
+
+    class MutableClock(datetime):
+        current = datetime.now(timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    model_calls = 0
+
+    class OverBudgetWorkflow:
+        def __init__(self, **_):
+            pass
+
+        def run(self, **_):
+            nonlocal model_calls
+            model_calls += 1
+            return {
+                "plans": [{
+                    "id": "plan-a",
+                    "name": "超预算方案",
+                    "furnitureSuggestions": [{"id": "SOFA-001"}],
+                    "shopQuote": {
+                        "furnitureTotal": 12_000,
+                        "customTotal": 0,
+                        "total": 12_000,
+                    },
+                }],
+                "generator": "llm",
+                "node_trace": [],
+            }
+
+    worker_settings = SimpleNamespace(**generation_worker.settings.model_dump())
+    worker_settings.generation_worker_lease_seconds = lease_seconds
+    worker_settings.generation_worker_execution_timeout_seconds = timeout_seconds
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+    monkeypatch.setattr(generation_worker, "settings", worker_settings)
+    monkeypatch.setattr(generation_run_service, "datetime", MutableClock)
+    monkeypatch.setattr(task_routes, "DesignWorkflow", OverBudgetWorkflow)
+    monkeypatch.setattr(
+        task_routes.catalog_service,
+        "build_catalog_context",
+        lambda _: "SOFA-001|测试沙发",
+    )
+    monkeypatch.setattr(
+        task_routes.llm_service,
+        "last_generation_meta",
+        lambda: {
+            "model": "provider/model",
+            "prompt_snapshot": "prompt",
+            "input_snapshot": {"requirement": {"budget_max": 10_000}},
+            "usage": {"total_tokens": 10},
+            "cost_cny": 0.1,
+        },
+    )
+    original_record_meta = generation_run_service.record_generation_meta
+
+    def record_then_expire(*args, **kwargs):
+        recorded = original_record_meta(*args, **kwargs)
+        MutableClock.current += timedelta(seconds=advance_seconds)
+        return recorded
+
+    monkeypatch.setattr(
+        generation_run_service,
+        "record_generation_meta",
+        record_then_expire,
+    )
+
+    assert generation_worker.process_one_run(
+        worker_id=f"worker-budget-{boundary}",
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        stopped = db.get(type(run), run_id)
+        assert stopped is not None
+        assert stopped.status == expected
+        assert stopped.result_revision_id is None
+    assert model_calls == 1
+
+
 def test_worker_dead_letter_moves_bound_agent_checkpoint_to_needs_human(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

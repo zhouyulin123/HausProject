@@ -530,6 +530,39 @@ def test_generation_run_records_model_prompt_usage_and_cost(db):
 
 
 @pytest.mark.unit
+def test_generation_run_accumulates_usage_and_cost_across_budget_replans(db):
+    task = DesignTask(status="confirmed", progress=50)
+    db.add(task)
+    db.commit()
+    run = generation_run_service.create_run(db, task=task)
+
+    for retry_count in range(3):
+        generation_run_service.record_generation_meta(
+            db,
+            run=run,
+            meta={
+                "model": "provider/model",
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+                "cost_cny": 0.1,
+            },
+            output_snapshot={"retry_count": retry_count},
+        )
+
+    db.refresh(run)
+    assert run.usage_json == {
+        "prompt_tokens": 30,
+        "completion_tokens": 15,
+        "total_tokens": 45,
+    }
+    assert run.cost_cny == pytest.approx(0.3)
+    assert run.output_snapshot == {"retry_count": 2}
+
+
+@pytest.mark.unit
 def test_model_cost_reservation_accumulates_and_rejects_over_task_limit(db):
     task = DesignTask(status="confirmed", progress=50)
     db.add(task)
