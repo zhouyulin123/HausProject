@@ -511,6 +511,7 @@ def _execute_generation(
             (
                 generation_run_service.GenerationRunOwnershipError,
                 generation_run_service.GenerationBudgetReplanExhausted,
+                generation_run_service.GenerationMetadataDriftError,
             ),
         ):
             raise

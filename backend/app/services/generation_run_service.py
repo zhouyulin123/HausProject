@@ -31,6 +31,15 @@ NODE_PROGRESS = {
     "budget_replan": 100,
     "budget_guard": 100,
 }
+_GENERATION_STATIC_META_FIELDS = (
+    "model",
+    "prompt_snapshot",
+    "prompt_digest",
+    "rules_digest",
+    "data_digest",
+    "provenance_schema_version",
+)
+_GENERATION_INITIAL_INPUT_FIELDS = ("input_snapshot", "input_digest")
 
 
 class GenerationRunOwnershipError(RuntimeError):
@@ -72,6 +81,12 @@ class GenerationBudgetReplanExhausted(RuntimeError):
             "retry_count": self.retry_count,
             "max_retries": self.max_retries,
         }
+
+
+class GenerationMetadataDriftError(
+    generation_output_service.GenerationOutputValidationError
+):
+    """同一生成运行的重规划轮次发生静态制品版本漂移。"""
 
 
 class GenerationCostGuardError(GenerationRunOwnershipError):
@@ -1035,14 +1050,30 @@ def record_generation_meta(
     ) is None:
         db.rollback()
         return False
-    run.model = meta.get("model")
-    run.prompt_snapshot = meta.get("prompt_snapshot")
-    run.prompt_digest = meta.get("prompt_digest")
-    run.rules_digest = meta.get("rules_digest")
-    run.data_digest = meta.get("data_digest")
-    run.input_snapshot = meta.get("input_snapshot")
-    run.input_digest = meta.get("input_digest")
-    run.provenance_schema_version = meta.get("provenance_schema_version")
+    first_meta = run.output_snapshot is None
+    fields_to_validate = (
+        *_GENERATION_STATIC_META_FIELDS,
+        *(_GENERATION_INITIAL_INPUT_FIELDS if first_meta else ()),
+    )
+    drifted_fields = [
+        field
+        for field in fields_to_validate
+        if getattr(run, field) is not None
+        and meta.get(field) != getattr(run, field)
+    ]
+    if drifted_fields:
+        raise GenerationMetadataDriftError(
+            "生成重规划静态版本与首次冻结值不一致："
+            + ", ".join(drifted_fields)
+        )
+
+    if first_meta:
+        for field in (
+            *_GENERATION_STATIC_META_FIELDS,
+            *_GENERATION_INITIAL_INPUT_FIELDS,
+        ):
+            if getattr(run, field) is None:
+                setattr(run, field, meta.get(field))
     run.output_snapshot = output_snapshot
     previous_usage = run.usage_json if isinstance(run.usage_json, dict) else {}
     current_usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else {}

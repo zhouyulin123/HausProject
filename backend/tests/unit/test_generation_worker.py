@@ -508,6 +508,107 @@ def test_worker_budget_replan_success_completes_same_run_and_checkpoint(monkeypa
         assert [event.node for event in completed.events].count("budget_replan") == 1
 
 
+def test_worker_static_version_drift_during_budget_replan_fails_without_retry(
+    monkeypatch,
+):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(
+            status="running",
+            progress=50,
+            confirmed_requirement_json={"budget_max": 10_000},
+        )
+        db.add(task)
+        db.commit()
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key="agent-generation:1:static-drift",
+            request_digest="sha256:" + "6" * 64,
+            max_attempts=3,
+        )
+        task.agent_state_json = {
+            "status": "running",
+            "current_node": "generation_queued",
+            "exit_reason": "generation_queued",
+            "retry_count": 0,
+            "run_id": run.id,
+            "result": {"run_id": run.id, "generation_status": "queued"},
+        }
+        db.commit()
+        task_id = task.id
+        run_id = run.id
+
+    totals = iter((12_000, 9_000))
+    model_calls = 0
+
+    class StaticDriftWorkflow:
+        def __init__(self, **_):
+            pass
+
+        def run(self, **_):
+            nonlocal model_calls
+            model_calls += 1
+            total = next(totals)
+            return {
+                "plans": [{
+                    "id": "plan-a",
+                    "name": "静态版本漂移方案",
+                    "furnitureSuggestions": [{"id": "SOFA-001"}],
+                    "shopQuote": {
+                        "furnitureTotal": total,
+                        "customTotal": 0,
+                        "total": total,
+                    },
+                }],
+                "generator": "llm",
+                "node_trace": [],
+            }
+
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+    monkeypatch.setattr(task_routes, "DesignWorkflow", StaticDriftWorkflow)
+    monkeypatch.setattr(
+        task_routes.catalog_service,
+        "build_catalog_context",
+        lambda _: "SOFA-001|测试沙发",
+    )
+    monkeypatch.setattr(
+        task_routes.llm_service,
+        "last_generation_meta",
+        lambda: {
+            "model": "provider/model-v1" if model_calls == 1 else "provider/model-v2",
+            "prompt_snapshot": "prompt",
+            "input_snapshot": {
+                "requirement": {"budget_max": 10_000},
+                "model_call": model_calls,
+            },
+            "provenance_schema_version": 3,
+            "usage": {"total_tokens": 15},
+            "cost_cny": 0.1,
+        },
+    )
+
+    assert generation_worker.process_one_run(
+        worker_id="agent-worker-static-drift",
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        failed = db.get(type(run), run_id)
+        assert task is not None
+        assert failed is not None
+        assert failed.status == "failed"
+        assert failed.attempt_count == 1
+        assert failed.next_retry_at is None
+        assert failed.result_revision_id is None
+        assert "model" in (failed.error_message or "")
+        assert task.status == "failed"
+        assert task.agent_state_json["status"] == "needs_human"
+    assert model_calls == 2
+
+
 @pytest.mark.parametrize(
     ("boundary", "lease_seconds", "timeout_seconds", "advance_seconds", "expected"),
     [
