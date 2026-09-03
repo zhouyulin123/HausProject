@@ -235,7 +235,6 @@ def build_public_snapshot(plan_version: DesignPlanVersion) -> dict[str, Any]:
         name=_text(plan.get("name"), limit=200) or plan_version.plan_name,
         style=_text(plan.get("style"), limit=100) or plan_version.style,
         description=_text(plan.get("description"), limit=2000),
-        score=_number(plan.get("score")),
         budget=_integer(plan.get("budget")),
         tags=_string_list(plan.get("tags")),
         suitable_for=_string_list(plan.get("suitableFor")),

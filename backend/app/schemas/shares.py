@@ -91,7 +91,6 @@ class PublicPlanSnapshot(ShareModel):
     name: str
     style: str | None = None
     description: str | None = None
-    score: float | None = None
     budget: int | None = None
     tags: list[str] = Field(default_factory=list)
     suitable_for: list[str] = Field(default_factory=list)

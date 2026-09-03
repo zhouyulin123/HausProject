@@ -97,12 +97,6 @@ export default function SharePage() {
               <p className="text-xs text-[#758078]">方案预算</p>
               <p className="mt-1 font-mono text-2xl">{money(plan.quote?.total ?? plan.budget)}</p>
             </div>
-            {plan.score != null && (
-              <div>
-                <p className="text-xs text-[#758078]">方案匹配度</p>
-                <p className="mt-1 font-mono text-2xl">{plan.score}%</p>
-              </div>
-            )}
           </div>
           {plan.tags.length > 0 && (
             <div className="mt-7 flex flex-wrap gap-2">

@@ -12,7 +12,6 @@ import {
   MessageCircleMore,
   Share2,
   ShoppingBag,
-  Sparkles,
   Wand2,
 } from "lucide-react";
 import { mockDesigns } from "@/data/mockDesigns";
@@ -280,8 +279,7 @@ export default function DesignDetailPage() {
               <h1 className="mt-5 font-display text-5xl leading-none tracking-[-0.05em] !text-[#f0eee6] sm:text-6xl lg:text-7xl">{plan.name}</h1>
               <p className="mt-5 max-w-2xl text-sm leading-7 text-[#9aa59b]">{plan.description}</p>
             </div>
-            <div className="grid grid-cols-3 gap-px bg-white/10">
-              <div className="min-w-24 bg-[#151b16] p-4"><p className="font-mono text-lg text-[#d5ff67]">{plan.score}%</p><p className="mt-1 text-[9px] tracking-[0.12em] text-[#707b71] uppercase">Match</p></div>
+            <div className="grid grid-cols-2 gap-px bg-white/10">
               <div className="min-w-24 bg-[#151b16] p-4"><p className="font-mono text-lg text-[#e5e8df]">¥{Math.round(plan.budget / 1000)}k</p><p className="mt-1 text-[9px] tracking-[0.12em] text-[#707b71] uppercase">Budget</p></div>
               <div className="min-w-24 bg-[#151b16] p-4"><p className="font-mono text-lg text-[#e5e8df]">V.01</p><p className="mt-1 text-[9px] tracking-[0.12em] text-[#707b71] uppercase">Version</p></div>
             </div>
@@ -297,8 +295,7 @@ export default function DesignDetailPage() {
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-xl font-semibold text-stone-800">方案控制台</h2>
             <Tag tone="sage">
-              <Sparkles className="h-3 w-3" />
-              AI 推荐指数 {plan.score}%
+              AI 方案候选
             </Tag>
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-2">

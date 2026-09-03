@@ -1,6 +1,6 @@
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { BookmarkCheck, BookmarkPlus, MessageCircleMore, Sparkles } from "lucide-react";
+import { BookmarkCheck, BookmarkPlus, MessageCircleMore } from "lucide-react";
 import type { DesignPlan } from "@/types/design";
 import { useDesignStore } from "@/store/useDesignStore";
 import { useRequirementStore } from "@/store/useRequirementStore";
@@ -23,10 +23,6 @@ export default function DesignCard({ plan, index = 0 }: { plan: DesignPlan; inde
       {/* 封面占位 */}
       <Link to={`/design/${plan.id}`} className={`relative block h-52 overflow-hidden ${plan.coverGradient}`}>
         <span className="absolute top-3 right-3 font-mono text-[9px] tracking-[0.16em] text-white/70 uppercase">Design output / 0{index + 1}</span>
-        <span className="absolute top-3 left-3 inline-flex items-center gap-1 rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-sage-700 backdrop-blur">
-          <Sparkles className="h-3 w-3" />
-          AI 推荐指数 {plan.score}%
-        </span>
         <span className="absolute bottom-4 left-5 font-display text-2xl font-semibold text-white drop-shadow-sm">
           {plan.style}
         </span>

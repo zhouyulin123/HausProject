@@ -56,8 +56,8 @@ export interface DesignPlan {
   style: string;
   /** 封面占位渐变（Tailwind class） */
   coverGradient: string;
-  /** AI 推荐指数 0-100 */
-  score: number;
+  /** 仅兼容历史演示数据，不作为真实质量指标展示或排序。 */
+  score?: number;
   budget: number;
   tags: string[];
   suitableFor: string[];

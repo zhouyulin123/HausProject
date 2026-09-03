@@ -6,14 +6,14 @@ import DesignCard from "@/components/design/DesignCard";
 import LoadingAI from "@/components/chat/LoadingAI";
 import StudioPage from "@/components/layout/StudioPage";
 
-const filters = ["综合推荐", "预算最低", "收纳最强", "风格最匹配", "环保优先"] as const;
+const filters = ["方案顺序", "预算最低", "收纳优先", "环保材料优先"] as const;
 type Filter = (typeof filters)[number];
 
 export default function ResultsPage() {
   const { generatedPlans, setGeneratedPlans } = useDesignStore();
   const requirement = useRequirementStore((s) => s.requirement);
   const [loading, setLoading] = useState(generatedPlans.length === 0);
-  const [filter, setFilter] = useState<Filter>("综合推荐");
+  const [filter, setFilter] = useState<Filter>("方案顺序");
 
   useEffect(() => {
     if (generatedPlans.length > 0) return;
@@ -51,22 +51,20 @@ export default function ResultsPage() {
     switch (filter) {
       case "预算最低":
         return plans.sort((a, b) => a.budget - b.budget);
-      case "收纳最强":
+      case "收纳优先":
         return plans.sort(
           (a, b) =>
             Number(b.tags.some((t) => t.includes("收纳"))) -
             Number(a.tags.some((t) => t.includes("收纳"))),
         );
-      case "风格最匹配":
-        return plans.sort((a, b) => b.score - a.score);
-      case "环保优先":
+      case "环保材料优先":
         return plans.sort(
           (a, b) =>
             Number(b.materials.some((m) => m.name.includes("木") || m.name.includes("棉麻"))) -
             Number(a.materials.some((m) => m.name.includes("木") || m.name.includes("棉麻"))),
         );
       default:
-        return plans.sort((a, b) => b.score - a.score);
+        return plans;
     }
   }, [generatedPlans, filter]);
 

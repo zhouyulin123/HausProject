@@ -68,7 +68,6 @@ export interface PublicPlanSnapshot {
   name: string;
   style: string | null;
   description: string | null;
-  score: number | null;
   budget: number | null;
   tags: string[];
   suitable_for: string[];

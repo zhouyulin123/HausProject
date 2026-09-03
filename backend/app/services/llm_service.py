@@ -321,7 +321,6 @@ _PLAN_SYSTEM = """你是资深室内设计师。根据业主需求生成 3 套�
   "id": "plan-a",                     // 依次为 plan-a / plan-b / plan-c
   "name": "两个字意境词 · 风格名",      // 例如 "暖居 · 奶油原木风"
   "style": "风格名",
-  "score": 85-99 的整数,               // 与业主需求的匹配度，第一套最高
   "budget": 总预算整数,                // 必须贴合业主预算范围，三套有梯度
   "tags": ["4 个关键词"],
   "suitableFor": ["3 类适合人群"],
@@ -393,7 +392,7 @@ def _normalize_plans(plans: List[Any]) -> List[Dict[str, Any]]:
     valid = valid[:3]
     for i, plan in enumerate(valid):
         plan["id"] = f"plan-{chr(ord('a') + i)}"
-        plan.setdefault("score", 95 - i * 4)
+        plan.pop("score", None)
         plan.setdefault("tags", [])
         plan.setdefault("suitableFor", [])
         plan.setdefault("description", "")
