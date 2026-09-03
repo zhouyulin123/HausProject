@@ -223,7 +223,7 @@ def test_generation_meta_separates_static_prompt_version_from_full_dynamic_input
     assert meta["prompt_snapshot"] != (
         captured["system"] + "\n\n" + captured["user"]
     )
-    assert meta["provenance_schema_version"] == 2
+    assert meta["provenance_schema_version"] == 3
     prompt_contract = json.loads(meta["prompt_snapshot"])
     assert prompt_contract["request_contract"]["tools"] == []
     assert prompt_contract["output_contract"]["minimum_valid_plans"] == 2

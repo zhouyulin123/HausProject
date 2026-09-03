@@ -141,6 +141,31 @@ def test_report_serializes_versioned_metrics_and_verified_evidence(tmp_path):
     assert "requirement_accuracy" in markdown
 
 
+def test_report_explicitly_marks_missing_independent_security_evidence(tmp_path):
+    dataset = _manifest(tmp_path)
+    results = tuple(
+        CaseResult(
+            **{
+                **_result(case_id).__dict__,
+                "cross_user_access_checks": 0,
+            }
+        )
+        for case_id in ("case-a", "case-b")
+    )
+    report = build_evaluation_report(
+        dataset=dataset,
+        split="regression",
+        evidence=_evidence(dataset, model="m1", results=results),
+    )
+
+    assert report["metrics"]["severe_cross_user_access"] is None
+    assert report["evidence_gaps"][0]["code"] == (
+        "independent_signed_security_regression_evidence_missing"
+    )
+    assert report["evidence_gaps"][0]["gate_impact"] == "fail_closed"
+    assert "缺少独立签名的跨用户访问安全回归证据" in render_markdown(report)
+
+
 def test_manifest_with_no_eligible_cases_cannot_produce_passing_report(tmp_path):
     (tmp_path / "room.png").write_bytes(b"a")
     manifest_path = _write_json(

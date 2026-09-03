@@ -713,7 +713,18 @@ def test_verified_report_contains_only_anonymous_execution_provenance(db, tmp_pa
         split="regression",
     )
     assert report["metrics"]["severe_cross_user_access"] is None
-    assert report["metrics"]["unbounded_retry_cases"] is None
+    assert report["metrics"]["retry_bound_checks"] == 1
+    assert report["metrics"]["unbounded_retry_cases"] == 0
+    assert report["evidence_gaps"] == [
+        {
+            "metric": "severe_cross_user_access",
+            "status": "missing",
+            "code": "independent_signed_security_regression_evidence_missing",
+            "required_evidence": "independently_signed_cross_user_access_regression",
+            "gate_impact": "fail_closed",
+            "description": "缺少独立签名的跨用户访问安全回归证据",
+        }
+    ]
     assert report["gate_passed"] is False
     assert "private-case-alias" not in serialized
     assert "不应进入报告的客户别名" not in serialized

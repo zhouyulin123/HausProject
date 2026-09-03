@@ -244,6 +244,8 @@ def test_trusted_terminal_failure_is_in_generation_success_denominator(db, tmp_p
         "cost_limit_exceeded",
     ]
     assert report["metrics"]["generation_success_rate"] == 0.5
+    assert report["metrics"]["retry_bound_checks"] == 2
+    assert report["metrics"]["unbounded_retry_cases"] == 0
 
 
 def test_cancelled_eval_run_is_counted_as_generation_failure(db, tmp_path):
@@ -287,7 +289,108 @@ def test_cancelled_eval_run_is_counted_as_generation_failure(db, tmp_path):
     )
 
     assert report["metrics"]["generation_success_rate"] == 0.5
+    assert report["metrics"]["retry_bound_checks"] == 2
+    assert report["metrics"]["unbounded_retry_cases"] == 0
     assert any(item["status"] == "cancelled" for item in bundle["executions"])
+
+
+def test_retry_boundary_violation_is_derived_from_persisted_attempts(db, tmp_path):
+    dataset = _dataset(tmp_path, ("regression",))
+    case = dataset.eligible_cases("regression")[0]
+    task = _task(db, case)
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
+    _finish_failure(db, run, task)
+    run.max_attempts = 3
+    run.attempt_count = 4
+    db.commit()
+
+    bundle = collect_trusted_evidence(
+        db,
+        dataset=dataset,
+        split="regression",
+        bindings=(RunBinding(case.id, run.task_id, run.id),),
+        signing_key=SIGNING_KEY,
+        key_id="quality-ci",
+    )
+    result = bundle["executions"][0]["result"]
+
+    assert result["retry_bound_checks"] == 1
+    assert result["unbounded_retry_detected"] is True
+
+
+@pytest.mark.parametrize(
+    ("max_attempts", "attempt_count"),
+    [(0, 1), (3, -1)],
+)
+def test_retry_boundary_rejects_invalid_persisted_counters(
+    db,
+    tmp_path,
+    max_attempts,
+    attempt_count,
+):
+    dataset = _dataset(tmp_path, ("regression",))
+    case = dataset.eligible_cases("regression")[0]
+    task = _task(db, case)
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
+    _finish_failure(db, run, task)
+    run.max_attempts = max_attempts
+    run.attempt_count = attempt_count
+    db.commit()
+
+    with pytest.raises(EvaluationInputError, match="重试边界"):
+        collect_trusted_evidence(
+            db,
+            dataset=dataset,
+            split="regression",
+            bindings=(RunBinding(case.id, run.task_id, run.id),),
+            signing_key=SIGNING_KEY,
+            key_id="quality-ci",
+        )
+
+
+def test_cancelled_before_start_rejects_impossible_persisted_events(db, tmp_path):
+    dataset = _dataset(tmp_path, ("regression",))
+    case = dataset.eligible_cases("regression")[0]
+    task = _task(db, case)
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
+    _finish_cancelled(db, run, task)
+    db.add(
+        GenerationRunEvent(
+            run_id=run.id,
+            node="prepare_context",
+            status="completed",
+            progress=20,
+        )
+    )
+    db.commit()
+
+    with pytest.raises(EvaluationInputError, match="重试事件"):
+        collect_trusted_evidence(
+            db,
+            dataset=dataset,
+            split="regression",
+            bindings=(RunBinding(case.id, run.task_id, run.id),),
+            signing_key=SIGNING_KEY,
+            key_id="quality-ci",
+        )
 
 
 @pytest.mark.parametrize(
