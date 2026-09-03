@@ -409,6 +409,105 @@ def test_worker_budget_replan_exhaustion_moves_agent_to_explicit_needs_human(
     assert model_calls == 3
 
 
+def test_worker_budget_replan_success_completes_same_run_and_checkpoint(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(
+            status="running",
+            progress=50,
+            confirmed_requirement_json={"budget_max": 10_000},
+        )
+        db.add(task)
+        db.add(
+            Product(
+                sku="SOFA-001",
+                name="测试沙发",
+                category="沙发",
+                room="客厅",
+                style="现代",
+                price=9_000,
+                is_active=True,
+            )
+        )
+        db.commit()
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key="agent-generation:1:budget-replan-success",
+            request_digest="sha256:" + "f" * 64,
+        )
+        task.agent_state_json = {
+            "status": "running",
+            "current_node": "generation_queued",
+            "exit_reason": "generation_queued",
+            "retry_count": 0,
+            "run_id": run.id,
+            "result": {"run_id": run.id, "generation_status": "queued"},
+        }
+        db.commit()
+        task_id = task.id
+        run_id = run.id
+
+    totals = iter((12_000, 9_000))
+
+    class ReplannedWorkflow:
+        def __init__(self, **_):
+            pass
+
+        def run(self, **_):
+            total = next(totals)
+            return {
+                "plans": [{
+                    "id": "plan-a",
+                    "name": "预算内方案",
+                    "style": "现代",
+                    "furnitureSuggestions": [{"id": "SOFA-001"}],
+                    "shopQuote": {
+                        "furnitureTotal": total,
+                        "customTotal": 0,
+                        "total": total,
+                        "lineItems": [{
+                            "sku": "SOFA-001",
+                            "unitPrice": total,
+                            "quantity": 1,
+                        }],
+                        "customLineItems": [],
+                    },
+                }],
+                "generator": "llm",
+                "node_trace": [],
+            }
+
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+    monkeypatch.setattr(task_routes, "DesignWorkflow", ReplannedWorkflow)
+    monkeypatch.setattr(
+        task_routes.catalog_service,
+        "build_catalog_context",
+        lambda _: "SOFA-001|测试沙发",
+    )
+    monkeypatch.setattr(task_routes.llm_service, "last_generation_meta", lambda: None)
+
+    assert generation_worker.process_one_run(
+        worker_id="agent-worker-budget-replan-success",
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        completed = db.get(type(run), run_id)
+        assert task is not None
+        assert completed is not None
+        assert completed.status == "completed"
+        assert completed.attempt_count == 1
+        assert len(db.scalars(select(type(run))).all()) == 1
+        assert task.agent_state_json["status"] == "completed"
+        assert task.agent_state_json["current_node"] == "generation_completed"
+        assert task.agent_state_json["exit_reason"] == "goal_completed"
+        assert task.agent_state_json["retry_count"] == 1
+        assert [event.node for event in completed.events].count("budget_replan") == 1
+
+
 @pytest.mark.parametrize(
     ("boundary", "lease_seconds", "timeout_seconds", "advance_seconds", "expected"),
     [

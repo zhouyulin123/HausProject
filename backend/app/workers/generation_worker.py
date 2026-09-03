@@ -384,6 +384,35 @@ def process_one_run(
                             settings.generation_worker_retry_base_seconds
                         ),
                     )
+    except generation_run_service.GenerationBudgetReplanExhausted as exc:
+        logger.warning(
+            "方案生成预算重规划耗尽: run_id=%s budget_max=%s retry_count=%s",
+            claimed_run_id,
+            exc.budget_max,
+            exc.retry_count,
+        )
+        with SessionLocal() as db:
+            blocked = generation_run_service.mark_budget_replan_exhausted(
+                db,
+                run_id=claimed_run_id,
+                worker_id=worker_id,
+                worker_attempt=worker_attempt,
+                error=exc,
+            )
+            if not blocked:
+                cancelled = generation_run_service.mark_cancelled_by_worker(
+                    db,
+                    run_id=claimed_run_id,
+                    worker_id=worker_id,
+                    worker_attempt=worker_attempt,
+                )
+                if not cancelled:
+                    generation_run_service.recover_expired_runs(
+                        db,
+                        retry_delay_seconds=(
+                            settings.generation_worker_retry_base_seconds
+                        ),
+                    )
     except generation_run_service.GenerationRunOwnershipError:
         logger.warning("方案生成执行已停止: run_id=%s", claimed_run_id)
         with SessionLocal() as db:

@@ -28,6 +28,8 @@ NODE_PROGRESS = {
     "generate_plans": 60,
     "calculate_quote": 85,
     "validate_quality": 100,
+    "budget_replan": 100,
+    "budget_guard": 100,
 }
 
 
@@ -37,6 +39,39 @@ class GenerationRunOwnershipError(RuntimeError):
 
 class GenerationIdempotencyConflict(RuntimeError):
     """同一幂等键被用于不同的生成输入。"""
+
+
+class GenerationBudgetReplanExhausted(RuntimeError):
+    """确定性报价连续超预算，已耗尽同一运行内的重规划次数。"""
+
+    reason_code = "budget_replan_exhausted"
+
+    def __init__(
+        self,
+        *,
+        budget_max: int | float,
+        plan_totals: list[int],
+        retry_count: int,
+        max_retries: int,
+    ) -> None:
+        super().__init__(
+            f"确定性报价连续超出已确认预算 {budget_max} 元，需人工处理"
+        )
+        self.budget_max = budget_max
+        self.plan_totals = plan_totals
+        self.retry_count = retry_count
+        self.max_retries = max_retries
+
+    @property
+    def details(self) -> dict[str, Any]:
+        return {
+            "reason_code": self.reason_code,
+            "hard_error_code": "budget_exceeded",
+            "budget_max": self.budget_max,
+            "plan_totals": self.plan_totals,
+            "retry_count": self.retry_count,
+            "max_retries": self.max_retries,
+        }
 
 
 class GenerationCostGuardError(GenerationRunOwnershipError):
@@ -384,6 +419,23 @@ def _sync_agent_checkpoint(*, task: DesignTask, run: GenerationRun) -> bool:
     updated = dict(checkpoint)
     result = dict(updated.get("result") or {})
     result.update({"run_id": run.id, "generation_status": run.status})
+    budget_events = [
+        event
+        for event in run.events
+        if event.node in {"budget_replan", "budget_guard"}
+        and isinstance(event.detail_json, dict)
+    ]
+    budget_retry_count = max(
+        (
+            int(event.detail_json.get("retry_count") or 0)
+            for event in budget_events
+        ),
+        default=0,
+    )
+    updated["retry_count"] = max(
+        int(updated.get("retry_count") or 0),
+        budget_retry_count,
+    )
     if run.status == "completed":
         result.update(
             {
@@ -418,6 +470,25 @@ def _sync_agent_checkpoint(*, task: DesignTask, run: GenerationRun) -> bool:
                 "current_node": "generation_cancelled",
                 "exit_reason": "cancelled",
                 "approval_required": False,
+                "result": result,
+            }
+        )
+    elif run.current_node == "budget_guard":
+        result["reason_code"] = GenerationBudgetReplanExhausted.reason_code
+        updated.update(
+            {
+                "status": "needs_human",
+                "current_node": "budget_guard",
+                "exit_reason": GenerationBudgetReplanExhausted.reason_code,
+                "approval_required": True,
+                "hard_errors": list(
+                    dict.fromkeys(
+                        [
+                            *(updated.get("hard_errors") or []),
+                            "budget_exceeded",
+                        ]
+                    )
+                ),
                 "result": result,
             }
         )
@@ -973,12 +1044,81 @@ def record_generation_meta(
     run.input_digest = meta.get("input_digest")
     run.provenance_schema_version = meta.get("provenance_schema_version")
     run.output_snapshot = output_snapshot
-    run.usage_json = meta.get("usage")
-    run.cost_cny = meta.get("cost_cny")
+    previous_usage = run.usage_json if isinstance(run.usage_json, dict) else {}
+    current_usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else {}
+    usage_keys = set(previous_usage) | set(current_usage)
+    run.usage_json = {
+        key: (
+            previous_usage.get(key, 0) + current_usage.get(key, 0)
+            if isinstance(previous_usage.get(key, 0), (int, float))
+            and not isinstance(previous_usage.get(key, 0), bool)
+            and isinstance(current_usage.get(key, 0), (int, float))
+            and not isinstance(current_usage.get(key, 0), bool)
+            else current_usage.get(key, previous_usage.get(key))
+        )
+        for key in usage_keys
+    } or None
+    current_cost = meta.get("cost_cny")
+    if isinstance(current_cost, (int, float)) and not isinstance(current_cost, bool):
+        run.cost_cny = float(run.cost_cny or 0.0) + float(current_cost)
     if commit:
         db.commit()
     else:
         db.flush()
+    return True
+
+
+def mark_budget_replan_exhausted(
+    db: Session,
+    *,
+    run_id: int,
+    worker_id: str,
+    worker_attempt: int,
+    error: GenerationBudgetReplanExhausted,
+    now: datetime | None = None,
+) -> bool:
+    """把预算重规划耗尽收敛为明确、不可伪成功的人工接管终态。"""
+    current = _as_utc(now or datetime.now(timezone.utc))
+    run = _owned_run(
+        db,
+        run_id=run_id,
+        worker_id=worker_id,
+        worker_attempt=worker_attempt,
+        now=current,
+        lock=True,
+    )
+    if run is None:
+        db.rollback()
+        return False
+
+    _clear_worker(run)
+    _clear_output(run)
+    run.status = "failed"
+    run.progress = 100
+    run.current_node = "budget_guard"
+    run.error_message = str(error)[:2000]
+    run.next_retry_at = None
+    run.completed_at = current
+    last_event = run.events[-1] if run.events else None
+    if last_event is None or last_event.node != "budget_guard":
+        run.events.append(
+            GenerationRunEvent(
+                node="budget_guard",
+                status="failed",
+                progress=100,
+                source="deterministic",
+                detail_json=error.details,
+            )
+        )
+        db.flush()
+    _set_task_state(
+        db,
+        run=run,
+        status="needs_human",
+        progress=0,
+        error_message=run.error_message,
+    )
+    db.commit()
     return True
 
 

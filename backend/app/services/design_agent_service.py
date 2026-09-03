@@ -156,11 +156,17 @@ def _normalize_requirement_facts(requirement: dict[str, Any]) -> dict[str, Any]:
     return facts
 
 
-def missing_confirmed_generation_facts(task: DesignTask) -> list[str]:
-    """返回旧生成入口缺失的已确认硬事实，语义与 Agent 事实门禁一致。"""
+def confirmed_generation_facts(task: DesignTask) -> dict[str, Any]:
+    """返回生成链可使用的已确认事实，不从未确认输入推断硬约束。"""
     facts = _normalize_requirement_facts(task.confirmed_requirement_json or {})
     if task.budget_max is not None:
         facts["budget_max"] = task.budget_max
+    return facts
+
+
+def missing_confirmed_generation_facts(task: DesignTask) -> list[str]:
+    """返回旧生成入口缺失的已确认硬事实，语义与 Agent 事实门禁一致。"""
+    facts = confirmed_generation_facts(task)
 
     def positive_number(value: Any) -> bool:
         return (

@@ -9,10 +9,6 @@ from app.db.models import DesignTask
 from app.services.design_version_service import get_latest_revision
 from app.services.generation_provenance import build_generation_provenance
 from app.services import generation_run_service
-from app.services.anonymous_session_service import (
-    attach_task,
-    create_anonymous_session,
-)
 
 
 @pytest.mark.integration
@@ -22,7 +18,6 @@ def test_generate_design_persists_failed_status(monkeypatch):
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     with session_factory() as db:
-        anonymous_session = create_anonymous_session(db)
         task = DesignTask(
             status="confirmed",
             progress=50,
@@ -34,8 +29,6 @@ def test_generate_design_persists_failed_status(monkeypatch):
         )
         db.add(task)
         db.commit()
-        attach_task(db, anonymous_session.id, task.id)
-
         monkeypatch.setattr(
             task_routes.catalog_service,
             "build_catalog_context",
@@ -43,7 +36,7 @@ def test_generate_design_persists_failed_status(monkeypatch):
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            task_routes.generate_design(task.id, anonymous_session.id, db)
+            task_routes._execute_generation(db, task=task)
 
         db.refresh(task)
         assert exc_info.value.status_code == 500
@@ -98,7 +91,6 @@ def test_generate_design_persists_langgraph_node_trace(monkeypatch):
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     with session_factory() as db:
-        anonymous_session = create_anonymous_session(db)
         task = DesignTask(
             status="confirmed",
             progress=50,
@@ -109,8 +101,6 @@ def test_generate_design_persists_langgraph_node_trace(monkeypatch):
         )
         db.add(task)
         db.commit()
-        attach_task(db, anonymous_session.id, task.id)
-
         class FakeWorkflow:
             def run(self, **_):
                 return {
@@ -149,11 +139,7 @@ def test_generate_design_persists_langgraph_node_trace(monkeypatch):
             lambda _: "SOFA-001|原木沙发",
         )
 
-        response = task_routes.generate_design(
-            task.id,
-            anonymous_session.id,
-            db,
-        )
+        response = task_routes._execute_generation(db, task=task)
 
         revision = get_latest_revision(db, task_id=task.id)
         assert response.generator == "llm"

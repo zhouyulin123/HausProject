@@ -63,6 +63,7 @@ from app.services.llm_service import LLMUnavailable
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+MAX_BUDGET_REPLANS = 2
 
 
 @router.post(
@@ -319,9 +320,12 @@ def _execute_generation(
     db.commit()
 
     try:
-        requirement = task.confirmed_requirement_json or task_service.parse_requirement(
-            task.raw_user_input or ""
+        requirement = deepcopy(
+            task.confirmed_requirement_json
+            or task_service.parse_requirement(task.raw_user_input or "")
         )
+        confirmed_facts = design_agent_service.confirmed_generation_facts(task)
+        budget_max = confirmed_facts.get("budget_max")
 
         # 登录用户：注入长期画像，让方案贴合其偏好
         if task.user_id:
@@ -362,14 +366,100 @@ def _execute_generation(
             ),
             on_step=on_step,
         )
-        workflow_result = workflow.run(
-            requirement=requirement,
-            image_context=image_context,
-            catalog_context=catalog_context,
-        )
-        plans = workflow_result["plans"]
-        generator = workflow_result["generator"]
-        workflow_trace = workflow_result["node_trace"]
+        workflow_trace: list[dict] = []
+        retry_count = 0
+        attempt_requirement = deepcopy(requirement)
+        while True:
+            workflow_result = workflow.run(
+                requirement=attempt_requirement,
+                image_context=image_context,
+                catalog_context=catalog_context,
+            )
+            plans = workflow_result["plans"]
+            generator = workflow_result["generator"]
+            workflow_trace.extend(workflow_result["node_trace"])
+
+            # 每轮真实模型调用都先记账；被预算门禁拒绝的产物也属于已发生成本。
+            if on_meta is not None and generator == "llm":
+                meta = llm_service.last_generation_meta()
+                if meta:
+                    provenance = generation_provenance.build_generation_provenance(
+                        prompt_snapshot=str(meta.get("prompt_snapshot") or ""),
+                        input_snapshot=meta.get("input_snapshot") or {},
+                        catalog_context=catalog_context,
+                    )
+                    on_meta(
+                        {
+                            "meta": {**meta, **provenance},
+                            "output_snapshot": {
+                                "retry_count": retry_count,
+                                "plan_count": len(plans),
+                                "plans": [
+                                    {
+                                        "name": plan.get("name"),
+                                        "style": plan.get("style"),
+                                        "budget": plan.get("budget"),
+                                        "score": plan.get("score"),
+                                        "furniture_count": len(
+                                            plan.get("furnitureSuggestions") or []
+                                        ),
+                                    }
+                                    for plan in plans
+                                ],
+                            },
+                        }
+                    )
+
+            plan_totals = [
+                int(plan["shopQuote"]["total"])
+                for plan in plans
+            ]
+            over_budget = (
+                isinstance(budget_max, (int, float))
+                and not isinstance(budget_max, bool)
+                and any(total > budget_max for total in plan_totals)
+            )
+            if not over_budget:
+                break
+
+            if retry_count >= MAX_BUDGET_REPLANS:
+                error = generation_run_service.GenerationBudgetReplanExhausted(
+                    budget_max=budget_max,
+                    plan_totals=plan_totals,
+                    retry_count=retry_count,
+                    max_retries=MAX_BUDGET_REPLANS,
+                )
+                if on_step is not None:
+                    on_step(
+                        {
+                            "node": "budget_guard",
+                            "status": "failed",
+                            "source": "deterministic",
+                            **error.details,
+                        }
+                    )
+                raise error
+
+            retry_count += 1
+            replan_context = {
+                "reason_code": "budget_exceeded",
+                "retry_count": retry_count,
+                "max_retries": MAX_BUDGET_REPLANS,
+                "budget_max": budget_max,
+                "previous_plan_totals": plan_totals,
+            }
+            replan_step = {
+                "node": "budget_replan",
+                "status": "completed",
+                "source": "deterministic",
+                **replan_context,
+            }
+            if on_step is not None:
+                # Worker 的 step 回调同时执行租约、取消和 deadline 门禁。
+                on_step(replan_step)
+            workflow_trace.append(replan_step)
+            attempt_requirement = deepcopy(requirement)
+            attempt_requirement["budget_replan"] = replan_context
         if generator == "template":
             generation_step = next(
                 (
@@ -402,36 +492,6 @@ def _execute_generation(
             image_context=image_context,
             workflow_trace=workflow_trace,
         )
-        # 收集方案生成元数据（模型/Prompt/输入/输出/成本），由后台执行器写入 generation_run
-        if on_meta is not None and generator == "llm":
-            meta = llm_service.last_generation_meta()
-            if meta:
-                provenance = generation_provenance.build_generation_provenance(
-                    prompt_snapshot=str(meta.get("prompt_snapshot") or ""),
-                    input_snapshot=meta.get("input_snapshot") or {},
-                    catalog_context=catalog_context,
-                )
-                on_meta(
-                    {
-                        "meta": {**meta, **provenance},
-                        "output_snapshot": {
-                            "plan_count": len(plans),
-                            "plans": [
-                                {
-                                    "name": plan.get("name"),
-                                    "style": plan.get("style"),
-                                    "budget": plan.get("budget"),
-                                    "score": plan.get("score"),
-                                    "furniture_count": len(
-                                        plan.get("furnitureSuggestions") or []
-                                    ),
-                                }
-                                for plan in plans
-                            ],
-                        },
-                    }
-                )
-
         task.status = "completed"
         task.progress = 100
         if on_success is not None:
@@ -446,7 +506,13 @@ def _execute_generation(
         )
     except Exception as exc:
         db.rollback()
-        if isinstance(exc, generation_run_service.GenerationRunOwnershipError):
+        if isinstance(
+            exc,
+            (
+                generation_run_service.GenerationRunOwnershipError,
+                generation_run_service.GenerationBudgetReplanExhausted,
+            ),
+        ):
             raise
         failed_task = db.get(DesignTask, task_id)
         if failed_task:
