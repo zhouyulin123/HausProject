@@ -48,6 +48,7 @@ from app.services import (
     anonymous_session_service,
     aggregate_lock_service,
     catalog_service,
+    design_agent_service,
     design_version_service,
     generation_provenance,
     generation_request_service,
@@ -471,13 +472,19 @@ def generate_design(
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    """仅兼容旧客户端；新客户端必须使用 `generate-async` 持久化队列。"""
-    task = require_owned_design_task(
+    """同步入口已移除；`generate-async` 仅保留给已确认事实的兼容调用。"""
+    require_owned_design_task(
         db,
         session_id=x_session_id,
         task_id=task_id,
     )
-    return _execute_generation(db, task=task)
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "synchronous_generation_removed",
+            "message": "同步生成入口已停用，请通过 Agent 工作台发起设计",
+        },
+    )
 
 
 def execute_generation_run(run_id: int) -> None:
@@ -513,6 +520,16 @@ def queue_design_generation(
         session_id=x_session_id,
         task_id=task_id,
     )
+    missing_facts = design_agent_service.missing_confirmed_generation_facts(task)
+    if missing_facts:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "generation_facts_incomplete",
+                "message": "生成方案前必须确认预算和房间尺寸",
+                "missing_fields": missing_facts,
+            },
+        )
     try:
         run = generation_run_service.create_run(
             db,

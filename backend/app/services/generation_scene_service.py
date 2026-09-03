@@ -59,7 +59,15 @@ def prepare_revision_scenes(
             raise generation_output_service.GenerationOutputValidationError(
                 f"方案 {plan.plan_key} 无法生成确定性布局场景"
             )
-        document, _ = results[0]
+        document, best_score = results[0]
+        if not best_score.valid:
+            issue_codes = list(
+                dict.fromkeys(issue.code for issue in best_score.issues)
+            )
+            reason = ", ".join(issue_codes) or "layout_score_below_threshold"
+            raise generation_output_service.GenerationOutputValidationError(
+                f"方案 {plan.plan_key} 的最佳布局未通过确定性门禁：{reason}"
+            )
         try:
             _, version = scene_service.create_scene(
                 db,
