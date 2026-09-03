@@ -45,3 +45,5 @@ py -3.12 -m pytest backend/tests -p no:cacheprovider
 ## 质量门禁
 
 GitHub Actions 会执行后端依赖检查、编译和测试，以及前端类型检查、测试和生产构建。数据库结构修改必须附带 Alembic 迁移。
+
+真实案例评测的跨用户安全指标只能来自 `evals.collect_security_access_evidence` 对受控 HTTPS 部署执行的 owner/foreign 会话检查。安全制品使用独立于普通评测证据的 HMAC key 签名，并绑定应用构建、模型/Prompt/规则/数据版本、split、数据集及匿名运行引用；缺失、过期、错配、零分母或验签失败均保持门禁关闭。详细流程见 `backend/evals/cases/real_world/README.md`。

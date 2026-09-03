@@ -1980,6 +1980,14 @@
 - 仍需由独立于真实案例结果收集器的安全回归执行器，通过真实鉴权/API 边界覆盖“资源所有者允许、其他用户拒绝”，输出稳定 suite/build/environment 标识、检查总数、严重越权数、匿名案例引用和时间戳。
 - 该安全回归制品需由独立 key id 签名并绑定本次应用构建与评测版本，验证器验签、校验新鲜度和版本一致性后才能写入 `cross_user_access_checks`；缺失、过期、版本不匹配、签名无效或检查数为零均保持门禁失败。
 
+## 2026-09-03 阶段 4 P0：独立跨用户访问安全证据闭环
+
+- 新增独立 `collect_security_access_evidence` CLI，对受控 HTTPS 部署逐准入案例验证 owner 会话可读取实际 GenerationRun、不同有效会话访问同一资源被拒绝；HTTP transport 可注入测试，但生产入口使用真实网络请求。
+- 安全制品绑定 suite、应用构建 SHA-256、部署环境、模型/Prompt/规则/数据版本、数据集、split、完整匿名案例集合、签发/过期时间以及密钥域内 HMAC 运行引用；不保存 session、token、案例 ID 或 task/run 原始 ID。
+- 安全证据使用与普通评测证据不同的 key id/密钥域签名。trusted evidence 收集阶段用数据库真实 task/run 复核匿名绑定，离线验签阶段再次复核签名、有效期、构建、版本、数据集、split、案例集合及派生计数；普通评测签名者不能自填跨用户检查结果。
+- 真实 HTTP 状态是计数唯一来源：owner 非 `200`、foreign 非 `404/2xx`、会话无效或构建响应头不一致时拒绝签发；foreign `2xx` 会形成严重越权指标并关闭门禁。没有安全制品时报告继续明确标记证据缺口。
+- 应用在配置合法 `APP_BUILD_DIGEST` 时返回 `X-App-Build-Digest`，供独立执行器逐请求核对目标构建。本轮未添加真实密钥、运行结果或案例，也未修改 manifest、MySQL 或 CI。
+
 ## 2026-09-03 阶段 1 P0：生成报价有界重规划
 
 - 真实 Generation Worker 在持久化任何方案前，以已确认的 `budget_max` 检查每套方案的服务端确定性 `shopQuote.total`；任一方案超预算都不会创建成功 revision 或标记 `completed`。

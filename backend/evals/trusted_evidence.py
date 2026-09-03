@@ -50,6 +50,7 @@ from evals.real_world import (
     RealWorldDataset,
     validate_evaluation_split,
 )
+from evals.security_access_attestation import verify_security_access_attestation
 
 
 EVIDENCE_SCHEMA_VERSION = "5.0"
@@ -123,6 +124,9 @@ class VerifiedEvaluationEvidence:
     executions: tuple[ExecutionProvenance, ...]
     key_id: str
     signature_verified: bool = True
+    security_evidence_digest: str | None = None
+    security_key_id: str | None = None
+    app_build_digest: str | None = None
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -928,6 +932,9 @@ def collect_trusted_evidence(
     dataset_root: Path | str | None = None,
     signing_key: str,
     key_id: str,
+    security_access_attestation: Mapping[str, Any] | None = None,
+    security_verification_keys: Mapping[str, str] | None = None,
+    expected_app_build_digest: str | None = None,
 ) -> dict[str, Any]:
     """从持久化系统运行签发匿名证据包，不接受调用方提交 CaseResult。"""
     _normalized_key(signing_key)
@@ -1015,6 +1022,38 @@ def collect_trusted_evidence(
         data=data_digest,
     )
     _validate_versions(versions)
+    if security_access_attestation is not None:
+        if not security_verification_keys or not expected_app_build_digest:
+            raise EvaluationInputError(
+                "验证独立安全证据必须提供验签密钥和应用构建摘要"
+            )
+        if signing_key in security_verification_keys.values():
+            raise EvaluationInputError("安全证据与评测证据必须使用独立密钥材料")
+        verified_security = verify_security_access_attestation(
+            payload=security_access_attestation,
+            dataset=dataset,
+            split=normalized_split,
+            versions=versions,
+            expected_app_build_digest=expected_app_build_digest,
+            expected_run_bindings={
+                binding.case_id: (binding.task_id, binding.system_run_id)
+                for binding in bindings
+            },
+            verification_keys=security_verification_keys,
+            evaluation_key_id=key_id.strip(),
+        )
+        security_by_case = {
+            item.case_fingerprint: item for item in verified_security.case_results
+        }
+        for execution in executions:
+            security_result = security_by_case[execution["case_fingerprint"]]
+            result_payload = execution["result"]
+            result_payload["cross_user_access_checks"] = security_result.check_count
+            result_payload["severe_cross_user_access"] = security_result.severe_count
+            execution["security_resource_binding_digest"] = (
+                security_result.resource_binding_digest
+            )
+            execution["result_digest"] = _digest(result_payload)
     unsigned: dict[str, Any] = {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "evidence_type": EVIDENCE_TYPE,
@@ -1022,6 +1061,7 @@ def collect_trusted_evidence(
         "dataset_fingerprint": dataset_digest,
         "split": normalized_split,
         "versions": asdict(versions),
+        "security_access_attestation": security_access_attestation,
         "executions": sorted(
             executions,
             key=lambda item: item["case_fingerprint"],
@@ -1080,6 +1120,9 @@ def verify_trusted_evidence(
     dataset: RealWorldDataset,
     split: EvaluationSplit,
     verification_keys: Mapping[str, str],
+    security_verification_keys: Mapping[str, str] | None = None,
+    expected_app_build_digest: str | None = None,
+    now: datetime | None = None,
 ) -> VerifiedEvaluationEvidence:
     if payload.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
         if payload.get("schema_version") == "1.0":
@@ -1099,6 +1142,7 @@ def verify_trusted_evidence(
         "dataset_fingerprint",
         "split",
         "versions",
+        "security_access_attestation",
         "executions",
         "attestation",
     }
@@ -1156,7 +1200,7 @@ def verify_trusted_evidence(
     seen_execution_refs: set[str] = set()
     results: list[CaseResult] = []
     provenances: list[ExecutionProvenance] = []
-    allowed_execution_fields = {
+    required_execution_fields = {
         "case_fingerprint",
         "execution_ref",
         "source",
@@ -1172,9 +1216,12 @@ def verify_trusted_evidence(
         "result",
         "result_digest",
     }
+    allowed_execution_fields = required_execution_fields | {
+        "security_resource_binding_digest"
+    }
     for index, raw in enumerate(raw_executions):
         execution = _required_mapping(raw, f"第 {index + 1} 条 execution")
-        if set(execution) != allowed_execution_fields:
+        if not required_execution_fields <= set(execution) <= allowed_execution_fields:
             raise EvaluationInputError(f"第 {index + 1} 条 execution 字段不合法")
         case_digest = execution.get("case_fingerprint")
         if not isinstance(case_digest, str) or case_digest not in case_by_fingerprint:
@@ -1261,6 +1308,57 @@ def verify_trusted_evidence(
     missing = sorted(set(case_by_fingerprint) - seen_cases)
     if missing:
         raise EvaluationInputError(f"缺少已准入案例执行证据：{len(missing)} 条")
+    security_payload = payload.get("security_access_attestation")
+    if security_payload is None:
+        if any(
+            result.cross_user_access_checks != 0
+            or result.severe_cross_user_access != 0
+            for result in results
+        ):
+            raise EvaluationInputError("缺少独立安全证据，不得自报跨用户访问指标")
+        if any(
+            execution.get("security_resource_binding_digest") is not None
+            for execution in raw_executions
+        ):
+            raise EvaluationInputError("缺少独立安全证据却携带安全运行绑定")
+    else:
+        if not isinstance(security_payload, dict):
+            raise EvaluationInputError("独立安全证据必须是对象")
+        if not security_verification_keys or not expected_app_build_digest:
+            raise EvaluationInputError(
+                "验证独立安全证据必须提供验签密钥和应用构建摘要"
+            )
+        if signing_key in security_verification_keys.values():
+            raise EvaluationInputError("安全证据与评测证据必须使用独立密钥材料")
+        binding_digests = {
+            execution["case_fingerprint"]: execution.get(
+                "security_resource_binding_digest"
+            )
+            for execution in raw_executions
+        }
+        verified_security = verify_security_access_attestation(
+            payload=security_payload,
+            dataset=dataset,
+            split=normalized_split,
+            versions=versions,
+            expected_app_build_digest=expected_app_build_digest,
+            expected_resource_binding_digests=binding_digests,
+            verification_keys=security_verification_keys,
+            evaluation_key_id=key_id,
+            now=now or issued_datetime,
+        )
+        security_by_case = {
+            item.case_fingerprint: item for item in verified_security.case_results
+        }
+        for result, provenance in zip(results, provenances):
+            security_result = security_by_case[provenance.case_fingerprint]
+            if (
+                result.cross_user_access_checks != security_result.check_count
+                or result.severe_cross_user_access != security_result.severe_count
+            ):
+                raise EvaluationInputError(
+                    "跨用户访问指标与独立安全证据不一致"
+                )
     return VerifiedEvaluationEvidence(
         schema_version=EVIDENCE_SCHEMA_VERSION,
         versions=versions,
@@ -1270,4 +1368,15 @@ def verify_trusted_evidence(
         results=tuple(results),
         executions=tuple(provenances),
         key_id=key_id,
+        security_evidence_digest=(
+            verified_security.evidence_digest if security_payload is not None else None
+        ),
+        security_key_id=(
+            verified_security.key_id if security_payload is not None else None
+        ),
+        app_build_digest=(
+            verified_security.app_build_digest
+            if security_payload is not None
+            else None
+        ),
     )

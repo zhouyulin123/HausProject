@@ -56,7 +56,52 @@
 
 终态失败会进入 `generation_success_rate` 分母并记为失败，但不会伪造 SKU、报价、布局或满意度等它没有产出的指标。`development`、`regression`、`blind` 必须分别绑定、收集、验签和比较；任何 CLI 省略 `--split`、绑定文件 split 不一致、跨 split 案例混入或所选 split 为空都会失败关闭。
 
-跨用户访问和重试边界不能依靠默认零值证明安全。每个逐例结果必须分别填写实际执行的 `cross_user_access_checks` 和 `retry_bound_checks`；检查次数为 0 时，对应安全门禁输出 `NO EVIDENCE` 并失败。若记录了严重跨用户问题或无限重试，却没有对应检查证据，输入会被直接拒绝。
+跨用户访问和重试边界不能依靠默认零值证明安全。重试边界由可信收集器根据持久化 GenerationRun 的执行次数、上限、终态和事件派生。跨用户访问只能由独立 CLI 对受控 HTTPS 部署执行真实 owner/foreign 会话检查后签发；调用方或普通评测签名者自填 `cross_user_access_checks`、`severe_cross_user_access` 会被拒绝。没有独立安全制品时保留零分母，报告明确显示证据缺口并失败关闭。
+
+安全目标文件只在受控环境保存，允许包含内部 `task_id` 与会话环境变量名，但不得提交仓库或作为报告附件。会话值仅从环境变量读取。下面的占位值表示文件结构，不是真实凭据：
+
+```json
+{
+  "schema_version": "1.0",
+  "split": "regression",
+  "versions": {
+    "model": "运行绑定中的实际模型",
+    "prompt": "sha256:<运行绑定摘要>",
+    "rules": "sha256:<运行绑定摘要>",
+    "data": "sha256:<运行绑定摘要>"
+  },
+  "targets": [
+    {
+      "case_id": "<已准入案例 ID>",
+      "task_id": 12345,
+      "foreign_control_task_id": 67890,
+      "owner_session_env": "EVAL_CASE_01_OWNER_SESSION",
+      "foreign_session_env": "EVAL_CASE_01_FOREIGN_SESSION"
+    }
+  ]
+}
+```
+
+发布流水线必须把当前应用制品 SHA-256 以 `APP_BUILD_DIGEST=sha256:<64 hex>` 注入受控部署。应用会把合法值返回为 `X-App-Build-Digest`；独立 CLI 会在健康检查、会话有效性检查和每次资源访问中复核该响应头。安全 key 与普通评测 key 必须使用不同 `key_id` 和密钥材料：
+
+```powershell
+$env:PYTHONPATH = "backend"
+$env:APP_BUILD_DIGEST = "sha256:<当前发布制品的64位十六进制摘要>"
+$env:SECURITY_EVIDENCE_KEY_ID = "security-ci-2026-09"
+$env:SECURITY_EVIDENCE_HMAC_KEY = "从独立密钥域注入的至少32字节随机密钥"
+$env:EVAL_CASE_01_OWNER_SESSION = "<受控 owner 会话 UUID>"
+$env:EVAL_CASE_01_FOREIGN_SESSION = "<不同用户或会话 UUID>"
+python -m evals.collect_security_access_evidence `
+  --manifest backend/evals/cases/real_world/manifest.json `
+  --split regression `
+  --asset-root . `
+  --targets <受控目录>/security-targets.json `
+  --base-url https://<受控部署域名> `
+  --app-build-digest $env:APP_BUILD_DIGEST `
+  --output <受控目录>/cross-user-security.evidence.json
+```
+
+CLI 对每个准入案例先要求 foreign 会话读取自己的 `foreign_control_task_id` 返回 `200`，证明该会话真实有效且鉴权链可用；会话只进入请求头，不进入 URL。随后访问 `GET /api/design/tasks/{task_id}/generation`：owner 必须返回 `200`；foreign 返回 `404` 表示通过，返回 `2xx` 形成严重越权事实，其他状态因结果不确定而拒绝签发。公开安全制品不保存 session、token、case ID 或 task/run 原始 ID，仅保存匿名案例指纹、密钥域内 HMAC 运行引用、HTTP 状态与派生计数，并具有最长一小时的有效期。
 
 在仓库根目录运行：
 
@@ -64,11 +109,15 @@
 $env:PYTHONPATH = "backend"
 $env:EVAL_EVIDENCE_KEY_ID = "quality-ci-2026-09"
 $env:EVAL_EVIDENCE_HMAC_KEY = "从密钥管理服务注入的至少32字节随机密钥"
+$env:SECURITY_EVIDENCE_KEY_ID = "security-ci-2026-09"
+$env:SECURITY_EVIDENCE_HMAC_KEY = "从独立密钥域注入的至少32字节随机密钥"
+$env:APP_BUILD_DIGEST = "sha256:<当前发布制品的64位十六进制摘要>"
 python -m evals.collect_real_world_evidence `
   --manifest backend/evals/cases/real_world/manifest.json `
   --split regression `
   --asset-root . `
   --run-bindings backend/evals/cases/real_world/run-bindings.json `
+  --security-evidence <受控目录>/cross-user-security.evidence.json `
   --output backend/evals/reports/evidence/real_world_eval.evidence.json
 
 python -m evals.run_real_world_eval `

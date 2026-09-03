@@ -187,6 +187,8 @@ def test_http_suite_signs_only_anonymous_owner_and_foreign_observations(tmp_path
 
     assert verified.check_count == 2
     assert verified.severe_count == 0
+    assert payload["check_count"] == 2
+    assert payload["severe_count"] == 0
     assert verified.suite_version == "cross-user-http/1.0"
     assert verified.app_build_digest == BUILD_DIGEST
     assert len(verified.case_results) == 2

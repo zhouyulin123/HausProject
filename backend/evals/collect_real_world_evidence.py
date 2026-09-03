@@ -102,6 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--asset-root", type=Path)
     parser.add_argument("--run-bindings", type=Path, required=True)
+    parser.add_argument(
+        "--security-evidence",
+        type=Path,
+        help="独立跨用户 HTTP 安全回归签名制品",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
@@ -118,6 +123,26 @@ def main(argv: list[str] | None = None) -> int:
             else args.manifest.resolve().parent
         )
         bindings = _read_bindings(args.run_bindings.resolve(), split=args.split)
+        security_bundle = None
+        security_keys: dict[str, str] = {}
+        app_build_digest = None
+        if args.security_evidence is not None:
+            try:
+                security_bundle = json.loads(
+                    args.security_evidence.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                raise EvaluationInputError("无法读取独立安全证据") from exc
+            if not isinstance(security_bundle, dict):
+                raise EvaluationInputError("独立安全证据根节点必须是对象")
+            security_key = os.getenv("SECURITY_EVIDENCE_HMAC_KEY", "")
+            security_key_id = os.getenv("SECURITY_EVIDENCE_KEY_ID", "")
+            app_build_digest = os.getenv("APP_BUILD_DIGEST", "")
+            if not security_key or not security_key_id or not app_build_digest:
+                raise EvaluationInputError(
+                    "验证独立安全证据必须配置安全验签密钥和 APP_BUILD_DIGEST"
+                )
+            security_keys = {security_key_id: security_key}
         with SessionLocal() as db:
             bundle = collect_trusted_evidence(
                 db,
@@ -127,6 +152,9 @@ def main(argv: list[str] | None = None) -> int:
                 dataset_root=dataset_root,
                 signing_key=signing_key,
                 key_id=key_id,
+                security_access_attestation=security_bundle,
+                security_verification_keys=security_keys,
+                expected_app_build_digest=app_build_digest,
             )
     except (EvaluationInputError, ValueError) as exc:
         print(f"EVAL_EVIDENCE_ERROR: {exc}")

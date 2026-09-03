@@ -758,6 +758,10 @@ def test_collector_and_verifier_fill_cross_user_metrics_only_from_security_attes
     assert evidence.results[0].severe_cross_user_access == 0
     assert report["metrics"]["cross_user_access_checks"] == 1
     assert report["metrics"]["severe_cross_user_access"] == 0
+    assert report["evidence"]["security_access"]["signature_verified"] is True
+    assert report["evidence"]["security_access"]["app_build_digest"] == (
+        APP_BUILD_DIGEST
+    )
     assert report["evidence_gaps"] == []
 
 

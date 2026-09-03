@@ -68,6 +68,8 @@ def load_case_results(
     dataset: RealWorldDataset,
     split: EvaluationSplit,
     verification_keys: Mapping[str, str] | None = None,
+    security_verification_keys: Mapping[str, str] | None = None,
+    expected_app_build_digest: str | None = None,
 ) -> EvaluationEvidence:
     payload = _read_json(Path(result_path).resolve())
     return verify_trusted_evidence(
@@ -75,6 +77,8 @@ def load_case_results(
         dataset=dataset,
         split=split,
         verification_keys=verification_keys or {},
+        security_verification_keys=security_verification_keys or {},
+        expected_app_build_digest=expected_app_build_digest,
     )
 
 
@@ -144,6 +148,12 @@ def build_evaluation_report(
             "case_fingerprints": sorted(
                 item.case_fingerprint for item in evidence.executions
             ),
+            "security_access": {
+                "signature_verified": evidence.security_evidence_digest is not None,
+                "evidence_digest": evidence.security_evidence_digest,
+                "key_id": evidence.security_key_id,
+                "app_build_digest": evidence.app_build_digest,
+            },
         },
         "dataset": {
             "schema_version": dataset.schema_version,
@@ -316,6 +326,7 @@ def _format_metric(value: float | int | None) -> str:
 def render_markdown(report: dict[str, Any]) -> str:
     versions = report["versions"]
     dataset = report["dataset"]
+    security_access = report["evidence"].get("security_access") or {}
     lines = [
         "# 真实案例质量门禁报告",
         "",
@@ -329,6 +340,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"| 数据版本 | {versions['data']} |",
         f"| 评测分组 | {report['split']} |",
         f"| 证据验证 | {'PASS' if report['evidence']['signature_verified'] else 'FAIL'} |",
+        f"| 跨用户安全证据 | "
+        f"{'PASS' if security_access.get('signature_verified') else 'NO EVIDENCE'} |",
         f"| 证据格式 | {report['evidence']['schema_version']} |",
         f"| 可评测案例 | {dataset['eligible_case_count']} / {dataset['case_count']} |",
         "",
@@ -405,6 +418,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         signing_key = os.getenv("EVAL_EVIDENCE_HMAC_KEY", "")
         key_id = os.getenv("EVAL_EVIDENCE_KEY_ID", "")
+        security_key = os.getenv("SECURITY_EVIDENCE_HMAC_KEY", "")
+        security_key_id = os.getenv("SECURITY_EVIDENCE_KEY_ID", "")
+        app_build_digest = os.getenv("APP_BUILD_DIGEST", "") or None
+        security_keys = (
+            {security_key_id: security_key}
+            if security_key and security_key_id
+            else {}
+        )
         if not signing_key or not key_id:
             raise EvaluationInputError(
                 "缺少验签密钥：必须配置 EVAL_EVIDENCE_HMAC_KEY 和 EVAL_EVIDENCE_KEY_ID"
@@ -415,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
             dataset=dataset,
             split=args.split,
             verification_keys={key_id: signing_key},
+            security_verification_keys=security_keys,
+            expected_app_build_digest=app_build_digest,
         )
         report = build_evaluation_report(
             dataset=dataset,
@@ -435,6 +458,8 @@ def main(argv: list[str] | None = None) -> int:
                 dataset=dataset,
                 split=args.split,
                 verification_keys={key_id: signing_key},
+                security_verification_keys=security_keys,
+                expected_app_build_digest=app_build_digest,
             )
             baseline_report = build_evaluation_report(
                 dataset=dataset,

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import os
+import re
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,9 @@ from app.core.config import settings
 from app.core.request_context import bind_request_id, normalize_request_id
 from app.db.database import get_db
 from app.db.schema_readiness import database_schema_is_current
+
+
+_BUILD_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 app = FastAPI(
@@ -49,6 +53,9 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    build_digest = os.getenv("APP_BUILD_DIGEST", "").strip()
+    if _BUILD_DIGEST_PATTERN.fullmatch(build_digest):
+        response.headers["X-App-Build-Digest"] = build_digest
     return response
 
 
