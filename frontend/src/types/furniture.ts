@@ -17,8 +17,8 @@ export interface FurnitureItem {
   material: string;
   priceRange: string;
   sizeSuggestion: string;
-  /** AI 匹配指数 0-100 */
-  matchScore: number;
+  /** 仅在有可追溯推荐运行时提供；目录浏览不得伪造匹配分。 */
+  matchScore?: number;
   /** AI 推荐理由 */
   reason: string;
   /** 替代选择 */

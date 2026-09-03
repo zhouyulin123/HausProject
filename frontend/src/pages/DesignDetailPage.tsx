@@ -486,7 +486,9 @@ export default function DesignDetailPage() {
                   <div className="p-4">
                     <div className="flex items-center justify-between gap-2">
                       <h4 className="text-sm font-semibold text-stone-800">{item.name}</h4>
-                      <Tag tone="sage">{item.matchScore}%</Tag>
+                      {item.matchScore !== undefined && (
+                        <Tag tone="sage">{item.matchScore}%</Tag>
+                      )}
                     </div>
                     <p className="mt-2 text-xs leading-relaxed text-stone-500">
                       {item.reason}

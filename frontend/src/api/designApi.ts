@@ -467,8 +467,6 @@ export async function fetchFurnitureCatalog(
       material: p.material ?? "",
       priceRange: p.price_text,
       sizeSuggestion: p.size ?? "",
-      // 商品库阶段的稳定伪评分；接入 AI 排序后替换
-      matchScore: 86 + ((p.id * 7) % 13),
       reason: p.selling_point ?? "",
       alternative: p.alternative ?? "可选同风格系列其他款式",
       gradient: furnitureGradients[i % furnitureGradients.length],

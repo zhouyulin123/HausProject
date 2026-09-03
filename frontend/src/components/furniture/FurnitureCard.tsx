@@ -46,9 +46,11 @@ export default function FurnitureCard({
             </span>
           </div>
         )}
-        <span className="absolute top-3 left-3 rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-sage-700 backdrop-blur">
-          匹配 {item.matchScore}%
-        </span>
+        {item.matchScore !== undefined && (
+          <span className="absolute top-3 left-3 rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-sage-700 backdrop-blur">
+            匹配 {item.matchScore}%
+          </span>
+        )}
         <span className="absolute bottom-3 left-3 font-mono text-[9px] tracking-[0.14em] text-white/80 uppercase">Object / {item.sku ?? item.id}</span>
         <span
           role="button"

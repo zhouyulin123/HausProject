@@ -534,6 +534,7 @@ describe("3D 场景 API", () => {
 
     expect(product.assetMode).toBe("approved_glb");
     expect(product.fallbackReason).toBeUndefined();
+    expect(product.matchScore).toBeUndefined();
   });
 
   it("未显式开启 Demo 模式时商品库默认拒绝静默 mock 降级", async () => {

@@ -197,9 +197,11 @@ export default function FurniturePage() {
                 >
                   <X className="h-4 w-4" />
                 </button>
-                <span className="absolute bottom-3 left-4 rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-sage-700">
-                  匹配 {detail.matchScore}%
-                </span>
+                {detail.matchScore !== undefined && (
+                  <span className="absolute bottom-3 left-4 rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-sage-700">
+                    匹配 {detail.matchScore}%
+                  </span>
+                )}
                 {furnitureMediaModes(detail).length > 1 && (
                   <div className="absolute right-3 bottom-3 flex gap-1 rounded-full bg-white/85 p-1 backdrop-blur">
                     <button
