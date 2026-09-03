@@ -174,9 +174,10 @@ def test_gate_config_requires_all_splits_and_never_accepts_inline_secrets(tmp_pa
 
 
 def test_controlled_workflow_contract_is_fail_closed():
-    workflow = Path(".github/workflows/real-world-release-gate.yml").read_text(
-        encoding="utf-8"
-    )
+    repo_root = Path(__file__).resolve().parents[3]
+    workflow = (
+        repo_root / ".github/workflows/real-world-release-gate.yml"
+    ).read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" not in workflow
