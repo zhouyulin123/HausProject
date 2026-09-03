@@ -15,6 +15,7 @@ from app.api.routes import (
     render,
     scenes,
     sessions,
+    shares,
     shop,
     tasks,
     upload,
@@ -44,6 +45,16 @@ api_router.include_router(
 api_router.include_router(render.router, prefix="/design/render", tags=["design_render"])
 api_router.include_router(scenes.router, prefix="/design", tags=["design_scenes"])
 api_router.include_router(proposal.router, prefix="/design", tags=["design_proposal"])
+api_router.include_router(
+    shares.owner_router,
+    prefix="/design/shares",
+    tags=["design_shares"],
+)
+api_router.include_router(
+    shares.public_router,
+    prefix="/shares",
+    tags=["public_shares"],
+)
 api_router.include_router(products.router, prefix="/products", tags=["products"])
 api_router.include_router(customers.router, prefix="/customers", tags=["customers"])
 api_router.include_router(shop.router, prefix="/shop", tags=["shop"])

@@ -46,7 +46,7 @@ def _context():
                     "user": {"email": "private@example.com"},
                     "name": "服务端冻结方案",
                     "style": "原木风",
-                    "description": "适合日常起居的克制方案",
+                    "description": "适合日常起居的克制方案，内部参考 D:\\private\\brief.txt",
                     "score": 91,
                     "budget": 128000,
                     "tags": ["收纳", "自然采光"],
@@ -148,10 +148,13 @@ def test_owner_creates_hashed_token_and_public_reads_only_whitelisted_snapshot()
 
             public = client.get(f"/api/shares/{token}")
             assert public.status_code == 200
+            assert public.headers["cache-control"] == "no-store"
+            assert public.headers["referrer-policy"] == "no-referrer"
             payload = public.json()
 
         with factory() as db:
             stored = db.query(PlanShare).one()
+            assert stored.plan_version_id == plan_version_id
             assert stored.token_digest != token
             assert len(stored.token_digest) == 64
             assert "token" not in PlanShare.__table__.columns.keys()
@@ -167,6 +170,7 @@ def test_owner_creates_hashed_token_and_public_reads_only_whitelisted_snapshot()
             "private@example.com",
             "file:///",
             "D:/private",
+            "D:\\\\private",
             "modelSpecJson",
             "sourceUrl",
             "recordVersion",
@@ -203,6 +207,8 @@ def test_share_is_frozen_when_new_revision_and_original_rows_change():
                 )
                 original = db.get(DesignPlanVersion, plan_version_id)
                 original.plan_json = {"name": "被错误改写的原始行"}
+                original.quote_snapshot.grand_total = 1
+                original.quote_snapshot.quote_json = {"total": 1}
                 db.commit()
 
             second = client.get(f"/api/shares/{token}").json()
@@ -218,6 +224,9 @@ def test_unknown_expired_revoked_and_foreign_revoke_are_indistinguishable():
     engine, factory, owner_id, stranger_id, _, plan_version_id = _context()
     try:
         with _client(factory) as client:
+            foreign_create = _create_share(client, stranger_id, plan_version_id)
+            assert foreign_create.status_code == 404
+
             first = _create_share(client, owner_id, plan_version_id).json()
             token = first["token"]
             unknown = client.get("/api/shares/not-a-real-share-token")
@@ -250,5 +259,19 @@ def test_unknown_expired_revoked_and_foreign_revoke_are_indistinguishable():
             )
             assert expired_response.status_code == 404
             assert expired_response.json()["detail"] == UNAVAILABLE_DETAIL
+
+            tampered_created = _create_share(client, owner_id, plan_version_id).json()
+            with factory() as db:
+                tampered = db.query(PlanShare).filter(
+                    PlanShare.token_digest
+                    == share_service.token_digest(tampered_created["token"])
+                ).one()
+                tampered.snapshot_json = {"name": "篡改内容"}
+                db.commit()
+            tampered_response = client.get(
+                f"/api/shares/{tampered_created['token']}"
+            )
+            assert tampered_response.status_code == 404
+            assert tampered_response.json()["detail"] == UNAVAILABLE_DETAIL
     finally:
         engine.dispose()

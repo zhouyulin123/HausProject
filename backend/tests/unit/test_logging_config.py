@@ -3,6 +3,9 @@ from __future__ import annotations
 import io
 import json
 import logging
+import sys
+
+import pytest
 
 from app.core.logging_config import JsonLogFormatter
 from app.core.request_context import bind_request_id
@@ -73,3 +76,30 @@ def test_json_log_formatter_omits_missing_request_id_and_formats_exception():
     assert payload["exception_type"] == "ValueError"
     assert "structured failure" in payload["exception"]
     assert "request_id" not in payload
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    (
+        "app.workers.generation_worker",
+        "app.workers.effect_render_worker",
+        "app.workers.blender_worker",
+    ),
+)
+def test_worker_entrypoints_install_shared_json_logging(
+    monkeypatch,
+    module_name: str,
+):
+    module = __import__(module_name, fromlist=["main"])
+    configured: list[bool] = []
+    monkeypatch.setattr(module, "configure_logging", lambda: configured.append(True))
+    monkeypatch.setattr(sys, "argv", [module_name, "--once"])
+    if module_name.endswith("generation_worker"):
+        monkeypatch.setattr(module, "process_one_run", lambda **_kwargs: False)
+    else:
+        monkeypatch.setattr(module, "process_one_job", lambda **_kwargs: False)
+    if module_name.endswith("blender_worker"):
+        monkeypatch.setattr(module, "resolve_blender_executable", lambda _path: "blender")
+
+    assert module.main() == 0
+    assert configured == [True]

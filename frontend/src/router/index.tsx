@@ -35,6 +35,7 @@ const AdminUsersPage = lazyPage(() => import("@/pages/AdminUsersPage"));
 const AdminQualityPage = lazyPage(() => import("@/pages/AdminQualityPage"));
 const LoginPage = lazyPage(() => import("@/pages/LoginPage"));
 const Demo3DPage = lazyPage(() => import("@/pages/Demo3DPage"));
+const SharePage = lazyPage(() => import("@/pages/SharePage"));
 
 export const router = createBrowserRouter(
   [
@@ -50,6 +51,15 @@ export const router = createBrowserRouter(
           }
         >
           <Demo3DPage />
+        </Suspense>
+      ),
+    },
+    {
+      path: "/share/:token",
+      errorElement: <RouteErrorPage />,
+      element: (
+        <Suspense fallback={<div className="min-h-screen bg-[#f1f0ea]" />}>
+          <SharePage />
         </Suspense>
       ),
     },

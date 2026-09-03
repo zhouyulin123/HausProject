@@ -768,6 +768,43 @@ export async function cancelEffectRender(jobId: number): Promise<EffectRenderJob
   );
 }
 
+// ---------------------------------------------------------------- 方案分享
+
+export interface CreatedPlanShare {
+  token: string;
+  shareUrl: string;
+  expiresAt: string;
+}
+
+export async function createPlanShare(
+  planVersionId: number,
+  expiresInHours = 168,
+): Promise<CreatedPlanShare> {
+  const data = await request<{
+    token: string;
+    share_url: string;
+    expires_at: string;
+  }>("/api/design/shares", {
+    method: "POST",
+    body: JSON.stringify({
+      plan_version_id: planVersionId,
+      expires_in_hours: expiresInHours,
+    }),
+  });
+  return {
+    token: data.token,
+    shareUrl: data.share_url,
+    expiresAt: data.expires_at,
+  };
+}
+
+export async function revokePlanShare(token: string): Promise<void> {
+  await request<{ status: "revoked" }>(
+    `/api/design/shares/${encodeURIComponent(token)}/revoke`,
+    { method: "POST" },
+  );
+}
+
 // ---------------------------------------------------------------- 提案 PDF 导出
 
 /** 生成品牌提案 PDF（方案+效果图+报价单），返回可下载/转发的 URL。失败抛错。 */

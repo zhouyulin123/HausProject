@@ -875,6 +875,28 @@ class QuoteSnapshot(Base):
     )
 
 
+class PlanShare(Base):
+    """绑定不可变方案版本的公开分享快照；不持久化原始 token。"""
+
+    __tablename__ = "plan_shares"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_version_id = Column(
+        Integer,
+        ForeignKey("design_plan_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    token_digest = Column(String(64), nullable=False, unique=True, index=True)
+    snapshot_json = Column(JSON, nullable=False)
+    snapshot_digest = Column(String(71), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    plan_version = relationship("DesignPlanVersion")
+
+
 class GenerationRun(Base):
     """一次可恢复、可查询的后台方案生成任务。"""
 

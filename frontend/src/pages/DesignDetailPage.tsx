@@ -8,17 +8,21 @@ import {
   Check,
   Download,
   Lightbulb,
+  Link2Off,
   MessageCircleMore,
+  Share2,
   ShoppingBag,
   Sparkles,
   Wand2,
 } from "lucide-react";
 import { mockDesigns } from "@/data/mockDesigns";
 import {
+  createPlanShare,
   exportProposalPdf,
   fetchPlanByVersion,
   getCurrentTaskId,
   refinePlan,
+  revokePlanShare,
 } from "@/api/designApi";
 import { createOrder } from "@/api/orderApi";
 import { useDesignStore } from "@/store/useDesignStore";
@@ -77,6 +81,10 @@ export default function DesignDetailPage() {
     "idle",
   );
   const [orderState, setOrderState] = useState<"idle" | "doing" | "fail">("idle");
+  const [shareState, setShareState] = useState<
+    "idle" | "doing" | "done" | "fail" | "revoking" | "revoked"
+  >("idle");
+  const [activeShareToken, setActiveShareToken] = useState<string | null>(null);
   const [fetchedPlan, setFetchedPlan] = useState<DesignPlan | null>(null);
   const [refinedPlan, setRefinedPlan] = useState<DesignPlan | null>(null);
   const [fetching, setFetching] = useState(false);
@@ -224,6 +232,42 @@ export default function DesignDetailPage() {
     }
   };
 
+  const handleShare = async () => {
+    if (shareState === "doing" || !plan.planVersionId) {
+      if (!plan.planVersionId) setShareState("fail");
+      return;
+    }
+    setShareState("doing");
+    try {
+      const created = await createPlanShare(plan.planVersionId);
+      setActiveShareToken(created.token);
+      const url = new URL(created.shareUrl, window.location.origin).toString();
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+      setShareState("done");
+    } catch {
+      setShareState("fail");
+      setTimeout(() => setShareState("idle"), 3000);
+    }
+  };
+
+  const handleRevokeShare = async () => {
+    if (!activeShareToken || shareState === "revoking") return;
+    setShareState("revoking");
+    try {
+      await revokePlanShare(activeShareToken);
+      setActiveShareToken(null);
+      setShareState("revoked");
+      setTimeout(() => setShareState("idle"), 3000);
+    } catch {
+      setShareState("fail");
+      setTimeout(() => setShareState("done"), 3000);
+    }
+  };
+
   return (
     <div className="min-h-[calc(100vh-4rem)] bg-[#e9e7de]">
       <section className="home-grid relative overflow-hidden bg-[#0b0f0c] px-5 pt-10 pb-28 text-[#f0eee6] sm:px-8 lg:px-12 lg:pt-14 lg:pb-36">
@@ -298,6 +342,30 @@ export default function DesignDetailPage() {
                 : exportState === "fail"
                   ? "导出失败，点击重试"
                   : "导出提案 PDF"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() =>
+              void (activeShareToken ? handleRevokeShare() : handleShare())
+            }
+            disabled={shareState === "doing" || shareState === "revoking"}
+          >
+            {activeShareToken ? (
+              <Link2Off className="h-4 w-4" />
+            ) : (
+              <Share2 className="h-4 w-4" />
+            )}
+            {shareState === "doing"
+              ? "正在创建..."
+              : shareState === "revoking"
+                ? "正在撤销..."
+                : shareState === "done"
+                  ? "撤销分享"
+                  : shareState === "revoked"
+                    ? "分享已撤销"
+                    : shareState === "fail"
+                      ? "分享失败"
+                      : "分享方案"}
           </Button>
           <Button onClick={() => navigate("/chat")}>
             <MessageCircleMore className="h-4 w-4" />
