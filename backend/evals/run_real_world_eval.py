@@ -115,6 +115,20 @@ def build_evaluation_report(
             ineligible_reason_counts[reason] = (
                 ineligible_reason_counts.get(reason, 0) + 1
             )
+    evidence_gaps: list[dict[str, str]] = []
+    if quality_report.metrics["severe_cross_user_access"] is None:
+        evidence_gaps.append(
+            {
+                "metric": "severe_cross_user_access",
+                "status": "missing",
+                "code": "independent_signed_security_regression_evidence_missing",
+                "required_evidence": (
+                    "independently_signed_cross_user_access_regression"
+                ),
+                "gate_impact": "fail_closed",
+                "description": "缺少独立签名的跨用户访问安全回归证据",
+            }
+        )
     return {
         "schema_version": "3.0",
         "split": normalized_split,
@@ -145,6 +159,7 @@ def build_evaluation_report(
             "ineligible_reason_counts": ineligible_reason_counts,
         },
         "metrics": quality_report.metrics,
+        "evidence_gaps": evidence_gaps,
         "gates": [asdict(item) for item in gate_result.items],
         "gate_passed": gate_result.passed,
     }
@@ -328,6 +343,14 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"{gate['operator']} | {_format_metric(gate['target'])} | "
             f"{'PASS' if gate['passed'] else 'FAIL'} |"
         )
+    evidence_gaps = report.get("evidence_gaps") or []
+    if evidence_gaps:
+        lines.extend(["", "## 证据缺口", ""])
+        for gap in evidence_gaps:
+            lines.append(
+                f"- {gap['description']}（{gap['metric']}，"
+                f"门禁策略：{gap['gate_impact']}）"
+            )
     comparison = report.get("regression_comparison")
     if comparison is not None:
         lines.extend(

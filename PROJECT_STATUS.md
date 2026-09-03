@@ -1958,3 +1958,15 @@
 - 分诊报告及签名同步载荷绑定 dataset version、manifest digest、evidence digest 和 immutable output digests；聚类携带匿名 execution refs，不能脱离可信执行证据重填。
 - 本轮没有新增、伪造或放宽任何真实案例准入与业务指标。
 - RED `bec136d` 锁定公开主键泄漏、自报失败文件和重复执行引用；可信证据、分诊、管理员同步相关回归 55 项通过，后端全量 587 项通过，Python 编译通过。
+
+## 2026-09-03 阶段 4 P0：生成规则溯源与重试边界可信证据
+
+- 生成 provenance schema 升级为 `3`。`rules_digest` 绑定仓库内稳定制品标识与逐文件内容 SHA-256，覆盖 `design_workflow`、目录服务以及实际的场景生成、布局生成、评估、修复和几何链；相同内容在不同机器路径上摘要稳定，任一纳入的布局规则文件变化都会改变摘要。
+- trusted evidence 的 `retry_bound_checks` 和 `unbounded_retry_detected` 只从持久化 `GenerationRun` 的 `max_attempts`、`attempt_count`、可信终态及事件派生，不接受调用方自报；成功、失败和执行前取消均进入分母，越界执行形成失败指标，非法计数、零次执行却存在事件等矛盾状态拒绝签发证据。
+- 真实案例报告在没有跨用户检查分母时新增结构化 `evidence_gaps`，明确标记“缺少独立签名的跨用户访问安全回归证据”，并继续 fail closed；本轮没有填造 cross-user 检查数或修改真实案例 manifest。
+- RED 提交：`279735c`。阶段 4 provenance/trusted/eval 相关单元测试 115 项、集成测试 10 项通过，`python -m compileall -q app evals` 通过；当前环境未安装 Ruff/Black。
+
+### 尚缺的 cross-user 独立证据契约
+
+- 仍需由独立于真实案例结果收集器的安全回归执行器，通过真实鉴权/API 边界覆盖“资源所有者允许、其他用户拒绝”，输出稳定 suite/build/environment 标识、检查总数、严重越权数、匿名案例引用和时间戳。
+- 该安全回归制品需由独立 key id 签名并绑定本次应用构建与评测版本，验证器验签、校验新鲜度和版本一致性后才能写入 `cross_user_access_checks`；缺失、过期、版本不匹配、签名无效或检查数为零均保持门禁失败。

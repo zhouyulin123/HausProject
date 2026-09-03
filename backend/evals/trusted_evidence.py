@@ -448,6 +448,7 @@ def _validate_system_run(
         raise EvaluationInputError(
             f"系统运行 {run.id} 使用不可信的执行来源：{run.generator or 'unknown'}"
         )
+    _retry_boundary_metrics(run)
     if (
         run.completed_at is None
         or (
@@ -704,6 +705,51 @@ def _prediction_metrics(
     )
 
 
+def _retry_boundary_metrics(run: GenerationRun) -> tuple[int, bool]:
+    """仅从持久化运行事实派生重试边界指标，矛盾状态拒绝签发。"""
+    max_attempts = run.max_attempts
+    attempt_count = run.attempt_count
+    if (
+        isinstance(max_attempts, bool)
+        or not isinstance(max_attempts, int)
+        or max_attempts < 1
+        or isinstance(attempt_count, bool)
+        or not isinstance(attempt_count, int)
+        or attempt_count < 0
+    ):
+        raise EvaluationInputError(f"系统运行 {run.id} 的重试边界计数不合法")
+    if run.status not in TRUSTED_TERMINAL_STATUSES:
+        raise EvaluationInputError(f"系统运行 {run.id} 缺少可信重试终态")
+
+    events = tuple(run.events)
+    if any(
+        event.run_id != run.id
+        or not isinstance(event.node, str)
+        or not event.node.strip()
+        or not isinstance(event.status, str)
+        or not event.status.strip()
+        for event in events
+    ):
+        raise EvaluationInputError(f"系统运行 {run.id} 包含不合法的重试事件")
+    if attempt_count == 0:
+        if run.status != "cancelled" or run.started_at is not None or events:
+            raise EvaluationInputError(
+                f"系统运行 {run.id} 的重试事件与零次执行不一致"
+            )
+    elif run.started_at is None:
+        raise EvaluationInputError(f"系统运行 {run.id} 缺少重试执行起点")
+
+    for node in REQUIRED_RUN_NODES:
+        completed_count = sum(
+            event.node == node and event.status == "completed" for event in events
+        )
+        if completed_count > attempt_count:
+            raise EvaluationInputError(
+                f"系统运行 {run.id} 的重试事件次数超过执行次数"
+            )
+    return 1, attempt_count > max_attempts
+
+
 def _runtime_result(
     case: RealWorldCase,
     run: GenerationRun,
@@ -712,6 +758,7 @@ def _runtime_result(
     prediction: dict[str, Any],
 ) -> CaseResult:
     """从不可变业务输出和冻结标注确定性计算逐例指标。"""
+    retry_bound_checks, unbounded_retry_detected = _retry_boundary_metrics(run)
     if run.status != "completed":
         (
             requirement_correct,
@@ -730,6 +777,8 @@ def _runtime_result(
             low_confidence_facts=low_confidence_facts,
             low_confidence_confirmed=low_confidence_confirmed,
             generation_succeeded=False,
+            retry_bound_checks=retry_bound_checks,
+            unbounded_retry_detected=unbounded_retry_detected,
         )
     if output is None or case.annotation is None:
         raise EvaluationInputError(f"系统运行 {run.id} 缺少不可变输出或案例标注")
@@ -838,6 +887,8 @@ def _runtime_result(
         human_move_count=actions.count("move"),
         human_replace_count=actions.count("replace"),
         generation_succeeded=True,
+        retry_bound_checks=retry_bound_checks,
+        unbounded_retry_detected=unbounded_retry_detected,
     )
 
 

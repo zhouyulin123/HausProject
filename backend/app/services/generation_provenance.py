@@ -8,11 +8,33 @@ from pathlib import Path
 from typing import Any
 
 
-_RULE_ARTIFACTS = (
-    Path(__file__).resolve().parents[1] / "agents" / "design_workflow.py",
-    Path(__file__).resolve().parent / "catalog_service.py",
+_APP_ROOT = Path(__file__).resolve().parents[1]
+_RULE_ARTIFACTS: tuple[tuple[str, Path], ...] = (
+    ("app/agents/design_workflow.py", _APP_ROOT / "agents" / "design_workflow.py"),
+    ("app/services/catalog_service.py", _APP_ROOT / "services" / "catalog_service.py"),
+    (
+        "app/services/generation_scene_service.py",
+        _APP_ROOT / "services" / "generation_scene_service.py",
+    ),
+    ("app/services/layout_service.py", _APP_ROOT / "services" / "layout_service.py"),
+    (
+        "app/services/layout_generator.py",
+        _APP_ROOT / "services" / "layout_generator.py",
+    ),
+    (
+        "app/services/layout_evaluator.py",
+        _APP_ROOT / "services" / "layout_evaluator.py",
+    ),
+    (
+        "app/services/layout_repair.py",
+        _APP_ROOT / "services" / "layout_repair.py",
+    ),
+    (
+        "app/services/scene_geometry.py",
+        _APP_ROOT / "services" / "scene_geometry.py",
+    ),
 )
-GENERATION_PROVENANCE_SCHEMA_VERSION = 2
+GENERATION_PROVENANCE_SCHEMA_VERSION = 3
 
 
 def canonical_digest(value: Any) -> str:
@@ -26,15 +48,31 @@ def canonical_digest(value: Any) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def _source_artifact_digests() -> list[str]:
-    digests: list[str] = []
-    for path in _RULE_ARTIFACTS:
+def generation_rule_artifact_snapshot() -> list[dict[str, str]]:
+    """返回与本机绝对路径无关的生成规则制品清单。"""
+    snapshot: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for artifact_id, path in _RULE_ARTIFACTS:
+        if (
+            not artifact_id
+            or artifact_id in seen_ids
+            or "\\" in artifact_id
+            or artifact_id.startswith("/")
+            or ".." in Path(artifact_id).parts
+        ):
+            raise ValueError("生成规则制品标识不合法或重复")
         try:
             content = path.read_bytes()
         except OSError as exc:
-            raise ValueError(f"无法读取生成规则制品：{path.name}") from exc
-        digests.append(f"sha256:{hashlib.sha256(content).hexdigest()}")
-    return digests
+            raise ValueError(f"无法读取生成规则制品：{artifact_id}") from exc
+        seen_ids.add(artifact_id)
+        snapshot.append(
+            {
+                "artifact_id": artifact_id,
+                "content_digest": f"sha256:{hashlib.sha256(content).hexdigest()}",
+            }
+        )
+    return snapshot
 
 
 def build_generation_provenance(
@@ -56,7 +94,7 @@ def build_generation_provenance(
         "rules_digest": canonical_digest(
             {
                 "schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
-                "source_artifacts": _source_artifact_digests(),
+                "artifacts": generation_rule_artifact_snapshot(),
             }
         ),
         "data_digest": canonical_digest(
