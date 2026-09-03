@@ -1,4 +1,5 @@
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from alembic import command
@@ -11,35 +12,43 @@ def test_langgraph_checkpoint_migration_round_trip_from_empty_database():
     backend_dir = Path(__file__).resolve().parents[2]
     artifacts_dir = backend_dir / ".test_artifacts"
     artifacts_dir.mkdir(exist_ok=True)
-    database_path = artifacts_dir / "langgraph_checkpoint_migration.db"
-    database_path.unlink(missing_ok=True)
+    database_path = artifacts_dir / (
+        f"langgraph_checkpoint_migration_{uuid4().hex}.db"
+    )
     database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
     config = Config(str(backend_dir / "alembic.ini"))
     config.attributes["database_url"] = database_url
+    engine = None
 
-    command.upgrade(config, "e3f4a5b6c7d8")
-    engine = create_engine(database_url)
-    assert {
-        "langgraph_checkpoints",
-        "langgraph_checkpoint_writes",
-    } <= set(inspect(engine).get_table_names())
-    engine.dispose()
+    try:
+        command.upgrade(config, "e3f4a5b6c7d8")
+        engine = create_engine(database_url)
+        assert {
+            "langgraph_checkpoints",
+            "langgraph_checkpoint_writes",
+        } <= set(inspect(engine).get_table_names())
+        engine.dispose()
+        engine = None
 
-    command.downgrade(config, "d2e3f4a5b6c7")
-    engine = create_engine(database_url)
-    assert not {
-        "langgraph_checkpoints",
-        "langgraph_checkpoint_writes",
-    } & set(inspect(engine).get_table_names())
-    engine.dispose()
+        command.downgrade(config, "d2e3f4a5b6c7")
+        engine = create_engine(database_url)
+        assert not {
+            "langgraph_checkpoints",
+            "langgraph_checkpoint_writes",
+        } & set(inspect(engine).get_table_names())
+        engine.dispose()
+        engine = None
 
-    command.upgrade(config, "head")
-    engine = create_engine(database_url)
-    assert {
-        "langgraph_checkpoints",
-        "langgraph_checkpoint_writes",
-    } <= set(inspect(engine).get_table_names())
-    engine.dispose()
+        command.upgrade(config, "head")
+        engine = create_engine(database_url)
+        assert {
+            "langgraph_checkpoints",
+            "langgraph_checkpoint_writes",
+        } <= set(inspect(engine).get_table_names())
+    finally:
+        if engine is not None:
+            engine.dispose()
+        database_path.unlink(missing_ok=True)
 
 
 @pytest.mark.integration
@@ -47,8 +56,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
     backend_dir = Path(__file__).resolve().parents[2]
     artifacts_dir = backend_dir / ".test_artifacts"
     artifacts_dir.mkdir(exist_ok=True)
-    database_path = artifacts_dir / "haus_migration_test.db"
-    database_path.unlink(missing_ok=True)
+    database_path = artifacts_dir / f"haus_migration_test_{uuid4().hex}.db"
     database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
     config = Config(str(backend_dir / "alembic.ini"))
     config.attributes["database_url"] = database_url
