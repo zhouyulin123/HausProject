@@ -13,6 +13,7 @@ from app.api.main import api_router
 from app.core.config import settings
 from app.core.request_context import bind_request_id, normalize_request_id
 from app.db.database import get_db
+from app.db.schema_readiness import database_schema_is_current
 
 
 app = FastAPI(
@@ -60,6 +61,7 @@ async def health_check():
 def readiness_check(db: Session = Depends(get_db)):
     checks = {
         "database": "ok",
+        "database_schema": "not_checked",
         "storage": "ok",
         "llm": "configured" if settings.llm_api_key else "not_configured",
     }
@@ -67,13 +69,21 @@ def readiness_check(db: Session = Depends(get_db)):
         db.execute(text("SELECT 1"))
     except Exception:
         checks["database"] = "unavailable"
+    else:
+        try:
+            checks["database_schema"] = (
+                "ok" if database_schema_is_current(db) else "migration_required"
+            )
+        except Exception:
+            checks["database_schema"] = "migration_required"
 
     upload_path = Path(settings.upload_dir)
     if not upload_path.is_dir() or not os.access(upload_path, os.W_OK):
         checks["storage"] = "unavailable"
 
     required_checks_ok = all(
-        checks[name] == "ok" for name in ("database", "storage")
+        checks[name] == "ok"
+        for name in ("database", "database_schema", "storage")
     )
     payload = {
         "status": "ready" if required_checks_ok else "unavailable",

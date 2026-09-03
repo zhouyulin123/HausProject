@@ -86,6 +86,8 @@ where npm >nul 2>nul || (
 pushd backend
 %PYTHON_CMD% -m alembic current
 set "CHECK_EXIT=%ERRORLEVEL%"
+if "%CHECK_EXIT%"=="0" %PYTHON_CMD% -m app.db.schema_readiness
+set "CHECK_EXIT=%ERRORLEVEL%"
 if "%CHECK_EXIT%"=="0" %PYTHON_CMD% -c "from app.main import app; from app.core.config import settings; print('app_import=ok'); print('llm_key_configured=' + str(bool(settings.llm_api_key))); raise SystemExit(0 if settings.llm_api_key else 2)"
 set "CHECK_EXIT=%ERRORLEVEL%"
 popd

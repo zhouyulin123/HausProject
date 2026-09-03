@@ -13,6 +13,7 @@ def test_startup_script_discovers_python_without_machine_specific_path():
     assert "py -3.12" in script
     assert "py -3.14" in script
     assert "llm_key_configured" in script
+    assert "app.db.schema_readiness" in script
 
 
 def test_startup_script_uses_windows_line_endings_consistently():

@@ -14,7 +14,15 @@ class BrokenSession:
         raise RuntimeError("database unavailable")
 
 
-def test_ready_reports_database_health():
+def _override_schema_check(monkeypatch, *, is_current: bool) -> None:
+    monkeypatch.setattr(
+        "app.main.database_schema_is_current",
+        lambda _db: is_current,
+    )
+
+
+def test_ready_reports_database_health(monkeypatch):
+    _override_schema_check(monkeypatch, is_current=True)
     app.dependency_overrides[get_db] = lambda: HealthySession()
     try:
         response = TestClient(app).get("/ready")
@@ -23,12 +31,14 @@ def test_ready_reports_database_health():
 
     assert response.status_code == 200
     assert response.json()["checks"]["database"] == "ok"
+    assert response.json()["checks"]["database_schema"] == "ok"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-frame-options"] == "DENY"
     assert response.headers["x-request-id"]
 
 
-def test_ready_returns_503_without_leaking_database_error():
+def test_ready_returns_503_without_leaking_database_error(monkeypatch):
+    _override_schema_check(monkeypatch, is_current=True)
     app.dependency_overrides[get_db] = lambda: BrokenSession()
     try:
         response = TestClient(app).get("/ready")
@@ -37,10 +47,25 @@ def test_ready_returns_503_without_leaking_database_error():
 
     assert response.status_code == 503
     assert response.json()["checks"]["database"] == "unavailable"
+    assert response.json()["checks"]["database_schema"] == "not_checked"
     assert "database unavailable" not in response.text
 
 
-def test_request_id_is_preserved_when_safe_and_replaced_when_invalid():
+def test_ready_returns_503_when_database_schema_requires_migration(monkeypatch):
+    _override_schema_check(monkeypatch, is_current=False)
+    app.dependency_overrides[get_db] = lambda: HealthySession()
+    try:
+        response = TestClient(app).get("/ready")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["database"] == "ok"
+    assert response.json()["checks"]["database_schema"] == "migration_required"
+
+
+def test_request_id_is_preserved_when_safe_and_replaced_when_invalid(monkeypatch):
+    _override_schema_check(monkeypatch, is_current=True)
     app.dependency_overrides[get_db] = lambda: HealthySession()
     try:
         client = TestClient(app)
