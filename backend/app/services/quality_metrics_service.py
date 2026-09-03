@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from math import floor
+import re
 from typing import Any
 
 from sqlalchemy import func, select
@@ -15,6 +16,7 @@ from app.db.models import (
     DesignAgentTurn,
     DesignFeedbackEvent,
     GenerationRun,
+    GenerationRunEvent,
     LayoutRun,
 )
 
@@ -22,6 +24,14 @@ from app.db.models import (
 _FEEDBACK_ACTIONS = ("adopt", "remove", "replace", "move", "final_select")
 _ASSET_FAILURE_ACTION = "glb_load_failed"
 _MODIFICATION_ACTIONS = ("remove", "replace", "move")
+_GENERATION_FAILURE_STATUSES = (
+    "failed",
+    "dead_letter",
+    "provider_unavailable",
+    "cost_limit_exceeded",
+)
+_FAILED_EVENT_STATUSES = {"failed", "error", "rejected"}
+_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_:-]{0,99}$")
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
@@ -72,6 +82,36 @@ def _failure_codes(events: list[DesignAgentEvent]) -> dict[str, int]:
     return dict(sorted(counter.items()))
 
 
+def _generation_failure_codes(
+    runs: list[GenerationRun],
+    events: list[GenerationRunEvent],
+) -> Counter[str]:
+    counter: Counter[str] = Counter(
+        f"generation_status_{run.status}"
+        for run in runs
+        if run.status in _GENERATION_FAILURE_STATUSES
+    )
+    for event in events:
+        if event.status not in _FAILED_EVENT_STATUSES:
+            continue
+        node = event.node.strip() if isinstance(event.node, str) else ""
+        if _CODE_PATTERN.fullmatch(node):
+            counter[f"generation_node_{node}"] += 1
+        details = event.detail_json
+        if not isinstance(details, dict):
+            continue
+        values: list[object] = []
+        for key in ("code", "error_code", "reason_code"):
+            values.append(details.get(key))
+        codes = details.get("codes")
+        if isinstance(codes, list):
+            values.extend(codes)
+        for value in values:
+            if isinstance(value, str) and _CODE_PATTERN.fullmatch(value.strip()):
+                counter[f"generation_code_{value.strip()}"] += 1
+    return counter
+
+
 def build_quality_summary(
     db: Session,
     *,
@@ -98,6 +138,9 @@ def build_quality_summary(
             DesignAgentEvent.event_type == "validation_failed",
         )
     ).all()
+    generation_events = db.scalars(
+        select(GenerationRunEvent).where(GenerationRunEvent.created_at >= cutoff)
+    ).all()
     feedback_rows = db.execute(
         select(
             DesignFeedbackEvent.action_type,
@@ -116,7 +159,9 @@ def build_quality_summary(
 
     generation_statuses = Counter(run.status for run in generation_runs)
     completed = generation_statuses["completed"]
-    failed = generation_statuses["failed"]
+    failed = sum(
+        generation_statuses[status] for status in _GENERATION_FAILURE_STATUSES
+    )
     cancelled = generation_statuses["cancelled"]
     active = generation_statuses["queued"] + generation_statuses["running"]
     completed_runs = [run for run in generation_runs if run.status == "completed"]
@@ -153,12 +198,12 @@ def build_quality_summary(
         feedback_action_counts[action] for action in _MODIFICATION_ACTIONS
     )
 
-    failure_codes = _failure_codes(validation_events)
+    failure_codes = Counter(_failure_codes(validation_events))
+    failure_codes.update(
+        _generation_failure_codes(generation_runs, generation_events)
+    )
     if glb_load_failure_total:
-        failure_codes[_ASSET_FAILURE_ACTION] = (
-            failure_codes.get(_ASSET_FAILURE_ACTION, 0)
-            + glb_load_failure_total
-        )
+        failure_codes[_ASSET_FAILURE_ACTION] += glb_load_failure_total
 
     return {
         "generated_at": current.isoformat(),
@@ -214,5 +259,5 @@ def build_quality_summary(
             ),
             "glb_load_failure_total": glb_load_failure_total,
         },
-        "failure_codes": failure_codes,
+        "failure_codes": dict(sorted(failure_codes.items())),
     }

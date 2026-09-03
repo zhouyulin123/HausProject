@@ -13,6 +13,7 @@ from app.db.models import (
     DesignRevision,
     DesignTask,
     GenerationRun,
+    GenerationRunEvent,
     LayoutRun,
 )
 from app.services.quality_metrics_service import build_quality_summary
@@ -114,6 +115,7 @@ def test_quality_summary_uses_explicit_denominators_and_no_user_content(db):
     assert summary["agent"]["handoff_rate"] == 0.5
     assert summary["failure_codes"] == {
         "budget_exceeded": 1,
+        "generation_status_failed": 1,
         "invalid_sku": 1,
     }
     assert "敏感" not in str(summary)
@@ -203,6 +205,80 @@ def test_quality_summary_returns_none_rates_without_evidence(db):
         "satisfaction_mean": None,
         "glb_load_failure_total": 0,
     }
+
+
+def test_quality_summary_counts_every_failure_terminal_and_node_code(db):
+    now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    task = DesignTask(status="failed", progress=100)
+    db.add(task)
+    db.flush()
+    runs = []
+    for index, status in enumerate(
+        (
+            "completed",
+            "failed",
+            "dead_letter",
+            "provider_unavailable",
+            "cost_limit_exceeded",
+            "cancelled",
+        ),
+        start=1,
+    ):
+        run = GenerationRun(
+            task_id=task.id,
+            attempt=index,
+            status=status,
+            progress=100,
+            created_at=now,
+            completed_at=now,
+        )
+        db.add(run)
+        runs.append(run)
+    db.flush()
+    db.add_all(
+        [
+            GenerationRunEvent(
+                run_id=runs[3].id,
+                node="provider_circuit",
+                status="failed",
+                progress=100,
+                source="deterministic",
+                detail_json={
+                    "code": "provider_timeout",
+                    "message": "不应进入指标响应的供应商错误原文",
+                },
+                created_at=now,
+            ),
+            GenerationRunEvent(
+                run_id=runs[4].id,
+                node="cost_guard",
+                status="failed",
+                progress=100,
+                source="deterministic",
+                detail_json={"reason_code": "task_cost_limit_exceeded"},
+                created_at=now,
+            ),
+        ]
+    )
+    db.commit()
+
+    summary = build_quality_summary(db, now=now, window_days=30)
+
+    assert summary["generation"]["completed"] == 1
+    assert summary["generation"]["failed"] == 4
+    assert summary["generation"]["cancelled"] == 1
+    assert summary["generation"]["success_rate"] == pytest.approx(0.2)
+    assert summary["failure_codes"] == {
+        "generation_code_provider_timeout": 1,
+        "generation_code_task_cost_limit_exceeded": 1,
+        "generation_node_cost_guard": 1,
+        "generation_node_provider_circuit": 1,
+        "generation_status_cost_limit_exceeded": 1,
+        "generation_status_dead_letter": 1,
+        "generation_status_failed": 1,
+        "generation_status_provider_unavailable": 1,
+    }
+    assert "供应商错误原文" not in str(summary)
 
 
 def test_quality_summary_aggregates_anonymous_feedback_with_window_filter(db):
