@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -40,9 +41,12 @@ def test_langgraph_checkpoint_migration_round_trip_from_empty_database():
     config = Config(str(backend_dir / "alembic.ini"))
     config.attributes["database_url"] = database_url
     engine = None
+    app_logger = logging.getLogger("app.http")
+    app_logger.disabled = False
 
     try:
         command.upgrade(config, "e3f4a5b6c7d8")
+        assert app_logger.disabled is False
         engine = create_engine(database_url)
         assert {
             "langgraph_checkpoints",
