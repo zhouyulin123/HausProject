@@ -1,5 +1,11 @@
 # 项目开发状态记录
 
+## 2026-09-03 运营质量指标失败分母修正
+
+- 方案生成成功率的失败分母不再只统计 `failed`，现统一覆盖 `failed`、`dead_letter`、`provider_unavailable` 和 `cost_limit_exceeded`；用户主动取消仍单独展示，不混入模型生成失败。
+- 失败码分布新增生成运行终态、失败节点和受控结构化原因码，来源覆盖 `GenerationRunEvent`；自由文本错误、用户输入和供应商错误原文不会进入聚合响应。
+- 定向验证覆盖全部终态、供应商熔断、成本门禁、节点原因码和隐私边界，共 6 项通过。
+
 ## 2026-09-03 阶段 1 P0：生成事实与布局完成门禁
 
 - 旧同步 `POST /api/design/tasks/{task_id}/generate` 已明确停用并返回 `410 synchronous_generation_removed`，不再进入模型、模板或持久化副作用链路。
