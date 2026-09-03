@@ -17,6 +17,7 @@ import time
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.logging_config import configure_logging
 from app.db.database import SessionLocal
 from app.db.models import BlenderRenderJob, DesignSceneVersion, Product
 from app.schemas.scenes import SceneDocument
@@ -268,10 +269,7 @@ def main() -> int:
     parser.add_argument("--once", action="store_true", help="最多处理一个任务")
     parser.add_argument("--worker-id", default=_default_worker_id())
     args = parser.parse_args()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging()
     try:
         executable = resolve_blender_executable(settings.blender_executable)
     except BlenderProcessError as error:

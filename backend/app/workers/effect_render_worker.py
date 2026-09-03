@@ -13,6 +13,7 @@ import threading
 import time
 
 from app.core.config import settings
+from app.core.logging_config import configure_logging
 from app.core.request_context import bind_request_id
 from app.db.database import SessionLocal
 from app.db.models import EffectRenderJob, UploadedImage
@@ -200,10 +201,7 @@ def main() -> int:
     parser.add_argument("--once", action="store_true", help="最多处理一个任务")
     parser.add_argument("--worker-id", default=_default_worker_id())
     args = parser.parse_args()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging()
     while True:
         processed = process_one_job(worker_id=args.worker_id)
         if args.once:
