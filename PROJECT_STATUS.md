@@ -1970,3 +1970,12 @@
 
 - 仍需由独立于真实案例结果收集器的安全回归执行器，通过真实鉴权/API 边界覆盖“资源所有者允许、其他用户拒绝”，输出稳定 suite/build/environment 标识、检查总数、严重越权数、匿名案例引用和时间戳。
 - 该安全回归制品需由独立 key id 签名并绑定本次应用构建与评测版本，验证器验签、校验新鲜度和版本一致性后才能写入 `cross_user_access_checks`；缺失、过期、版本不匹配、签名无效或检查数为零均保持门禁失败。
+
+## 2026-09-03 阶段 1 P0：生成报价有界重规划
+
+- 真实 Generation Worker 在持久化任何方案前，以已确认的 `budget_max` 检查每套方案的服务端确定性 `shopQuote.total`；任一方案超预算都不会创建成功 revision 或标记 `completed`。
+- 超预算在同一个 `GenerationRun`、同一个 worker attempt 内最多重规划 2 次；每轮通过 `budget_replan` 持久化事件执行租约、取消和 deadline 门禁，不创建新的计费 run。
+- 每次真实模型调用继续经过原有成本预留与供应商熔断上下文；被门禁拒绝的轮次也累计 token usage 与实际成本。首轮超预算、第二轮合规时只冻结第二轮结果。
+- 连续 3 轮仍超预算时进入 `needs_human`，运行终态 `failed/current_node=budget_guard`，Agent checkpoint 公开 `retry_count=2`、`exit_reason=budget_replan_exhausted`、`result.reason_code=budget_replan_exhausted` 和 `budget_exceeded` 硬错误，不允许伪成功。
+- Worker 生成子流程不能直接复用外层 DesignAgent 的 `verify_result -> replan`：外层工具节点只负责入队，拿不到同一运行内的确定性报价；因此有界循环保留在实际生成执行器中，并复用同一持久化运行的成本、事件与所有权契约。
+- TDD RED：`bb49325`；GREEN：`cec0dce`。相关 DesignWorkflow、GenerationRun、Worker、异步路由和 Agent API 回归 94 项通过，目标模块 `compileall` 通过；当前 Python 环境未安装 Ruff。
