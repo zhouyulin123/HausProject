@@ -83,3 +83,13 @@ def test_request_id_is_preserved_when_safe_and_replaced_when_invalid(monkeypatch
     assert preserved.headers["x-request-id"] == "customer-trace-001"
     assert replaced.headers["x-request-id"] != "bad request id"
     assert len(replaced.headers["x-request-id"]) == 36
+
+
+def test_controlled_deployment_exposes_configured_build_digest(monkeypatch):
+    build_digest = "sha256:" + "a" * 64
+    monkeypatch.setenv("APP_BUILD_DIGEST", build_digest)
+
+    response = TestClient(app).get("/health")
+
+    assert response.status_code == 200
+    assert response.headers["x-app-build-digest"] == build_digest
