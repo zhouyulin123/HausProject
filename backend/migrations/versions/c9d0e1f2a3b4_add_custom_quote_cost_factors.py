@@ -17,11 +17,14 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _json_list_column(name: str) -> sa.Column:
+    # MySQL 不允许 JSON 列使用字符串 DEFAULT；先回填再收紧非空约束。
+    return sa.Column(name, sa.JSON(), nullable=True)
+
+
 def upgrade() -> None:
     with op.batch_alter_table("custom_quote_rules") as batch_op:
-        batch_op.add_column(
-            sa.Column("region_codes", sa.JSON(), server_default="[]", nullable=False)
-        )
+        batch_op.add_column(_json_list_column("region_codes"))
         batch_op.add_column(
             sa.Column("waste_rate_bps", sa.Integer(), server_default="0", nullable=False)
         )
@@ -71,6 +74,19 @@ def upgrade() -> None:
         batch_op.create_check_constraint(
             "ck_custom_quote_rules_record_version",
             "record_version >= 1",
+        )
+
+    table = sa.table("custom_quote_rules", sa.column("region_codes", sa.JSON()))
+    op.execute(
+        table.update()
+        .where(table.c.region_codes.is_(None))
+        .values(region_codes=[])
+    )
+    with op.batch_alter_table("custom_quote_rules") as batch_op:
+        batch_op.alter_column(
+            "region_codes",
+            existing_type=sa.JSON(),
+            nullable=False,
         )
 
 

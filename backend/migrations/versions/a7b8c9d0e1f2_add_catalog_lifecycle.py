@@ -17,6 +17,20 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _json_list_column(name: str) -> sa.Column:
+    # MySQL 不允许 JSON 列使用字符串 DEFAULT；先回填再收紧非空约束。
+    return sa.Column(name, sa.JSON(), nullable=True)
+
+
+def _backfill_json_list(table_name: str, column_name: str) -> None:
+    table = sa.table(table_name, sa.column(column_name, sa.JSON()))
+    op.execute(
+        table.update()
+        .where(table.c[column_name].is_(None))
+        .values({column_name: []})
+    )
+
+
 def upgrade() -> None:
     with op.batch_alter_table("products") as batch_op:
         batch_op.add_column(
@@ -25,9 +39,7 @@ def upgrade() -> None:
         batch_op.add_column(
             sa.Column("availability_status", sa.String(20), server_default="unknown", nullable=False)
         )
-        batch_op.add_column(
-            sa.Column("region_codes", sa.JSON(), server_default="[]", nullable=False)
-        )
+        batch_op.add_column(_json_list_column("region_codes"))
         batch_op.add_column(sa.Column("stock_quantity", sa.Integer(), nullable=True))
         batch_op.add_column(sa.Column("lead_time_days_min", sa.Integer(), nullable=True))
         batch_op.add_column(sa.Column("lead_time_days_max", sa.Integer(), nullable=True))
@@ -41,13 +53,17 @@ def upgrade() -> None:
         batch_op.add_column(
             sa.Column("record_version", sa.Integer(), server_default="1", nullable=False)
         )
-        batch_op.add_column(
-            sa.Column("alternative_skus", sa.JSON(), server_default="[]", nullable=False)
-        )
+        batch_op.add_column(_json_list_column("alternative_skus"))
         batch_op.create_index(op.f("ix_products_verification_status"), ["verification_status"])
         batch_op.create_index(op.f("ix_products_availability_status"), ["availability_status"])
         batch_op.create_index(op.f("ix_products_price_valid_from"), ["price_valid_from"])
         batch_op.create_index(op.f("ix_products_price_valid_to"), ["price_valid_to"])
+
+    _backfill_json_list("products", "region_codes")
+    _backfill_json_list("products", "alternative_skus")
+    with op.batch_alter_table("products") as batch_op:
+        batch_op.alter_column("region_codes", existing_type=sa.JSON(), nullable=False)
+        batch_op.alter_column("alternative_skus", existing_type=sa.JSON(), nullable=False)
 
     with op.batch_alter_table("quote_snapshots") as batch_op:
         batch_op.add_column(
@@ -59,9 +75,11 @@ def upgrade() -> None:
         batch_op.add_column(
             sa.Column("rule_version", sa.String(100), server_default="legacy", nullable=False)
         )
-        batch_op.add_column(
-            sa.Column("sku_versions_json", sa.JSON(), server_default="[]", nullable=False)
-        )
+        batch_op.add_column(_json_list_column("sku_versions_json"))
+
+    _backfill_json_list("quote_snapshots", "sku_versions_json")
+    with op.batch_alter_table("quote_snapshots") as batch_op:
+        batch_op.alter_column("sku_versions_json", existing_type=sa.JSON(), nullable=False)
 
 
 def downgrade() -> None:

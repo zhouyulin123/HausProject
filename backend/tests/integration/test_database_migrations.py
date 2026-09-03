@@ -5,6 +5,27 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.dialects import mysql
+from sqlalchemy.schema import CreateColumn
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "migrations.versions.a7b8c9d0e1f2_add_catalog_lifecycle",
+        "migrations.versions.c9d0e1f2a3b4_add_custom_quote_cost_factors",
+    ],
+)
+def test_json_list_columns_have_no_mysql_server_default(module_name):
+    migration = __import__(module_name, fromlist=["_json_list_column"])
+    ddl = str(
+        CreateColumn(migration._json_list_column("region_codes")).compile(
+            dialect=mysql.dialect()
+        )
+    )
+
+    assert "DEFAULT" not in ddl.upper()
+    assert "JSON" in ddl.upper()
 
 
 @pytest.mark.integration
