@@ -229,7 +229,7 @@ def test_regression_comparison_fails_when_quality_drops_on_same_cases(tmp_path):
     assert by_metric["quote_consistency_rate"]["regressed"] is False
 
 
-def test_regression_comparison_rejects_different_dataset_or_case_set(tmp_path):
+def test_regression_comparison_allows_product_data_version_change(tmp_path):
     dataset = _manifest(tmp_path)
     report = build_evaluation_report(
         dataset=dataset,
@@ -242,8 +242,25 @@ def test_regression_comparison_rejects_different_dataset_or_case_set(tmp_path):
     )
     wrong_data = copy.deepcopy(report)
     wrong_data["versions"]["data"] = "data-2"
-    with pytest.raises(EvaluationInputError, match="数据版本"):
-        compare_evaluation_reports(report, wrong_data)
+
+    comparison = compare_evaluation_reports(report, wrong_data)
+
+    assert comparison["candidate_versions"]["data"] == "data-1"
+    assert comparison["baseline_versions"]["data"] == "data-2"
+    assert comparison["passed"] is True
+
+
+def test_regression_comparison_rejects_different_dataset_or_case_set(tmp_path):
+    dataset = _manifest(tmp_path)
+    report = build_evaluation_report(
+        dataset=dataset,
+        split="regression",
+        evidence=_evidence(
+            dataset,
+            model="m1",
+            results=(_result("case-a"), _result("case-b")),
+        ),
+    )
 
     wrong_dataset = copy.deepcopy(report)
     wrong_dataset["evidence"]["dataset_fingerprint"] = "sha256:" + "0" * 64
