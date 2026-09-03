@@ -176,6 +176,11 @@ def test_enrichment_rejects_whitespace_only_glb_review_metadata(db):
     enriched = plans[0]["furnitureSuggestions"][0]
     assert enriched["assetMode"] == "parametric"
     assert enriched["fallbackReason"] == "glb_pending_review"
+    assert enriched["modelUrl"] is None
+    assert enriched["assetReview"]["glb"] == {
+        "status": "unavailable",
+        "reason_code": "glb_pending_review",
+    }
 
 
 def test_catalog_context_only_contains_current_eligible_products(db):
