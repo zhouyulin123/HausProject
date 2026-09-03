@@ -17,7 +17,13 @@ from app.db.models import (
     Product,
 )
 from app.core.request_context import current_request_id
-from app.services import design_version_service, generation_run_service, llm_service
+from app.services import (
+    design_version_service,
+    generation_run_service,
+    generation_scene_service,
+    llm_service,
+)
+from app.services.layout_evaluator import HARD_FAIL_CODES, LayoutIssue, LayoutScore
 from app.workers import generation_worker
 
 
@@ -167,6 +173,78 @@ def test_worker_success_completes_bound_agent_checkpoint(monkeypatch):
             "result_revision_id": completed_run.result_revision_id,
             "output_digest": completed_run.output_digest,
         }
+
+
+@pytest.mark.parametrize("hard_code", sorted(HARD_FAIL_CODES))
+def test_worker_never_completes_layout_with_hard_issue(monkeypatch, hard_code):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(status="running", progress=50)
+        db.add(task)
+        db.commit()
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key=f"agent-generation:1:hard-layout-{hard_code}",
+            request_digest="sha256:" + "d" * 64,
+        )
+        task.agent_state_json = {
+            "status": "running",
+            "current_node": "generation_queued",
+            "exit_reason": "generation_queued",
+            "run_id": run.id,
+            "result": {"run_id": run.id, "generation_status": "queued"},
+        }
+        db.commit()
+        run_id = run.id
+        task_id = task.id
+
+    original_generate_layouts = generation_scene_service.layout_generator.generate_layouts
+
+    def invalid_layouts(room, openings, furniture, **kwargs):
+        generated = original_generate_layouts(room, openings, furniture, **kwargs)
+        scene, _ = generated[0]
+        return [
+            (
+                scene,
+                LayoutScore(
+                    total=95,
+                    issues=[LayoutIssue(code=hard_code, message="硬布局约束未通过")],
+                ),
+            )
+        ]
+
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+    monkeypatch.setattr(
+        generation_scene_service.layout_generator,
+        "generate_layouts",
+        invalid_layouts,
+    )
+
+    def executor(db, *, task, on_step, on_meta, before_persist, on_success):
+        before_persist()
+        revision = _persist_worker_output(db, task, generator="llm")
+        on_success("llm", revision.id)
+        return type("Response", (), {"generator": "llm"})()
+
+    assert generation_worker.process_one_run(
+        worker_id=f"agent-worker-hard-layout-{hard_code}",
+        executor=executor,
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        failed_run = db.get(type(run), run_id)
+        assert task is not None
+        assert failed_run is not None
+        assert failed_run.status == "failed"
+        assert failed_run.result_revision_id is None
+        assert failed_run.output_digest is None
+        assert hard_code in (failed_run.error_message or "")
+        assert task.agent_state_json["status"] == "needs_human"
+        assert task.agent_state_json["exit_reason"] == "generation_failed"
 
 
 def test_agent_generation_run_disables_template_fallback_in_default_worker(

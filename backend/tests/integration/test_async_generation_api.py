@@ -32,7 +32,12 @@ def async_generation_context(monkeypatch):
         task = DesignTask(
             status="confirmed",
             progress=50,
-            confirmed_requirement_json={"rooms": ["客厅"]},
+            confirmed_requirement_json={
+                "rooms": ["客厅"],
+                "budget_max": 20_000,
+                "room_width_m": 4.0,
+                "room_depth_m": 5.0,
+            },
         )
         db.add(task)
         db.commit()
@@ -123,6 +128,51 @@ def test_generate_async_requires_idempotency_key(async_generation_context):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    ("requirement", "missing_fields"),
+    [
+        (
+            {"rooms": ["客厅"], "room_width_m": 4.0, "room_depth_m": 5.0},
+            ["budget_max"],
+        ),
+        (
+            {"rooms": ["客厅"], "budget_max": 20_000, "room_width_m": 4.0},
+            ["room_dimensions"],
+        ),
+    ],
+)
+def test_generate_async_rejects_incomplete_confirmed_facts_before_creating_run(
+    async_generation_context,
+    requirement,
+    missing_fields,
+):
+    client, owner_id, _, task_id, scheduled, factory = async_generation_context
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task is not None
+        task.confirmed_requirement_json = requirement
+        db.commit()
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/generate-async",
+        headers={
+            "X-Session-ID": owner_id,
+            "Idempotency-Key": "incomplete-facts-generation-001",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "generation_facts_incomplete",
+        "message": "生成方案前必须确认预算和房间尺寸",
+        "missing_fields": missing_fields,
+    }
+    assert scheduled == []
+    with factory() as db:
+        assert db.scalars(select(GenerationRun)).all() == []
+
+
+@pytest.mark.integration
 def test_generation_key_reuse_rejects_changed_task_input(async_generation_context):
     client, owner_id, _, task_id, scheduled, factory = async_generation_context
     headers = {
@@ -136,7 +186,12 @@ def test_generation_key_reuse_rejects_changed_task_input(async_generation_contex
     with factory() as db:
         task = db.get(DesignTask, task_id)
         assert task is not None
-        task.confirmed_requirement_json = {"rooms": ["卧室"]}
+        task.confirmed_requirement_json = {
+            "rooms": ["卧室"],
+            "budget_max": 30_000,
+            "room_width_m": 3.6,
+            "room_depth_m": 4.2,
+        }
         db.commit()
 
     conflict = client.post(
@@ -164,6 +219,25 @@ def test_legacy_synchronous_generation_is_deprecated_in_openapi(
 
     assert operation["deprecated"] is True
     assert "generate-async" in operation["description"]
+
+
+@pytest.mark.integration
+def test_legacy_synchronous_generation_returns_gone(async_generation_context):
+    client, owner_id, _, task_id, scheduled, factory = async_generation_context
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/generate",
+        headers={"X-Session-ID": owner_id},
+    )
+
+    assert response.status_code == 410
+    assert response.json()["detail"] == {
+        "code": "synchronous_generation_removed",
+        "message": "同步生成入口已停用，请通过 Agent 工作台发起设计",
+    }
+    assert scheduled == []
+    with factory() as db:
+        assert db.scalars(select(GenerationRun)).all() == []
 
 
 @pytest.mark.integration
