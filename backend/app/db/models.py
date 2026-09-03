@@ -503,6 +503,75 @@ class RenderedImage(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class EffectRenderJob(Base):
+    """独立 Worker 消费的效果图生成任务。"""
+
+    __tablename__ = "effect_render_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "idempotency_key",
+            name="uq_effect_render_jobs_task_idempotency",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    plan_version_id = Column(
+        Integer,
+        ForeignKey("design_plan_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    source_image_id = Column(
+        Integer,
+        ForeignKey("uploaded_images.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    source_image_digest = Column(String(71), nullable=True)
+    prompt_snapshot = Column(Text, nullable=False)
+    prompt_digest = Column(String(71), nullable=False)
+    request_digest = Column(String(71), nullable=False)
+    idempotency_key = Column(String(100), nullable=False)
+    request_id = Column(String(100), nullable=True, index=True)
+    status = Column(String(30), nullable=False, default="queued", index=True)
+    progress = Column(Integer, nullable=False, default=0)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=2)
+    worker_id = Column(String(100), nullable=True, index=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    execution_deadline_at = Column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    cancel_requested_at = Column(DateTime(timezone=True), nullable=True)
+    dead_lettered_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    rendered_image_id = Column(
+        Integer,
+        ForeignKey("rendered_images.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    output_url = Column(String(500), nullable=True)
+    mode = Column(String(20), nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    plan_version = relationship("DesignPlanVersion")
+    source_image = relationship("UploadedImage")
+    rendered_image = relationship("RenderedImage")
+
+
 class AnonymousSession(Base):
     """无需登录的客户会话，承载上传图片、设计任务和后续方案版本。"""
 

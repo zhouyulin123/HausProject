@@ -70,6 +70,21 @@ def test_generation_worker_execution_timeout_must_be_positive_and_bounded():
         )
 
 
+def test_effect_render_worker_heartbeat_must_fit_lease_and_deadline():
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            effect_render_worker_heartbeat_seconds=60,
+            effect_render_worker_lease_seconds=60,
+        )
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            effect_render_worker_heartbeat_seconds=30,
+            effect_render_worker_execution_timeout_seconds=30,
+        )
+
+
 def test_design_agent_turn_lease_must_be_positive_and_bounded():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, design_agent_turn_lease_seconds=0)

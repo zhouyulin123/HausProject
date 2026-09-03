@@ -182,3 +182,44 @@ def test_cancel_queued_job_is_terminal_and_never_claimed():
             ) is None
     finally:
         engine.dispose()
+
+
+def test_cancel_running_job_revokes_worker_and_prevents_output_commit():
+    engine, factory = _database()
+    try:
+        with factory() as db:
+            task, plan = _persist_plan(db)
+            job, _ = effect_render_job_service.create_or_get_job(
+                db,
+                task_id=task.id,
+                plan_version_id=plan.id,
+                idempotency_key="render-key-4",
+                request_digest="sha256:first",
+                prompt_snapshot="a living room",
+                prompt_digest="sha256:prompt",
+                source_image_id=None,
+                source_image_digest=None,
+                max_attempts=2,
+                execution_timeout_seconds=300,
+            )
+            claimed = effect_render_job_service.claim_next_job(
+                db, worker_id="worker-a", lease_seconds=30
+            )
+            assert claimed is not None
+            worker_attempt = claimed.attempt_count
+
+            cancelled = effect_render_job_service.cancel_job(db, job=claimed)
+
+            assert cancelled.status == "cancelled"
+            assert cancelled.worker_id is None
+            assert effect_render_job_service.complete_job(
+                db,
+                job_id=job.id,
+                worker_id="worker-a",
+                worker_attempt=worker_attempt,
+                image_url="/uploads/effect_renders/cancelled.png",
+                mode="text2img",
+            ) is False
+            assert db.query(RenderedImage).count() == 0
+    finally:
+        engine.dispose()

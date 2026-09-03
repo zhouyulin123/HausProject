@@ -122,6 +122,14 @@ class Settings(BaseSettings):
     provider_circuit_probe_lease_seconds: int = Field(default=30, ge=5, le=300)
     generation_worker_retry_base_seconds: int = Field(default=5, ge=1, le=600)
     generation_inline_fallback: bool = False
+    effect_render_worker_poll_seconds: float = Field(default=1.0, ge=0.2, le=60)
+    effect_render_worker_max_attempts: int = Field(default=2, ge=1, le=5)
+    effect_render_worker_lease_seconds: int = Field(default=180, ge=30, le=3600)
+    effect_render_worker_heartbeat_seconds: int = Field(default=15, ge=5, le=300)
+    effect_render_worker_execution_timeout_seconds: int = Field(
+        default=900, ge=30, le=7200
+    )
+    effect_render_worker_retry_base_seconds: int = Field(default=5, ge=1, le=600)
     # 阶段 4 失败分诊报告验签；未配置时管理端同步接口关闭。
     eval_report_signing_key: str = ""
 
@@ -148,6 +156,16 @@ class Settings(BaseSettings):
             >= self.generation_worker_execution_timeout_seconds
         ):
             raise ValueError("方案生成 Worker 心跳间隔必须小于执行截止时间")
+        if (
+            self.effect_render_worker_heartbeat_seconds
+            >= self.effect_render_worker_lease_seconds
+        ):
+            raise ValueError("效果图 Worker 心跳间隔必须小于租约有效期")
+        if (
+            self.effect_render_worker_heartbeat_seconds
+            >= self.effect_render_worker_execution_timeout_seconds
+        ):
+            raise ValueError("效果图 Worker 心跳间隔必须小于执行截止时间")
 
         if self.app_env != "production":
             return self

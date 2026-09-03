@@ -8,6 +8,7 @@ from app.api.routes import render
 from app.db.database import Base, get_db
 from app.db.models import DesignTask, EffectRenderJob
 from app.services import design_version_service
+from app.services import sd_service
 from app.services.anonymous_session_service import attach_task, create_anonymous_session
 
 
@@ -37,7 +38,7 @@ def _context(monkeypatch):
         plan_version_id = revision.plans[0].id
 
     monkeypatch.setattr(
-        render.sd_service,
+        sd_service,
         "render_effect_image",
         lambda *_: (_ for _ in ()).throw(AssertionError("API 不得调用 SD")),
     )

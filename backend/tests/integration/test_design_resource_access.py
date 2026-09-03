@@ -9,8 +9,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes import chat, proposal, render
 from app.db.database import Base, get_db
-from app.db.models import DesignTask, RenderedImage
-from app.services import design_version_service
+from app.db.models import DesignTask, EffectRenderJob, RenderedImage
+from app.services import design_version_service, sd_service
 from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
@@ -45,7 +45,7 @@ def design_access_context(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        render.sd_service,
+        sd_service,
         "is_available",
         lambda: (_ for _ in ()).throw(
             AssertionError("越权绘图不应检查或调用 SD")
@@ -101,7 +101,10 @@ def test_design_resources_reject_foreign_task_before_external_calls(
 
     response = client.post(
         path,
-        headers={"X-Session-ID": stranger_id},
+        headers={
+            "X-Session-ID": stranger_id,
+            "Idempotency-Key": "foreign-resource-1",
+        },
         json=body,
     )
 
@@ -267,9 +270,9 @@ def test_render_and_proposal_require_exact_plan_version(monkeypatch):
         Path(__file__).resolve().parents[2] / ".test_artifacts" / "delivery-version"
     )
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(render.sd_service, "is_available", lambda: True)
+    monkeypatch.setattr(sd_service, "is_available", lambda: True)
     monkeypatch.setattr(
-        render.sd_service,
+        sd_service,
         "render_effect_image",
         lambda *_: (b"png", "text2img"),
     )
@@ -307,7 +310,10 @@ def test_render_and_proposal_require_exact_plan_version(monkeypatch):
         )
         rendered = client.post(
             "/api/design/render",
-            headers={"X-Session-ID": owner_id},
+            headers={
+                "X-Session-ID": owner_id,
+                "Idempotency-Key": "delivery-render-1",
+            },
                 json={
                     "task_id": task_id,
                     "plan_version_id": plan_version_id,
@@ -316,11 +322,11 @@ def test_render_and_proposal_require_exact_plan_version(monkeypatch):
 
     assert missing_render.status_code == 422
     assert missing_proposal.status_code == 422
-    assert rendered.status_code == 200
+    assert rendered.status_code == 202
     with factory() as db:
-        record = db.query(RenderedImage).one()
-        assert record.plan_version_id == plan_version_id
-        assert record.plan_id == "plan-a"
+        job = db.query(EffectRenderJob).one()
+        assert job.plan_version_id == plan_version_id
+        assert db.query(RenderedImage).count() == 0
 
     for generated_file in artifact_dir.iterdir():
         if generated_file.is_file():

@@ -448,6 +448,10 @@ interface BackendProduct {
   data_origin: FurnitureDataOrigin;
   source_name: string | null;
   source_url: string | null;
+  eligibility: {
+    eligible: boolean;
+    reason_codes: string[];
+  };
 }
 
 /** 从后端商品库拉取自家家具；后端不可用时降级到本地 mock 数据。 */
@@ -485,6 +489,10 @@ export async function fetchFurnitureCatalog(
       dataOrigin: p.data_origin ?? "unknown",
       sourceName: p.source_name ?? undefined,
       sourceUrl: p.source_url ?? undefined,
+      catalogEligibility: {
+        eligible: p.eligibility.eligible,
+        reasonCodes: p.eligibility.reason_codes,
+      },
     }));
   } catch (error) {
     const fallbackToMock = options.fallbackToMock ?? demoFallbackEnabled;
@@ -665,27 +673,99 @@ export function getCurrentTaskId(): number | null {
   return currentTaskId;
 }
 
-export interface RenderedEffect {
-  imageUrl: string;
-  /** controlnet（基于上传照片重绘）/ text2img（凭空生成） */
-  mode: string;
+export type EffectRenderStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "dead_letter"
+  | "cancelled"
+  | "provider_unavailable";
+
+export interface EffectRenderJob {
+  jobId: number;
+  taskId: number;
+  planVersionId: number;
+  status: EffectRenderStatus;
+  progress: number;
+  attemptCount: number;
+  maxAttempts: number;
+  imageUrl: string | null;
+  mode: string | null;
+  errorMessage: string | null;
 }
 
-/** 按需生成方案效果图（后端本地 SD，约 10-15 秒）。失败时抛错，由页面提示。 */
-export async function renderEffectImage(
+interface EffectRenderJobWire {
+  job_id: number;
+  task_id: number;
+  plan_version_id: number;
+  status: EffectRenderStatus;
+  progress: number;
+  attempt_count: number;
+  max_attempts: number;
+  image_url?: string | null;
+  mode?: string | null;
+  error_message?: string | null;
+}
+
+function mapEffectRenderJob(data: EffectRenderJobWire): EffectRenderJob {
+  return {
+    jobId: data.job_id,
+    taskId: data.task_id,
+    planVersionId: data.plan_version_id,
+    status: data.status,
+    progress: data.progress,
+    attemptCount: data.attempt_count,
+    maxAttempts: data.max_attempts,
+    imageUrl: data.image_url ?? null,
+    mode: data.mode ?? null,
+    errorMessage: data.error_message ?? null,
+  };
+}
+
+export async function queueEffectRender(
   planVersionId: number,
-): Promise<RenderedEffect> {
-  const data = await request<{ image_url: string; mode: string }>(
-    "/api/design/render",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        task_id: currentTaskId,
-        plan_version_id: planVersionId,
-      }),
-    },
+  idempotencyKey: string,
+): Promise<EffectRenderJob> {
+  if (!currentTaskId) throw new Error("当前没有可渲染的设计任务");
+  const data = await request<EffectRenderJobWire>("/api/design/render", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({
+      task_id: currentTaskId,
+      plan_version_id: planVersionId,
+    }),
+  });
+  return mapEffectRenderJob(data);
+}
+
+export async function fetchEffectRender(jobId: number): Promise<EffectRenderJob> {
+  return mapEffectRenderJob(
+    await request<EffectRenderJobWire>(`/api/design/render/${jobId}`),
   );
-  return { imageUrl: data.image_url, mode: data.mode };
+}
+
+export async function fetchLatestEffectRender(
+  planVersionId: number,
+): Promise<EffectRenderJob | null> {
+  try {
+    const data = await request<EffectRenderJobWire>(
+      `/api/design/render?plan_version_id=${planVersionId}`,
+    );
+    return mapEffectRenderJob(data);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+export async function cancelEffectRender(jobId: number): Promise<EffectRenderJob> {
+  return mapEffectRenderJob(
+    await request<EffectRenderJobWire>(
+      `/api/design/render/${jobId}/cancel`,
+      { method: "POST" },
+    ),
+  );
 }
 
 // ---------------------------------------------------------------- 提案 PDF 导出
