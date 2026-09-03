@@ -161,6 +161,7 @@ def test_owner_creates_hashed_token_and_public_reads_only_whitelisted_snapshot()
 
         serialized = json.dumps(payload, ensure_ascii=False)
         assert payload["plan"]["name"] == "服务端冻结方案"
+        assert "score" not in payload["plan"]
         assert payload["plan"]["furniture"][0]["sku"] == "SOFA-001"
         assert payload["plan"]["quote"]["total"] == 5000
         for forbidden in (
