@@ -75,6 +75,16 @@ def generation_rule_artifact_snapshot() -> list[dict[str, str]]:
     return snapshot
 
 
+def current_generation_rules_digest() -> str:
+    """复算当前检出代码的生成与布局规则版本。"""
+    return canonical_digest(
+        {
+            "schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
+            "artifacts": generation_rule_artifact_snapshot(),
+        }
+    )
+
+
 def build_generation_provenance(
     *,
     prompt_snapshot: str,
@@ -91,12 +101,7 @@ def build_generation_provenance(
     return {
         "prompt_digest": canonical_digest(prompt_snapshot),
         "input_digest": canonical_digest(input_snapshot),
-        "rules_digest": canonical_digest(
-            {
-                "schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
-                "artifacts": generation_rule_artifact_snapshot(),
-            }
-        ),
+        "rules_digest": current_generation_rules_digest(),
         "data_digest": canonical_digest(
             {
                 "schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,

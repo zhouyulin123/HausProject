@@ -27,6 +27,8 @@
 
 同一个物理案例只允许出现在一个分组。公开研究数据使用 `public_reference`，指标必须与 `private_real` 分开查看；构造案例使用 `synthetic`，不得进入盲测集。
 
+发布门禁比日常开发评测更严格：development、regression、blind 三组都必须存在非零准入真实案例，三组都禁止 `synthetic`。盲测只能由受保护的 `workflow_dispatch` 在受控 runner 执行，PR 和普通 GitHub runner 不得读取盲测资产、标签或运行绑定。
+
 加载清单时会流式计算资产 SHA-256。同一内容即使复制成不同文件名、改用不同 `case_id`，也会被识别为重复物理案例并拒绝整个清单，防止开发集或回归集样例泄漏到盲测集。
 
 ## 可信证据格式
@@ -145,7 +147,49 @@ python -m evals.run_real_world_eval `
 
 基线和候选的 split、评测数据集指纹或匿名案例指纹集合不一致时拒绝比较。即使候选仍达到绝对门禁，只要比例指标下降、跨用户访问或无限重试计数增加，版本回归也会失败。盲测证据不能隐式作为 development 或 regression 的候选或基线。
 
-报告和签名证据会绑定准入案例的资产 SHA-256、标签版本、来源和分组。基线与候选即使沿用相同数据版本，只要实际资产、标签或分组发生变化，也会拒绝伪装成同一案例集比较。
+## 发布门禁配置
+
+`.github/workflows/real-world-release-gate.yml` 只允许手工触发，并要求受保护的 `real-world-evaluation` Environment 与带 `real-world-eval` 标签的 self-hosted runner。敏感密钥、数据库地址和配置路径只通过 GitHub Secrets 注入；案例会话值由受控 runner 的密钥管理环境按安全目标文件中的环境变量名提供，不能写入配置或仓库。
+
+`REAL_WORLD_RELEASE_GATE_CONFIG_PATH` 指向 runner 上的私有 JSON。它不能包含密钥，只记录三组输入位置和受控部署地址：
+
+```json
+{
+  "schema_version": "1.0",
+  "splits": {
+    "development": {
+      "manifest": "development/manifest.json",
+      "asset_root": "development",
+      "run_bindings": "development/run-bindings.json",
+      "security_targets": "development/security-targets.json",
+      "baseline_evidence": "development/baseline.evidence.json",
+      "deployment_base_url": "https://eval.example.invalid"
+    },
+    "regression": {
+      "manifest": "regression/manifest.json",
+      "asset_root": "regression",
+      "run_bindings": "regression/run-bindings.json",
+      "security_targets": "regression/security-targets.json",
+      "baseline_evidence": "regression/baseline.evidence.json",
+      "deployment_base_url": "https://eval.example.invalid"
+    },
+    "blind": {
+      "manifest": "blind/manifest.json",
+      "asset_root": "blind",
+      "run_bindings": "blind/run-bindings.json",
+      "security_targets": "blind/security-targets.json",
+      "baseline_evidence": "blind/baseline.evidence.json",
+      "deployment_base_url": "https://eval.example.invalid"
+    }
+  }
+}
+```
+
+门禁在临时目录内现场签发候选安全证据和评测证据，不上传这些内部制品；仅上传脱敏的 `real_world_release_gate.json/.md`。候选必须绑定 `APP_BUILD_DIGEST` 指定的当前受控部署，模型名必须匹配 `REAL_WORLD_EVAL_LLM_MODEL` Secret 注入的 `LLM_MODEL`，Prompt 与规则摘要必须能从目标提交现场复算一致；证据签发还会用当前数据库重新构建完整商品上下文和动态输入，任一版本变化都要求重新执行候选，防止旧运行冒充当前结果。基线允许绑定其历史构建，但必须通过原评测签名和独立安全签名。被测商品数据版本可以在候选与基线之间变化，评测数据集指纹与匿名案例集合必须保持相同，报告会并列保留模型、Prompt、规则、数据四类基线/候选版本。
+
+普通 `.github/workflows/quality.yml` 运行无依赖的 `evals.release_change_detection`，只输出 `proof_required` 或 `not_required`，不会生成 PASS。受控工作流无论路径检测结果如何都会执行三组，以覆盖部署环境中的模型或商品版本变更。模型/Prompt/布局规则/商品数据契约命中后，仓库分支保护或发布环境必须要求目标提交上的 `real-world-release-proof` 成功；否则仅有仓库代码无法强制 GitHub 的外部保护规则。
+
+报告和签名证据会绑定准入案例的资产 SHA-256、标签版本、来源和分组。只要实际资产、标签或分组发生变化，就会拒绝伪装成同一案例集比较。
 
 评测退出码：`0` 表示全部门禁通过，`1` 表示可信证据完整但质量未达标，`2` 表示清单、证据、签名或密钥不合法。证据收集器成功返回 `0`，任何运行来源、覆盖或签名配置问题返回 `2`。当前清单没有准入案例，因此尚不能签发真实验收证据，也不能在 CI 中当作成功。
 

@@ -5,6 +5,29 @@ on:
   pull_request:
 
 jobs:
+  real-world-proof-requirement:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 检测是否必须运行受控真实案例回归
+        env:
+          CHANGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CHANGE_HEAD: ${{ github.sha }}
+          PYTHONPATH: backend
+        run: >-
+          python -m evals.release_change_detection
+          --repo-root .
+          --base-ref "$CHANGE_BASE"
+          --head-ref "$CHANGE_HEAD"
+          --output .test_artifacts/real-world-proof-requirement.json
+
   backend:
     runs-on: ubuntu-latest
     defaults:

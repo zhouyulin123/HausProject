@@ -5,13 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from evals.real_world import EvaluationInputError, load_case_manifest
+from evals.real_world import EvaluationInputError, EvaluationVersions, load_case_manifest
+from evals.release_change_detection import classify_release_sensitive_paths
 from evals.real_world_release_gate import (
-    classify_release_sensitive_paths,
     load_release_gate_config,
+    main as release_gate_main,
+    validate_candidate_runtime_versions,
     validate_release_dataset,
+    validate_release_evidence,
     validate_release_event,
 )
+from evals.trusted_evidence import VerifiedEvaluationEvidence
 from tests.real_world_fixtures import write_v2_manifest
 
 
@@ -89,6 +93,58 @@ def test_only_controlled_manual_workflow_can_issue_release_proof():
         validate_release_event("pull_request", ("blind",))
 
 
+def test_release_evidence_requires_5_0_and_independent_security_build_binding():
+    evidence = VerifiedEvaluationEvidence(
+        schema_version="5.0",
+        versions=EvaluationVersions("model", "prompt", "rules", "data"),
+        dataset_fingerprint="sha256:" + "1" * 64,
+        evidence_digest="sha256:" + "2" * 64,
+        split="regression",
+        results=(),
+        executions=(),
+        key_id="eval-key",
+        security_evidence_digest="sha256:" + "3" * 64,
+        security_key_id="security-key",
+        app_build_digest="sha256:" + "4" * 64,
+    )
+
+    validate_release_evidence(
+        evidence,
+        expected_build_digest="sha256:" + "4" * 64,
+        label="候选",
+    )
+
+    with pytest.raises(EvaluationInputError, match="匹配构建"):
+        validate_release_evidence(
+            evidence,
+            expected_build_digest="sha256:" + "5" * 64,
+            label="候选",
+        )
+
+
+def test_candidate_versions_must_match_checked_out_prompt_rules_and_model():
+    actual = EvaluationVersions(
+        model="model-v1",
+        prompt="sha256:" + "1" * 64,
+        rules="sha256:" + "2" * 64,
+        data="sha256:" + "3" * 64,
+    )
+    validate_candidate_runtime_versions(
+        actual,
+        expected_model="model-v1",
+        expected_prompt="sha256:" + "1" * 64,
+        expected_rules="sha256:" + "2" * 64,
+    )
+
+    with pytest.raises(EvaluationInputError, match="规则版本.*目标提交"):
+        validate_candidate_runtime_versions(
+            actual,
+            expected_model="model-v1",
+            expected_prompt="sha256:" + "1" * 64,
+            expected_rules="sha256:" + "4" * 64,
+        )
+
+
 def test_gate_config_requires_all_splits_and_never_accepts_inline_secrets(tmp_path):
     config = {
         "schema_version": "1.0",
@@ -132,3 +188,21 @@ def test_controlled_workflow_contract_is_fail_closed():
     assert "if-no-files-found: error" in workflow
     assert "real_world_release_gate.json" in workflow
 
+
+def test_missing_controlled_environment_fails_closed_with_redacted_report(
+    tmp_path, monkeypatch
+):
+    for name in ("GITHUB_SHA", "GITHUB_EVENT_NAME", "REAL_WORLD_BASE_REF"):
+        monkeypatch.delenv(name, raising=False)
+
+    exit_code = release_gate_main(
+        ["--repo-root", ".", "--output-dir", str(tmp_path)]
+    )
+    report = json.loads(
+        (tmp_path / "real_world_release_gate.json").read_text(encoding="utf-8")
+    )
+
+    assert exit_code == 2
+    assert report["overall_passed"] is False
+    assert report["error_code"] == "release_gate_input_invalid"
+    assert "error" not in report

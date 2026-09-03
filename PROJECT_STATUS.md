@@ -2011,3 +2011,12 @@
 - 新增顶层公开路由 `/share/:token`，页面仅以 URL token 读取公开接口，不读取会话、本地设计 store 或 mock；方案页提供创建、复制及撤销操作。
 - 新迁移从 `c1d2e3f4a5b6` 线性升级到 `d2e3f4a5b6c7`，空 SQLite 数据库已完成 upgrade、downgrade、upgrade 验证。TDD RED 为 `e22d729`，GREEN 实现进入 `e623633`；相关后端 10 项、前端 6 项、前端全量 189 项、类型检查及生产构建通过。
 - 后端全量测试当前被并行阶段 3 的 LangGraph checkpoint RED 用例阻断在收集阶段（缺少尚未实现的 `LangGraphCheckpoint` 与 checkpoint service），与本分享模块无关。
+
+## 2026-09-03 阶段 4 P0：真实案例发布回归门禁
+
+- 新增纯标准库的发布敏感变更检测，显式覆盖模型配置/服务、Agent Prompt、实际布局规则链、生成 provenance、商品目录数据与数据迁移。普通 `quality` CI 只输出 `proof_required/not_required`，明确不把无私有数据的运行声明成真实案例通过。
+- 新增仅支持 `workflow_dispatch` 的 `real-world-release-gate`，要求受保护的 `real-world-evaluation` Environment 和 `real-world-eval` self-hosted runner；PR 不接触 blind，发布证明无论路径检测结果如何都完整执行 development、regression、blind 三组，从而覆盖部署配置中的模型或商品版本变化。
+- 受控门禁逐组执行真实 HTTPS 跨用户回归、从持久化系统运行签发 trusted evidence 5.0、验签独立安全证明、绑定当前 `APP_BUILD_DIGEST` 和模型/Prompt/规则/数据版本，并从目标提交复算 Prompt/规则摘要、核对受控部署模型名；证据签发还会按当前数据库重建完整商品上下文和动态输入，版本变化后旧运行不能冒充候选。之后再与相同真实案例集的已签名基线比较。缺案例、含 synthetic、缺基线、证据重放/错配、三组候选版本不一致或任一绝对/回归门禁失败都会关闭发布门禁。
+- 修正版本比较契约：被测商品数据版本允许在基线与候选之间变化并分别进入报告；评测数据集内容指纹、split 和匿名案例集合仍必须相同，避免把“商品数据升级”错误地当成不可比较。
+- 失败路径也会生成不含原始异常、会话、数据库 ID 或私有路径的脱敏 JSON/Markdown，工作流始终上传该报告；候选安全/评测证据只存在临时目录，不作为 CI 附件。
+- 当前仓库四个候选案例仍未授权、未标注、未分组，三个 split 的准入数均为 0，因此受控门禁按设计只能失败，不能声明阶段 4 的真实业务指标已验收。代码无法代替的外部操作仍包括真实数据治理、受控部署/runner/密钥配置、历史基线审批及把 `real-world-release-proof` 配成分支或发布环境必需检查。

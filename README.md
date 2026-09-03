@@ -46,4 +46,8 @@ py -3.12 -m pytest backend/tests -p no:cacheprovider
 
 GitHub Actions 会执行后端依赖检查、编译和测试，以及前端类型检查、测试和生产构建。数据库结构修改必须附带 Alembic 迁移。
 
+普通 `quality` 工作流只检测模型、Prompt、布局规则和商品数据契约变更，并明确输出是否需要真实回归证明；它没有私有案例和密钥，不会宣称真实案例门禁通过。相关变更发布前必须在目标提交上手工触发 `real-world-release-gate`，由带 `real-world-eval` 标签的 self-hosted runner 和受保护的 `real-world-evaluation` Environment 完整执行 development、regression、blind 三组。仓库分支保护还需把 `real-world-release-proof` 设置为发布必需检查。
+
+受控门禁不接受合成案例、首次建基线或调用方填写指标；即使仓库路径检测未命中，它也会完整执行三组，以覆盖由部署配置引起的模型或商品版本变化。它会现场执行真实 HTTPS 跨用户检查、从数据库签发 trusted evidence 5.0、核对候选构建与四类运行版本，并从目标提交复算 Prompt/规则摘要、核对受控部署模型名，防止旧运行冒充当前候选；之后在同一真实案例集上比较已签名基线。缺案例、缺密钥、证据错配或质量下降均失败关闭。上传产物只包含聚合指标和匿名摘要，不包含会话、任务/运行主键或私有路径。
+
 真实案例评测的跨用户安全指标只能来自 `evals.collect_security_access_evidence` 对受控 HTTPS 部署执行的 owner/foreign 会话检查。安全制品使用独立于普通评测证据的 HMAC key 签名，并绑定应用构建、模型/Prompt/规则/数据版本、split、数据集及匿名运行引用；缺失、过期、错配、零分母或验签失败均保持门禁关闭。详细流程见 `backend/evals/cases/real_world/README.md`。

@@ -235,7 +235,7 @@ def compare_evaluation_reports(
     candidate: dict[str, Any],
     baseline: dict[str, Any],
 ) -> dict[str, Any]:
-    """只在相同数据版本和案例集合上比较候选与基线。"""
+    """在相同评测案例集上比较不同被测版本的候选与基线。"""
     candidate_split, candidate_data, candidate_dataset, candidate_cases = (
         _report_comparison_identity(
             candidate,
@@ -251,10 +251,6 @@ def compare_evaluation_reports(
     if candidate_split != baseline_split:
         raise EvaluationInputError(
             f"基线与候选 split 不一致：{baseline_split} != {candidate_split}"
-        )
-    if candidate_data != baseline_data:
-        raise EvaluationInputError(
-            f"基线与候选数据版本不一致：{baseline_data} != {candidate_data}"
         )
     if candidate_dataset != baseline_dataset:
         raise EvaluationInputError("基线与候选数据集指纹不一致")
@@ -307,7 +303,8 @@ def compare_evaluation_reports(
         "passed": not any(item["regressed"] for item in items),
         "baseline_versions": baseline["versions"],
         "candidate_versions": candidate["versions"],
-        "data_version": candidate_data,
+        "baseline_data_version": baseline_data,
+        "candidate_data_version": candidate_data,
         "split": candidate_split,
         "dataset_fingerprint": candidate_dataset,
         "case_fingerprints": list(candidate_cases),

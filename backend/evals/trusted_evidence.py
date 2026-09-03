@@ -425,6 +425,7 @@ def _validate_system_run(
         persisted_binding = evaluation_binding_service.validate_persisted_binding(
             db,
             run=run,
+            validate_current_generation=True,
         )
     except evaluation_binding_service.EvaluationBindingError as exc:
         raise EvaluationInputError(str(exc)) from exc

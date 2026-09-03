@@ -1,0 +1,53 @@
+name: real-world-release-gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-world-release-proof:
+    runs-on: [self-hosted, real-world-eval]
+    environment: real-world-evaluation
+    timeout-minutes: 120
+    env:
+      # 评测进程只读受控数据库；被测 HTTPS 部署仍必须是生产等价配置。
+      APP_ENV: test
+      PYTHONPATH: backend
+      GITHUB_EVENT_NAME: ${{ github.event_name }}
+      REAL_WORLD_BASE_REF: origin/${{ github.event.repository.default_branch }}
+      REAL_WORLD_RELEASE_GATE_CONFIG_PATH: ${{ secrets.REAL_WORLD_RELEASE_GATE_CONFIG_PATH }}
+      APP_BUILD_DIGEST: ${{ secrets.APP_BUILD_DIGEST }}
+      EVAL_EVIDENCE_KEY_ID: ${{ secrets.EVAL_EVIDENCE_KEY_ID }}
+      EVAL_EVIDENCE_HMAC_KEY: ${{ secrets.EVAL_EVIDENCE_HMAC_KEY }}
+      SECURITY_EVIDENCE_KEY_ID: ${{ secrets.SECURITY_EVIDENCE_KEY_ID }}
+      SECURITY_EVIDENCE_HMAC_KEY: ${{ secrets.SECURITY_EVIDENCE_HMAC_KEY }}
+      DATABASE_URL: ${{ secrets.REAL_WORLD_EVAL_DATABASE_URL }}
+      LLM_MODEL: ${{ secrets.REAL_WORLD_EVAL_LLM_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: 安装受控评测依赖
+        run: python -m pip install -r backend/requirements-dev.txt
+      - name: 执行三切分真实案例发布门禁
+        run: >-
+          python -m evals.real_world_release_gate
+          --repo-root .
+          --output-dir .test_artifacts/real-world-release-gate
+      - name: 上传脱敏门禁报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-world-release-gate-${{ github.sha }}
+          path: |
+            .test_artifacts/real-world-release-gate/real_world_release_gate.json
+            .test_artifacts/real-world-release-gate/real_world_release_gate.md
+          if-no-files-found: error
+          retention-days: 30
