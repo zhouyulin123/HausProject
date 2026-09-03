@@ -202,6 +202,11 @@ export default function FurniturePage() {
                     匹配 {detail.matchScore}%
                   </span>
                 )}
+                {detail.catalogEligibility?.eligible === false && (
+                  <span className="absolute bottom-3 left-4 rounded-full bg-amber-50/90 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                    商业信息待核验
+                  </span>
+                )}
                 {furnitureMediaModes(detail).length > 1 && (
                   <div className="absolute right-3 bottom-3 flex gap-1 rounded-full bg-white/85 p-1 backdrop-blur">
                     <button
@@ -261,7 +266,8 @@ export default function FurniturePage() {
                 <div className="mt-6 flex gap-2">
                   <Button
                     className="flex-1"
-                    variant={pickedFurnitureIds.includes(detail.id) ? "secondary" : "primary"}
+                    variant={pickedFurnitureIds.includes(detail.id) || detail.catalogEligibility?.eligible === false ? "secondary" : "primary"}
+                    disabled={detail.catalogEligibility?.eligible === false}
                     onClick={() => togglePickedFurniture(detail.id)}
                   >
                     {pickedFurnitureIds.includes(detail.id) ? (
@@ -269,6 +275,8 @@ export default function FurniturePage() {
                         <Check className="h-4 w-4 text-sage-600" />
                         已加入方案
                       </>
+                    ) : detail.catalogEligibility?.eligible === false ? (
+                      <>商业信息待核验</>
                     ) : (
                       <>
                         <Plus className="h-4 w-4" />

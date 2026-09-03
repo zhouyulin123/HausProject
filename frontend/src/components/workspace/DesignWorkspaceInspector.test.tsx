@@ -38,6 +38,25 @@ const catalog: FurnitureItem[] = [
     gradient: "bg-stone-600",
     dataOrigin: "verified",
   },
+  {
+    id: "chair-draft",
+    sku: "CHAIR-DRAFT",
+    name: "草稿单椅",
+    category: "单椅",
+    room: "客厅",
+    style: "现代",
+    material: "布艺",
+    priceRange: "¥1,200",
+    sizeSuggestion: "800mm",
+    reason: "",
+    alternative: "",
+    gradient: "bg-stone-500",
+    dataOrigin: "merchant",
+    catalogEligibility: {
+      eligible: false,
+      reasonCodes: ["verification_required"],
+    },
+  },
 ];
 
 describe("工作台家具替换入口", () => {
@@ -63,5 +82,7 @@ describe("工作台家具替换入口", () => {
     expect(html).toContain('aria-label="替换云朵沙发"');
     expect(html).toContain('aria-label="移除云朵沙发"');
     expect(html).toContain('aria-label="加入弧形沙发"');
+    expect(html).toContain('aria-label="草稿单椅商业信息待核验"');
+    expect(html).toContain("商业信息待核验，暂不可用于方案");
   });
 });

@@ -94,6 +94,7 @@ export default function DesignWorkspaceInspector({
 
   const toggleCatalogItem = async (item: FurnitureItem) => {
     const selected = project.selectedFurnitureIds.includes(item.id);
+    if (!selected && item.catalogEligibility?.eligible === false) return;
     await runMutation({
       action: selected ? "remove" : "adopt",
       sourceSku: selected ? item.sku : undefined,
@@ -102,7 +103,7 @@ export default function DesignWorkspaceInspector({
   };
 
   const replaceWithCatalogItem = async (target: FurnitureItem) => {
-    if (!replacementSource) return;
+    if (!replacementSource || target.catalogEligibility?.eligible === false) return;
     const completed = await runMutation({
       action: "replace",
       sourceSku: replacementSource.sku,
@@ -277,6 +278,8 @@ export default function DesignWorkspaceInspector({
                 const selected = project.selectedFurnitureIds.includes(item.id);
                 const choosingReplacement = replacementSource !== null;
                 const replacementDisabled = choosingReplacement && selected;
+                const commerciallyEligible = item.catalogEligibility?.eligible !== false;
+                const targetBlocked = !selected && !commerciallyEligible;
                 return (
                   <div key={item.id} className="grid grid-cols-[44px_1fr_32px] items-center gap-3 py-3">
                     <div className={`h-11 overflow-hidden ${item.gradient}`}>
@@ -287,15 +290,22 @@ export default function DesignWorkspaceInspector({
                       <div className="mt-1 flex min-w-0 items-center gap-1.5">
                         <span className="truncate font-mono text-[9px] text-[#7f8b81]">{item.priceRange}</span>
                         <span className="shrink-0 border border-white/10 px-1 py-0.5 text-[8px] text-[#9ca69d]">{getFurnitureDataOriginLabel(item.dataOrigin)}</span>
+                        {!commerciallyEligible && (
+                          <span className="shrink-0 border border-[#8f7040] px-1 py-0.5 text-[8px] text-[#f0d39e]">待核验</span>
+                        )}
                       </div>
                     </div>
                     <button
                       type="button"
-                      disabled={replacementDisabled || mutationPending || !item.sku}
-                      title={choosingReplacement
+                      disabled={replacementDisabled || targetBlocked || mutationPending || !item.sku}
+                      title={targetBlocked
+                        ? "商业信息待核验，暂不可用于方案"
+                        : choosingReplacement
                         ? selected ? "已在当前方案中" : `替换为${item.name}`
                         : selected ? "从项目移除" : "加入当前项目"}
-                      aria-label={choosingReplacement
+                      aria-label={targetBlocked
+                        ? `${item.name}商业信息待核验`
+                        : choosingReplacement
                         ? selected ? `${item.name}已在当前方案中` : `用${item.name}替换${replacementSource.name}`
                         : selected ? `移除${item.name}` : `加入${item.name}`}
                       onClick={() => void (choosingReplacement

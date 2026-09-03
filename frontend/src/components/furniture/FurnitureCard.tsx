@@ -19,6 +19,7 @@ export default function FurnitureCard({
   } = useDesignStore();
   const favorite = favoriteFurnitureIds.includes(item.id);
   const picked = pickedFurnitureIds.includes(item.id);
+  const canAddToPlan = item.catalogEligibility?.eligible !== false;
 
   return (
     <div className="group flex flex-col overflow-hidden rounded-[1.5rem] border border-[#1d241f]/15 bg-[#e7e4da] transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_24px_55px_rgb(20_28_22/.14)]">
@@ -49,6 +50,11 @@ export default function FurnitureCard({
         {item.matchScore !== undefined && (
           <span className="absolute top-3 left-3 rounded-full bg-white/85 px-2.5 py-1 text-xs font-semibold text-sage-700 backdrop-blur">
             匹配 {item.matchScore}%
+          </span>
+        )}
+        {!canAddToPlan && (
+          <span className="absolute top-3 left-3 rounded-full bg-amber-50/90 px-2.5 py-1 text-xs font-semibold text-amber-800 backdrop-blur">
+            商业信息待核验
           </span>
         )}
         <span className="absolute bottom-3 left-3 font-mono text-[9px] tracking-[0.14em] text-white/80 uppercase">Object / {item.sku ?? item.id}</span>
@@ -97,11 +103,12 @@ export default function FurnitureCard({
           <span className="text-sm font-semibold text-terra-600">{item.priceRange}</span>
           <Button
             size="sm"
-            variant={picked ? "secondary" : "primary"}
+            variant={picked || !canAddToPlan ? "secondary" : "primary"}
+            disabled={!canAddToPlan}
             onClick={() => togglePickedFurniture(item.id)}
           >
             {picked ? <Check className="h-3.5 w-3.5 text-sage-600" /> : <Plus className="h-3.5 w-3.5" />}
-            {picked ? "已加入" : "加入方案"}
+            {!canAddToPlan ? "待核验" : picked ? "已加入" : "加入方案"}
           </Button>
         </div>
       </div>

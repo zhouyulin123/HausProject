@@ -43,6 +43,10 @@ export interface FurnitureItem {
   dataOrigin?: FurnitureDataOrigin;
   sourceName?: string;
   sourceUrl?: string;
+  catalogEligibility?: {
+    eligible: boolean;
+    reasonCodes: string[];
+  };
   /** 以下字段由后端商品库回填（方案中的家具携带） */
   sku?: string;
   quantity?: number;

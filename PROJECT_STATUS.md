@@ -1988,3 +1988,9 @@
 - 连续 3 轮仍超预算时进入 `needs_human`，运行终态 `failed/current_node=budget_guard`，Agent checkpoint 公开 `retry_count=2`、`exit_reason=budget_replan_exhausted`、`result.reason_code=budget_replan_exhausted` 和 `budget_exceeded` 硬错误，不允许伪成功。
 - Worker 生成子流程不能直接复用外层 DesignAgent 的 `verify_result -> replan`：外层工具节点只负责入队，拿不到同一运行内的确定性报价；因此有界循环保留在实际生成执行器中，并复用同一持久化运行的成本、事件与所有权契约。
 - TDD RED：`bb49325`；GREEN：`cec0dce`。相关 DesignWorkflow、GenerationRun、Worker、异步路由和 Agent API 回归 94 项通过，目标模块 `compileall` 通过；当前 Python 环境未安装 Ruff。
+
+## 2026-09-03 用户端商品商业准入提示
+
+- 商品目录继续展示商家草稿和公开参考数据，但后端返回的 `eligibility` 已透传到用户端，不再将“可查看”误解为“可用于正式方案”。
+- 商品卡片、详情弹窗和设计工作台统一禁止把未通过商业核验的商品加入方案或用作替换目标，并明确显示“商业信息待核验”；旧方案中已存在的商品仍允许移除。
+- 相关前端测试 15 项及 TypeScript 全量类型检查通过。真实商品的价格、授权、材料、尺寸与 3D 资产仍需人工核验，未改变这项上线门禁。
