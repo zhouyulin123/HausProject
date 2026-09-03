@@ -168,7 +168,6 @@ def _furniture(items: List[tuple]) -> List[Dict[str, Any]]:
                 "material": material,
                 "priceRange": price,
                 "sizeSuggestion": size,
-                "matchScore": 96 - i * 2,
                 "reason": reason,
                 "alternative": alt,
             }

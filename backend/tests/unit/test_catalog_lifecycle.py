@@ -142,6 +142,7 @@ def test_enrichment_exposes_only_audited_glb_as_approved_asset(db):
     assert enriched["fallbackReason"] is None
     assert enriched["modelUrl"] == "/uploads/models/sofa.glb"
     assert enriched["modelStatus"] == "ready"
+    assert "matchScore" not in enriched
     assert enriched["modelDimensionsMm"] == {
         "width": 2200,
         "height": 800,
@@ -166,7 +167,7 @@ def test_enrichment_rejects_whitespace_only_glb_review_metadata(db):
             "id": "plan-a",
             "name": "空白授权方案",
             "style": "现代简约",
-            "furnitureSuggestions": [{"sku": product.sku}],
+            "furnitureSuggestions": [{"sku": product.sku, "matchScore": 99}],
         }
     ]
 

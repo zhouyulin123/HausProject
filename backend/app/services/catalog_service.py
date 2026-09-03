@@ -499,13 +499,13 @@ def verify_and_enrich_plans(
         enriched = []
         line_items = []
         furniture_total = 0
-        for index, (
+        for (
             item,
             product,
             replaced_sku,
             replacement_reasons,
             quantity,
-        ) in enumerate(resolved_items):
+        ) in resolved_items:
             subtotal = product.price * quantity
             if budget_max is not None and furniture_total + subtotal > budget_max:
                 remaining_budget = max(0, budget_max - furniture_total)
@@ -563,7 +563,6 @@ def verify_and_enrich_plans(
                 "material": product.material,
                 "priceRange": _product_price_text(product),
                 "sizeSuggestion": product.size or "",
-                "matchScore": max(85, 97 - index * 3),
                 "reason": item.get("reason") or product.selling_point or "",
                 "alternative": product.alternative or "",
                 "alternativeSkus": list(product.alternative_skus or []),
