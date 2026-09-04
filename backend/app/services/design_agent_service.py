@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 from math import isclose
 import re
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +32,7 @@ from app.db.models import (
     DesignScene,
     DesignSceneVersion,
     DesignTask,
+    GenerationRun,
     RoomFactConfirmation,
     UploadedImage,
 )
@@ -41,6 +42,7 @@ from app.schemas.room_model import RoomModel
 from app.schemas.scene_agent import SceneOperationBatch
 from app.schemas.scenes import SceneDocument
 from app.services import (
+    agent_approval_service,
     aggregate_lock_service,
     catalog_service,
     custom_furniture_service,
@@ -435,7 +437,13 @@ def _catalog_tool(db: Session):
         space_type = facts.get("space_type")
         if space_type:
             products = [product for product in products if product.room == space_type]
-        products.sort(key=lambda product: (product.price, product.id or 0))
+        ranked_products = catalog_service.rank_products_by_preferences(
+            products,
+            preferred_styles=facts.get("preferred_styles") or facts.get("style"),
+            preferred_materials=(
+                facts.get("preferred_materials") or facts.get("material")
+            ),
+        )
         status_counts: dict[str, int] = {}
         for product in products:
             status = product.data_origin or "unknown"
@@ -453,8 +461,9 @@ def _catalog_tool(db: Session):
                     "category": product.category,
                     "price": product.price,
                     "data_origin": product.data_origin,
+                    "ranking_reasons": ranking_reasons,
                 }
-                for product in products[:20]
+                for product, ranking_reasons in ranked_products[:20]
                 if product.sku
             ],
         }
@@ -568,8 +577,21 @@ def _scene_tool(
     task: DesignTask,
     payload: AgentTurnRequest,
     turn_id: int,
+    *,
+    turn_execution_deadline_at: datetime,
+    clock: Callable[[], datetime] | None = None,
 ):
+    current_time = clock or _utc_now
+
+    def ensure_active() -> None:
+        if _as_utc(current_time()) >= _as_utc(turn_execution_deadline_at):
+            raise AgentToolRejected(
+                "同步工具执行超过本轮截止时间",
+                codes=["tool_timeout"],
+            )
+
     def execute(state: dict[str, Any]) -> dict[str, Any]:
+        ensure_active()
         if payload.scene_id is None or payload.base_scene_version is None:
             raise AgentToolRejected(
                 "场景修改缺少场景版本",
@@ -637,6 +659,7 @@ def _scene_tool(
         proposed = workflow_result.get("proposed_scene")
         if proposed is None:
             raise AgentToolRejected("未生成候选场景", codes=["empty_scene"])
+        ensure_active()
         try:
             version, _ = scene_service.update_scene_idempotent(
                 db,
@@ -834,10 +857,16 @@ def _assert_same_turn_request(
 def _turn_lease_expired(turn: DesignAgentTurn, *, now: datetime) -> bool:
     if turn.created_at is None:
         return True
-    deadline = _as_utc(turn.created_at) + timedelta(
+    deadline = _turn_execution_deadline(turn)
+    return deadline <= _as_utc(now)
+
+
+def _turn_execution_deadline(turn: DesignAgentTurn) -> datetime:
+    if turn.created_at is None:
+        return _utc_now()
+    return _as_utc(turn.created_at) + timedelta(
         seconds=settings.design_agent_turn_lease_seconds
     )
-    return deadline <= _as_utc(now)
 
 
 def _lock_task_for_turn(db: Session, task_id: int) -> DesignTask:
@@ -946,6 +975,12 @@ def _recover_stale_turn(
     )
     db.add(event)
     db.flush()
+    agent_approval_service.ensure_for_agent_handoff(
+        db,
+        task=task,
+        turn=turn,
+        state=checkpoint,
+    )
     reply = "上一轮执行在完成前中断，系统已停止旧执行并转为人工恢复。"
     response = {
         "task_id": task.id,
@@ -1199,6 +1234,7 @@ def _run_turn(
         initial_exit_reason = "retry_exhausted"
 
     next_state_version = (task.agent_state_version or 0) + 1
+    turn_execution_deadline_at = _turn_execution_deadline(turn)
     checkpoint_saver = _checkpoint_saver(
         db,
         task_id=task.id,
@@ -1223,7 +1259,15 @@ def _run_turn(
     )
     registry.register(
         "scene_edit",
-        defer_after_side_effect(_scene_tool(db, task, payload, turn.id)),
+        defer_after_side_effect(
+            _scene_tool(
+                db,
+                task,
+                payload,
+                turn.id,
+                turn_execution_deadline_at=turn_execution_deadline_at,
+            )
+        ),
     )
     registry.register("custom_furniture_preview", _custom_furniture_tool(db))
     workflow = DesignAgentWorkflow(
@@ -1267,6 +1311,7 @@ def _run_turn(
         initial_hard_errors=initial_hard_errors,
         budget_exhausted=budget_exhausted,
         initial_exit_reason=initial_exit_reason,
+        turn_execution_deadline_at=turn_execution_deadline_at,
         resume=resume_turn,
     )
 
@@ -1279,6 +1324,7 @@ def _run_turn(
         if intent == "design" and isinstance(public_result, dict)
         else None
     )
+    generation_run = db.get(GenerationRun, run_id) if isinstance(run_id, int) else None
     checkpoint = {
         "status": state["status"],
         "active_mode": payload.active_mode,
@@ -1300,6 +1346,8 @@ def _run_turn(
         "exit_reason": state["exit_reason"],
         "scene_ref": scene_ref,
         "run_id": run_id,
+        "turn_execution_deadline_at": state.get("turn_execution_deadline_at"),
+        **generation_run_service.agent_execution_control(generation_run),
         "result": public_result,
     }
     state_update = db.execute(
@@ -1334,6 +1382,12 @@ def _run_turn(
     events = _events_from_state(task.id, turn.id, state)
     db.add_all(events)
     db.flush()
+    agent_approval_service.ensure_for_agent_handoff(
+        db,
+        task=task,
+        turn=turn,
+        state=state,
+    )
     reply = _reply(state)
     response = {
         "task_id": task.id,
@@ -1444,6 +1498,10 @@ def _persist_failed_turn(
         "exit_reason": "tool_failed",
         "scene_ref": None,
         "run_id": None,
+        "turn_execution_deadline_at": prior_checkpoint.get(
+            "turn_execution_deadline_at"
+        ),
+        **generation_run_service.agent_execution_control(None),
         "result": None,
     }
     task.agent_state_json = checkpoint
@@ -1563,6 +1621,8 @@ def _checkpoint_state(task: DesignTask) -> dict[str, Any]:
         "exit_reason": "missing_facts",
         "scene_ref": None,
         "run_id": None,
+        "turn_execution_deadline_at": None,
+        **generation_run_service.agent_execution_control(None),
         "result": None,
     }
     defaults.update(deepcopy(task.agent_state_json or {}))

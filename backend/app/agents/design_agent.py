@@ -5,6 +5,7 @@ from __future__ import annotations
 import operator
 import re
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Annotated, Any, Callable, TypedDict
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -75,6 +76,7 @@ class DesignAgentState(TypedDict, total=False):
     max_steps: int
     max_retries: int
     budget_exhausted: bool
+    turn_execution_deadline_at: str | None
     exit_reason: str
 
 
@@ -371,6 +373,7 @@ class DesignAgentWorkflow:
         max_steps: int = 12,
         max_retries: int = 2,
         checkpointer: BaseCheckpointSaver | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._retrieve_catalog = retrieve_catalog
         self._execute_design = execute_design
@@ -379,6 +382,7 @@ class DesignAgentWorkflow:
         self._max_steps = max_steps
         self._max_retries = max_retries
         self._checkpointer = checkpointer
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._graph = self._build_graph()
 
     def _build_graph(self):
@@ -405,12 +409,12 @@ class DesignAgentWorkflow:
         )
         graph.add_conditional_edges(
             "retrieve_catalog",
-            lambda state: (
-                "finalize"
-                if state["intent"] == "catalog_search"
-                else "execute_tool"
-            ),
-            {"finalize": "finalize", "execute_tool": "execute_tool"},
+            self._route_after_retrieve,
+            {
+                "finalize": "finalize",
+                "execute_tool": "execute_tool",
+                "escalate": "escalate",
+            },
         )
         graph.add_edge("execute_tool", "verify_result")
         graph.add_conditional_edges(
@@ -429,6 +433,40 @@ class DesignAgentWorkflow:
         graph.add_edge("request_approval", END)
         graph.add_edge("escalate", END)
         return graph.compile(checkpointer=self._checkpointer)
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _turn_timed_out(self, state: DesignAgentState) -> bool:
+        raw_deadline = state.get("turn_execution_deadline_at")
+        if not raw_deadline:
+            return False
+        deadline = datetime.fromisoformat(raw_deadline.replace("Z", "+00:00"))
+        return self._as_utc(self._clock()) >= self._as_utc(deadline)
+
+    @staticmethod
+    def _timeout_result(
+        update: dict[str, Any],
+        *,
+        tool_name: str,
+    ) -> dict[str, Any]:
+        message = "同步工具执行超过本轮截止时间"
+        return {
+            **update,
+            "result": None,
+            "hard_errors": ["tool_timeout"],
+            "rejection_message": message,
+            "tool_events": [
+                {
+                    "tool": tool_name,
+                    "status": "rejected",
+                    "payload": {"message": message, "codes": ["tool_timeout"]},
+                }
+            ],
+        }
 
     def _validate_facts(self, state: DesignAgentState) -> dict[str, Any]:
         construction_risks = classify_high_risk_construction_intent(
@@ -523,7 +561,11 @@ class DesignAgentWorkflow:
         update = _next_step(state, "retrieve_catalog")
         if update.get("exit_reason"):
             return update
+        if self._turn_timed_out(state):
+            return self._timeout_result(update, tool_name="catalog_search")
         result = self._retrieve_catalog(state)
+        if self._turn_timed_out(state):
+            return self._timeout_result(update, tool_name="catalog_search")
         return {
             **update,
             "result": result,
@@ -544,6 +586,16 @@ class DesignAgentWorkflow:
             ],
         }
 
+    @staticmethod
+    def _route_after_retrieve(state: DesignAgentState) -> str:
+        if "tool_timeout" in state.get("hard_errors", []):
+            return "escalate"
+        return (
+            "finalize"
+            if state["intent"] == "catalog_search"
+            else "execute_tool"
+        )
+
     def _execute(self, state: DesignAgentState) -> dict[str, Any]:
         update = _next_step(state, "execute_tool")
         if update.get("exit_reason"):
@@ -563,7 +615,11 @@ class DesignAgentWorkflow:
                     "定制家具预览工具尚未注册",
                     codes=["tool_not_available"],
                 )
+            if tool_name != "design_generation" and self._turn_timed_out(state):
+                return self._timeout_result(update, tool_name=tool_name)
             result = callback(state)
+            if tool_name != "design_generation" and self._turn_timed_out(state):
+                return self._timeout_result(update, tool_name=tool_name)
             tool_status = (
                 "queued"
                 if tool_name == "design_generation"
@@ -658,6 +714,8 @@ class DesignAgentWorkflow:
         errors = list(dict.fromkeys(errors))
         if not errors:
             outcome = "passed"
+        elif "tool_timeout" in errors:
+            outcome = "escalate"
         elif state["intent"] == "custom_furniture":
             outcome = "escalate"
         elif state.get("retry_count", 0) < state.get("max_retries", 2):
@@ -746,7 +804,9 @@ class DesignAgentWorkflow:
                 "door_clearance_blocked",
                 "unknown_sku",
             }
-            if scene_safety_codes & set(state.get("hard_errors", [])):
+            if "tool_timeout" in state.get("hard_errors", []):
+                exit_reason = "timeout"
+            elif scene_safety_codes & set(state.get("hard_errors", [])):
                 exit_reason = "safety_blocked"
             elif state.get("retry_count", 0) > 0:
                 exit_reason = "retry_exhausted"
@@ -775,6 +835,7 @@ class DesignAgentWorkflow:
         initial_hard_errors: list[str] | None = None,
         budget_exhausted: bool = False,
         initial_exit_reason: str = "",
+        turn_execution_deadline_at: datetime | None = None,
         resume: bool = False,
     ) -> DesignAgentState:
         config = {
@@ -822,6 +883,13 @@ class DesignAgentWorkflow:
             "max_steps": self._max_steps,
             "max_retries": self._max_retries,
             "budget_exhausted": budget_exhausted,
+            "turn_execution_deadline_at": (
+                self._as_utc(turn_execution_deadline_at)
+                .isoformat()
+                .replace("+00:00", "Z")
+                if turn_execution_deadline_at is not None
+                else None
+            ),
             "exit_reason": initial_exit_reason if budget_exhausted else "",
         }
         if self._checkpointer is None:

@@ -354,7 +354,7 @@ def test_agent_api_persists_construction_safety_block_before_tools(
     monkeypatch.setattr(
         design_agent.design_agent_service,
         "_scene_tool",
-        lambda *_: lambda _: calls.append("scene") or {},
+        lambda *_, **__: lambda _: calls.append("scene") or {},
     )
     monkeypatch.setattr(
         design_agent.design_agent_service,
@@ -527,6 +527,10 @@ def test_agent_state_refresh_reconciles_bound_worker_completion(agent_api_contex
     with factory() as db:
         run = db.get(GenerationRun, run_id)
         assert run is not None
+        run.cost_cny = 0.18
+        run.cost_reserved_cny = 0.25
+        run.cost_limit_cny = 1.0
+        run.execution_deadline_at = datetime(2026, 9, 4, 8, 30, tzinfo=timezone.utc)
         task = db.get(DesignTask, task_id)
         assert task is not None
         revision = design_version_service.persist_generation(
@@ -573,12 +577,27 @@ def test_agent_state_refresh_reconciles_bound_worker_completion(agent_api_contex
     assert payload["current_node"] == "generation_completed"
     assert payload["exit_reason"] == "goal_completed"
     assert payload["run_id"] == run_id
+    assert payload["cost_cny"] == pytest.approx(0.18)
+    assert payload["cost_reserved_cny"] == pytest.approx(0.25)
+    assert payload["cost_limit_cny"] == pytest.approx(1.0)
+    assert payload["execution_deadline_at"] == "2026-09-04T08:30:00Z"
+    assert payload["cancel_requested_at"] is None
     assert payload["result"] == {
         "run_id": run_id,
         "generation_status": "completed",
         "result_revision_id": revision.id,
         "output_digest": run.output_digest,
     }
+    with factory() as db:
+        persisted = db.get(DesignTask, task_id)
+        assert persisted is not None
+        assert persisted.agent_state_json["cost_cny"] == pytest.approx(0.18)
+        assert persisted.agent_state_json["cost_reserved_cny"] == pytest.approx(0.25)
+        assert persisted.agent_state_json["cost_limit_cny"] == pytest.approx(1.0)
+        assert persisted.agent_state_json["execution_deadline_at"] == (
+            "2026-09-04T08:30:00Z"
+        )
+        assert persisted.agent_state_json["cancel_requested_at"] is None
 
 
 @pytest.mark.integration
@@ -619,6 +638,56 @@ def test_agent_turn_accumulates_steps_across_pause_and_resume(
     assert second.json()["exit_reason"] == "generation_queued"
     assert second.json()["state"]["step_count"] == 7
     assert second.json()["state"]["retry_count"] == 0
+
+
+@pytest.mark.integration
+def test_sync_agent_turn_deadline_is_applied_and_persisted(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    catalog_calls = []
+    monkeypatch.setattr(
+        design_agent.design_agent_service.settings,
+        "design_agent_turn_lease_seconds",
+        0,
+    )
+    monkeypatch.setattr(
+        design_agent.design_agent_service,
+        "_catalog_tool",
+        lambda _db: lambda _state: catalog_calls.append("catalog")
+        or {"candidate_count": 1},
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "sync-deadline-api-001",
+            "message": "先找可配送的沙发",
+            "active_mode": "catalog_design",
+            "answers": {
+                "budget_max": 20000,
+                "room_width_m": 4,
+                "room_depth_m": 5,
+                "delivery_region": "CN-SH",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "needs_human"
+    assert payload["exit_reason"] == "timeout"
+    assert payload["state"]["hard_errors"] == ["tool_timeout"]
+    assert payload["state"]["retry_count"] == 0
+    assert payload["state"]["turn_execution_deadline_at"] is not None
+    assert catalog_calls == []
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task is not None
+        assert task.agent_state_json["exit_reason"] == "timeout"
+        assert task.agent_state_json["turn_execution_deadline_at"] is not None
 
 
 @pytest.mark.integration

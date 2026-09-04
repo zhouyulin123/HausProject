@@ -1334,6 +1334,12 @@ export interface AgentTurnResponse {
     approval_required: boolean;
     exit_reason: AgentExitReason;
     run_id: number | null;
+    cost_cny: number | null;
+    cost_reserved_cny: number;
+    cost_limit_cny: number | null;
+    execution_deadline_at: string | null;
+    cancel_requested_at: string | null;
+    turn_execution_deadline_at: string | null;
   };
   pending_questions: AgentPendingQuestion[];
   events: AgentEvent[];
@@ -1365,6 +1371,12 @@ export interface DesignAgentStateResponse {
   approval_required: boolean;
   scene_ref: AgentSceneReference | null;
   run_id: number | null;
+  cost_cny: number | null;
+  cost_reserved_cny: number;
+  cost_limit_cny: number | null;
+  execution_deadline_at: string | null;
+  cancel_requested_at: string | null;
+  turn_execution_deadline_at: string | null;
   exit_reason: AgentExitReason;
   result: CustomFurniturePreviewResult | Record<string, unknown> | null;
   /** 服务端持久化历史；刷新时覆盖本地瞬时消息缓存。 */

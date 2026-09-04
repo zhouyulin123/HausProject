@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
-from app.db.models import CustomQuoteRule, Product
+from app.db.models import CustomQuoteRule, Product, ProductAsset
 from app.services.catalog_service import (
     build_catalog_context,
     find_product_alternatives,
@@ -148,6 +148,57 @@ def test_enrichment_exposes_only_audited_glb_as_approved_asset(db):
         "height": 800,
         "depth": 950,
     }
+
+
+def test_enrichment_exposes_image_only_after_asset_approval(db):
+    product = _product(
+        "SOFA-IMAGE-001",
+        image_url="/uploads/products/unreviewed.png",
+    )
+    db.add(product)
+    db.commit()
+    plans = [
+        {
+            "id": "plan-a",
+            "name": "图片审核方案",
+            "style": "现代简约",
+            "furnitureSuggestions": [{"sku": product.sku}],
+        }
+    ]
+
+    verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
+
+    assert plans[0]["furnitureSuggestions"][0]["imageUrl"] is None
+
+    db.add(
+        ProductAsset(
+            product_id=product.id,
+            kind="image",
+            url="/uploads/products/approved.png",
+            source="supplier:SOFA-IMAGE-001",
+            authorization="供应商书面商用授权",
+            review_status="approved",
+            reviewed_at=NOW,
+            reviewed_by="user:7",
+            created_by="user:8",
+        )
+    )
+    db.commit()
+    approved_plans = [
+        {
+            "id": "plan-b",
+            "name": "图片审核方案",
+            "style": "现代简约",
+            "furnitureSuggestions": [{"sku": product.sku}],
+        }
+    ]
+
+    verify_and_enrich_plans(db, approved_plans, at=NOW, region="CN-SH")
+
+    assert (
+        approved_plans[0]["furnitureSuggestions"][0]["imageUrl"]
+        == "/uploads/products/approved.png"
+    )
 
 
 def test_enrichment_rejects_whitespace_only_glb_review_metadata(db):

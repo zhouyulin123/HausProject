@@ -18,6 +18,7 @@ class AgentFactsPatch(BaseModel):
 
     space_type: str | None = Field(default=None, min_length=1, max_length=50)
     style: str | None = Field(default=None, min_length=1, max_length=50)
+    preferred_materials: list[str] | None = Field(default=None, max_length=20)
     budget_min: int | None = Field(default=None, ge=0, le=100_000_000)
     budget_max: int | None = Field(default=None, gt=0, le=100_000_000)
     room_width_m: float | None = Field(default=None, gt=0, le=50)
@@ -29,6 +30,21 @@ class AgentFactsPatch(BaseModel):
     @classmethod
     def normalize_delivery_region(cls, value: str | None) -> str | None:
         return value.strip().upper() if value is not None else None
+
+    @field_validator("preferred_materials")
+    @classmethod
+    def normalize_preferred_materials(
+        cls,
+        value: list[str] | None,
+    ) -> list[str] | None:
+        if value is None:
+            return None
+        normalized = list(
+            dict.fromkeys(item.strip() for item in value if item.strip())
+        )
+        if not normalized or any(len(item) > 100 for item in normalized):
+            raise ValueError("preferred_materials 必须包含有效且不超过 100 字的材质")
+        return normalized
 
     @model_validator(mode="after")
     def validate_budget_range(self) -> "AgentFactsPatch":
@@ -103,6 +119,12 @@ class AgentStateResponse(BaseModel):
     approval_required: bool = False
     exit_reason: str
     run_id: int | None = None
+    cost_cny: float | None = Field(default=None, ge=0)
+    cost_reserved_cny: float = Field(default=0, ge=0)
+    cost_limit_cny: float | None = Field(default=None, gt=0)
+    execution_deadline_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+    turn_execution_deadline_at: datetime | None = None
 
 
 class AgentTurnResponse(BaseModel):
@@ -146,6 +168,12 @@ class AgentCheckpointResponse(BaseModel):
     exit_reason: str
     scene_ref: dict[str, Any] | None = None
     run_id: int | None = None
+    cost_cny: float | None = Field(default=None, ge=0)
+    cost_reserved_cny: float = Field(default=0, ge=0)
+    cost_limit_cny: float | None = Field(default=None, gt=0)
+    execution_deadline_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+    turn_execution_deadline_at: datetime | None = None
     result: dict[str, Any] | None = None
     messages: list[AgentMessageResponse] = Field(default_factory=list)
 

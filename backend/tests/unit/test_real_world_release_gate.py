@@ -5,12 +5,19 @@ from pathlib import Path
 
 import pytest
 
-from evals.real_world import EvaluationInputError, EvaluationVersions, load_case_manifest
+from evals.real_world import (
+    CaseResult,
+    EvaluationInputError,
+    EvaluationVersions,
+    load_case_manifest,
+)
 from evals.release_change_detection import classify_release_sensitive_paths
 from evals.real_world_release_gate import (
     load_release_gate_config,
     main as release_gate_main,
     validate_candidate_runtime_versions,
+    validate_candidate_review_coverage,
+    validate_release_cohort,
     validate_release_dataset,
     validate_release_evidence,
     validate_release_event,
@@ -44,6 +51,52 @@ def _manifest(tmp_path: Path, *, origin: str = "private_real"):
         ],
     )
     return load_case_manifest(manifest)
+
+
+def _cohort_datasets(
+    tmp_path: Path,
+    *,
+    counts: dict[str, int],
+    duplicate_last: bool = False,
+):
+    datasets = {}
+    case_index = 0
+    total = sum(counts.values())
+    for split in ("development", "regression", "blind"):
+        root = tmp_path / split
+        root.mkdir(parents=True)
+        cases = []
+        for split_index in range(counts[split]):
+            payload_index = (
+                0
+                if duplicate_last and case_index == total - 1
+                else case_index
+            )
+            asset = root / f"room-{split_index}.png"
+            asset.write_bytes(f"private-room-{payload_index}".encode())
+            cases.append(
+                {
+                    "id": f"{split}-case-{split_index}",
+                    "name": f"{split} 真实案例 {split_index}",
+                    "split": split,
+                    "origin": "private_real",
+                    "asset_path": asset.name,
+                    "consent_status": "granted",
+                    "annotation_status": "ready",
+                    "label_version": "labels-1",
+                    "allowed_purposes": ["offline_evaluation"],
+                    "failure_tags": [],
+                }
+            )
+            case_index += 1
+        manifest = write_v2_manifest(
+            root,
+            filename="manifest.json",
+            dataset_version="release-data-1",
+            cases=cases,
+        )
+        datasets[split] = load_case_manifest(manifest)
+    return datasets
 
 
 @pytest.mark.parametrize(
@@ -82,6 +135,68 @@ def test_release_dataset_requires_nonzero_real_case_denominator(tmp_path):
 
     with pytest.raises(EvaluationInputError, match="development.*真实案例"):
         validate_release_dataset(dataset, split="development")
+
+
+def test_release_dataset_requires_private_real_case_in_every_split(tmp_path):
+    dataset = _manifest(tmp_path, origin="public_reference")
+
+    with pytest.raises(EvaluationInputError, match="private_real"):
+        validate_release_dataset(dataset, split="regression")
+
+
+def test_release_cohort_requires_twenty_unique_private_real_cases(tmp_path):
+    too_small = _cohort_datasets(
+        tmp_path / "too-small",
+        counts={"development": 7, "regression": 6, "blind": 6},
+    )
+    with pytest.raises(EvaluationInputError, match=r"20.*private_real"):
+        validate_release_cohort(too_small)
+
+    duplicated = _cohort_datasets(
+        tmp_path / "duplicated",
+        counts={"development": 7, "regression": 7, "blind": 6},
+        duplicate_last=True,
+    )
+    with pytest.raises(EvaluationInputError, match="重复物理案例"):
+        validate_release_cohort(duplicated)
+
+    valid = _cohort_datasets(
+        tmp_path / "valid",
+        counts={"development": 7, "regression": 7, "blind": 6},
+    )
+    validate_release_cohort(valid)
+
+
+def test_candidate_requires_nonzero_execution_review_coverage():
+    evidence = VerifiedEvaluationEvidence(
+        schema_version="5.0",
+        versions=EvaluationVersions("model", "prompt", "rules", "data"),
+        dataset_fingerprint="sha256:" + "1" * 64,
+        evidence_digest="sha256:" + "2" * 64,
+        split="regression",
+        results=(CaseResult(case_id="case-1", generation_succeeded=True),),
+        executions=(),
+        key_id="eval-key",
+    )
+
+    with pytest.raises(EvaluationInputError, match="execution_review"):
+        validate_candidate_review_coverage(evidence, split="regression")
+
+    reviewed = VerifiedEvaluationEvidence(
+        **{
+            **evidence.__dict__,
+            "results": (
+                CaseResult(
+                    case_id="case-1",
+                    human_review_count=1,
+                    human_rating_count=1,
+                    human_rating_sum=4,
+                    generation_succeeded=True,
+                ),
+            ),
+        }
+    )
+    assert validate_candidate_review_coverage(reviewed, split="regression") == 1
 
 
 def test_only_controlled_manual_workflow_can_issue_release_proof():

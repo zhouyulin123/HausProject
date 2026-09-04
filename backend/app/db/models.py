@@ -212,6 +212,55 @@ class DesignAgentTurn(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class AgentApproval(Base):
+    """Agent 转人工后的持久化审批请求与最终决定。"""
+
+    __tablename__ = "agent_approvals"
+    __table_args__ = (
+        UniqueConstraint(
+            "turn_id",
+            "approval_type",
+            name="uq_agent_approvals_turn_type",
+        ),
+        UniqueConstraint(
+            "task_id",
+            "client_decision_id",
+            name="uq_agent_approvals_task_client_decision",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    turn_id = Column(
+        Integer,
+        ForeignKey("design_agent_turns.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    approval_type = Column(String(40), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    request_reason = Column(Text, nullable=False)
+    reason_code = Column(String(100), nullable=False, index=True)
+    request_context_json = Column(JSON, nullable=False, default=dict)
+    requested_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    client_decision_id = Column(String(100), nullable=True)
+    decision = Column(String(20), nullable=True)
+    conclusion = Column(Text, nullable=True)
+    decided_by_type = Column(String(30), nullable=True)
+    decided_by_id = Column(String(100), nullable=True, index=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True, index=True)
+
+
 class LangGraphCheckpoint(Base):
     """绑定 DesignTask 与单轮 turn 的 LangGraph 完整 superstep 快照。"""
 
@@ -535,6 +584,62 @@ class Product(Base):
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    assets = relationship(
+        "ProductAsset",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        order_by="ProductAsset.id",
+    )
+
+
+class ProductAsset(Base):
+    """商品图片、CAD、GLB 与材质资产的来源和审核事实。"""
+
+    __tablename__ = "product_assets"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('image', 'cad', 'glb', 'material')",
+            name="ck_product_assets_kind",
+        ),
+        CheckConstraint(
+            "review_status IN "
+            "('pending_review', 'approved', 'rejected', 'superseded')",
+            name="ck_product_assets_review_status",
+        ),
+        UniqueConstraint(
+            "product_id",
+            "kind",
+            "url",
+            name="uq_product_assets_product_kind_url",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(
+        Integer,
+        ForeignKey("products.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind = Column(String(20), nullable=False, index=True)
+    url = Column(String(500), nullable=False)
+    source = Column(String(500), nullable=True)
+    authorization = Column(String(500), nullable=True)
+    review_status = Column(
+        String(20),
+        nullable=False,
+        default="pending_review",
+        server_default="pending_review",
+        index=True,
+    )
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(String(100), nullable=True)
+    review_note = Column(String(500), nullable=True)
+    created_by = Column(String(100), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    product = relationship("Product", back_populates="assets")
 
 
 class CustomQuoteRule(Base):

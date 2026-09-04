@@ -104,6 +104,12 @@ def test_upload_product_model_validates_and_binds_randomized_glb(product_api):
     assert stored_name != "supplier sofa.glb"
     assert (upload_dir / "models" / stored_name).read_bytes() == _glb_bytes()
 
+    public_pending = client.get("/api/products")
+    assert public_pending.status_code == 200
+    pending_product = public_pending.json()["products"][0]
+    assert pending_product["model_url"] is None
+    assert pending_product["approved_model_url"] is None
+
     approved = client.post(
         "/api/products/1/model-review",
         json={"decision": "approve", "note": "授权与尺寸已核验"},
@@ -114,6 +120,12 @@ def test_upload_product_model_validates_and_binds_randomized_glb(product_api):
     assert approved.json()["fallback_reason"] is None
     assert approved.json()["model_reviewed_by"] == "user:999"
     assert approved.json()["model_reviewed_at"] is not None
+
+    public_approved = client.get("/api/products")
+    assert public_approved.status_code == 200
+    approved_product = public_approved.json()["products"][0]
+    assert approved_product["model_url"] == body["model_url"]
+    assert approved_product["approved_model_url"] == body["model_url"]
 
 
 @pytest.mark.integration

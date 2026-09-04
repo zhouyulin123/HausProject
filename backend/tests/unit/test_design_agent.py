@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from app.agents import design_agent as design_agent_module
@@ -5,6 +7,9 @@ from app.agents.design_agent import (
     AgentToolRejected,
     DesignAgentWorkflow,
 )
+from app.schemas.design_agent import AgentTurnRequest
+from app.schemas.scene_agent import SceneOperationBatch
+from app.services import design_agent_service
 
 
 def _facts(**overrides):
@@ -238,6 +243,166 @@ def test_agent_completes_design_through_registered_tools():
         "catalog_search",
         "design_generation",
     ]
+
+
+@pytest.mark.unit
+def test_catalog_timeout_after_call_never_reports_success_or_retries():
+    started_at = datetime(2026, 9, 4, 8, 0, tzinfo=timezone.utc)
+    readings = iter([started_at, started_at + timedelta(seconds=31)])
+    calls = []
+    workflow = DesignAgentWorkflow(
+        retrieve_catalog=lambda _: calls.append("catalog")
+        or {"candidate_count": 1},
+        execute_design=lambda _: (_ for _ in ()).throw(
+            AssertionError("已超时时不应继续生成")
+        ),
+        execute_scene=lambda _: {},
+        clock=lambda: next(readings),
+    )
+
+    result = workflow.run(
+        task_id=1,
+        turn_id=20,
+        active_mode="catalog_design",
+        intent="catalog_search",
+        message="查找可配送商品",
+        facts={"delivery_region": "CN-SH"},
+        turn_execution_deadline_at=started_at + timedelta(seconds=30),
+    )
+
+    assert calls == ["catalog"]
+    assert result["status"] == "needs_human"
+    assert result["exit_reason"] == "timeout"
+    assert result["retry_count"] == 0
+    assert result["hard_errors"] == ["tool_timeout"]
+    assert result["result"] is None
+    assert result["tool_events"][-1]["status"] == "rejected"
+
+
+@pytest.mark.unit
+def test_scene_timeout_after_planning_never_writes_late_version(monkeypatch):
+    started_at = datetime(2026, 9, 4, 8, 0, tzinfo=timezone.utc)
+    readings = iter([started_at, started_at + timedelta(seconds=31)])
+    scene = type("Scene", (), {"id": 9, "current_version": 1})()
+    source = {
+        "room": {
+            "id": "living-room",
+            "name": "客厅",
+            "floorPolygon": [
+                {"x": -2, "z": -2},
+                {"x": 2, "z": -2},
+                {"x": 2, "z": 2},
+                {"x": -2, "z": 2},
+            ],
+            "ceilingHeight": 2.8,
+            "wallThickness": 0.12,
+        },
+        "openings": [],
+        "items": [],
+    }
+    writes = []
+    monkeypatch.setattr(
+        design_agent_service,
+        "_load_task_scene",
+        lambda *_, **__: scene,
+    )
+    monkeypatch.setattr(
+        design_agent_service.scene_service,
+        "get_current_version",
+        lambda *_: type("Version", (), {"scene_json": source})(),
+    )
+    monkeypatch.setattr(
+        design_agent_service.scene_tools,
+        "build_scene_agent_context",
+        lambda *_: {},
+    )
+    batch = SceneOperationBatch.model_validate(
+        {
+            "message": "已移动沙发",
+            "operations": [
+                {
+                    "type": "move",
+                    "instanceId": "sofa-main",
+                    "position": {"x": -0.3, "z": 0},
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        design_agent_service.llm_service,
+        "plan_scene_operations",
+        lambda **_: batch,
+    )
+
+    class FakeSceneWorkflow:
+        def __init__(self, **_):
+            pass
+
+        def run(self, **kwargs):
+            return {"proposed_scene": kwargs["source_scene"]}
+
+    monkeypatch.setattr(design_agent_service, "SceneAgentWorkflow", FakeSceneWorkflow)
+    monkeypatch.setattr(
+        design_agent_service.scene_service,
+        "update_scene_idempotent",
+        lambda *_, **__: writes.append("write"),
+    )
+    db = type("Db", (), {"scalar": lambda *_: None})()
+    tool = design_agent_service._scene_tool(
+        db,
+        type("Task", (), {"id": 1})(),
+        AgentTurnRequest(
+            client_turn_id="scene-timeout-001",
+            message="移动沙发",
+            scene_id=9,
+            base_scene_version=1,
+        ),
+        2,
+        turn_execution_deadline_at=started_at + timedelta(seconds=30),
+        clock=lambda: next(readings),
+    )
+
+    with pytest.raises(AgentToolRejected) as caught:
+        tool({"message": "移动沙发"})
+
+    assert caught.value.codes == ["tool_timeout"]
+    assert writes == []
+
+
+@pytest.mark.unit
+def test_custom_tool_timeout_discards_late_result_without_retry():
+    started_at = datetime(2026, 9, 4, 8, 0, tzinfo=timezone.utc)
+    readings = iter([started_at, started_at + timedelta(seconds=31)])
+    workflow = DesignAgentWorkflow(
+        retrieve_catalog=lambda _: {},
+        execute_design=lambda _: {},
+        execute_scene=lambda _: {},
+        execute_custom=lambda _: {"status": "preview_ready"},
+        clock=lambda: next(readings),
+    )
+
+    executed = workflow._execute(
+        {
+            "intent": "custom_furniture",
+            "step_count": 1,
+            "max_steps": 12,
+            "turn_execution_deadline_at": "2026-09-04T08:00:30Z",
+        }
+    )
+    verified = workflow._verify(
+        {
+            **executed,
+            "intent": "custom_furniture",
+            "step_count": executed["step_count"],
+            "max_steps": 12,
+            "max_retries": 2,
+            "retry_count": 0,
+        }
+    )
+
+    assert executed["result"] is None
+    assert executed["hard_errors"] == ["tool_timeout"]
+    assert verified["quality_outcome"] == "escalate"
 
 
 @pytest.mark.unit

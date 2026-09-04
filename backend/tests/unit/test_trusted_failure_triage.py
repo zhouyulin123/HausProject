@@ -158,3 +158,36 @@ def test_triage_rejects_unverified_objects_and_legacy_self_reported_files(tmp_pa
             split="regression",
             verification_keys={"quality-key-v1": "x" * 32},
         )
+
+
+def test_triage_derives_low_satisfaction_only_with_human_review_evidence():
+    evidence = _verified_evidence()
+    low_rating = CaseResult(
+        **{
+            **evidence.results[0].__dict__,
+            "human_review_count": 1,
+            "human_rating_count": 1,
+            "human_rating_sum": 2,
+        }
+    )
+    failures = derive_failure_triage_evidence(
+        evidence=VerifiedEvaluationEvidence(
+            **{**evidence.__dict__, "results": (low_rating,)}
+        ),
+        dataset=_dataset(),
+    )
+
+    human_failures = [
+        item for item in failures.failures if item.failure_type == "human_feedback"
+    ]
+    assert len(human_failures) == 1
+    assert human_failures[0].code == "low_human_satisfaction"
+    assert human_failures[0].metrics == ("human_satisfaction_mean",)
+
+    no_review = derive_failure_triage_evidence(
+        evidence=evidence,
+        dataset=_dataset(),
+    )
+    assert not any(
+        item.failure_type == "human_feedback" for item in no_review.failures
+    )

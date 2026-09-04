@@ -47,6 +47,7 @@ from evals.trusted_evidence import EVIDENCE_SCHEMA_VERSION, VerifiedEvaluationEv
 
 
 RELEASE_GATE_SCHEMA_VERSION = "1.0"
+MIN_PRIVATE_REAL_CASES = 20
 REQUIRED_SPLITS: tuple[EvaluationSplit, ...] = (
     "development",
     "regression",
@@ -89,6 +90,58 @@ def validate_release_dataset(
         raise EvaluationInputError(f"split={split} 没有准入真实案例，发布门禁失败关闭")
     if any(case.origin not in {"private_real", "public_reference"} for case in eligible):
         raise EvaluationInputError(f"split={split} 包含非真实来源案例")
+    if not any(case.origin == "private_real" for case in eligible):
+        raise EvaluationInputError(
+            f"split={split} 缺少准入 private_real 案例，公开参考案例不能替代真实客户案例"
+        )
+
+
+def validate_release_cohort(
+    datasets: Mapping[EvaluationSplit, RealWorldDataset],
+) -> int:
+    """验证三组发布案例构成，并按物理资产摘要跨清单去重。"""
+    missing_splits = [split for split in REQUIRED_SPLITS if split not in datasets]
+    if missing_splits:
+        raise EvaluationInputError(
+            f"发布案例队列缺少 split：{', '.join(missing_splits)}"
+        )
+
+    seen_assets: set[str] = set()
+    for split in REQUIRED_SPLITS:
+        dataset = datasets[split]
+        private_cases = [
+            case
+            for case in dataset.eligible_cases(split)
+            if case.origin == "private_real"
+        ]
+        if not private_cases:
+            raise EvaluationInputError(
+                f"split={split} 缺少准入 private_real 案例"
+            )
+        for case in private_cases:
+            if case.asset_sha256 in seen_assets:
+                raise EvaluationInputError("发布案例队列包含跨 split 重复物理案例")
+            seen_assets.add(case.asset_sha256)
+
+    if len(seen_assets) < MIN_PRIVATE_REAL_CASES:
+        raise EvaluationInputError(
+            "发布案例队列至少需要 "
+            f"{MIN_PRIVATE_REAL_CASES} 个去重 private_real 案例，当前为 {len(seen_assets)} 个"
+        )
+    return len(seen_assets)
+
+
+def validate_candidate_review_coverage(
+    evidence: VerifiedEvaluationEvidence,
+    *,
+    split: EvaluationSplit,
+) -> int:
+    review_count = sum(result.human_review_count for result in evidence.results)
+    if review_count < 1:
+        raise EvaluationInputError(
+            f"split={split} 候选可信证据缺少 execution_review 覆盖"
+        )
+    return review_count
 
 
 def _resolve_config_path(root: Path, value: Any, field: str) -> Path:
@@ -238,12 +291,16 @@ def _verify_split(
     config: ReleaseSplitConfig,
     *,
     split: EvaluationSplit,
+    dataset: RealWorldDataset | None = None,
     work_dir: Path,
     app_build_digest: str,
     eval_keys: Mapping[str, str],
     security_keys: Mapping[str, str],
 ) -> dict[str, Any]:
-    dataset = load_case_manifest(config.manifest, asset_root=config.asset_root)
+    dataset = dataset or load_case_manifest(
+        config.manifest,
+        asset_root=config.asset_root,
+    )
     validate_release_dataset(dataset, split=split)
     security_output = work_dir / f"{split}.security.evidence.json"
     candidate_output = work_dir / f"{split}.candidate.evidence.json"
@@ -303,6 +360,10 @@ def _verify_split(
         expected_build_digest=baseline_build_digest,
         label="基线",
     )
+    execution_review_count = validate_candidate_review_coverage(
+        candidate,
+        split=split,
+    )
     if candidate.evidence_digest == baseline.evidence_digest:
         raise EvaluationInputError(f"split={split} 候选不得重放基线证据")
     candidate_report = build_evaluation_report(
@@ -321,6 +382,7 @@ def _verify_split(
         "dataset_fingerprint": candidate.dataset_fingerprint,
         "eligible_case_count": len(dataset.eligible_cases(split)),
         "origin_counts": candidate_report["dataset"]["origin_counts"],
+        "execution_review_count": execution_review_count,
         "candidate_versions": asdict(candidate.versions),
         "baseline_versions": asdict(baseline.versions),
         "candidate_evidence_digest": candidate.evidence_digest,
@@ -389,6 +451,16 @@ def _verify(args: argparse.Namespace) -> int:
         config = load_release_gate_config(
             _required_environment("REAL_WORLD_RELEASE_GATE_CONFIG_PATH")
         )
+        datasets = {
+            split: load_case_manifest(
+                config[split].manifest,
+                asset_root=config[split].asset_root,
+            )
+            for split in REQUIRED_SPLITS
+        }
+        for split in REQUIRED_SPLITS:
+            validate_release_dataset(datasets[split], split=split)
+        private_real_case_count = validate_release_cohort(datasets)
         eval_key_id = _required_environment("EVAL_EVIDENCE_KEY_ID")
         eval_key = _required_environment("EVAL_EVIDENCE_HMAC_KEY")
         security_key_id = _required_environment("SECURITY_EVIDENCE_KEY_ID")
@@ -404,6 +476,7 @@ def _verify(args: argparse.Namespace) -> int:
                 _verify_split(
                     config[split],
                     split=split,
+                    dataset=datasets[split],
                     work_dir=work_dir,
                     app_build_digest=app_build_digest,
                     eval_keys={eval_key_id: eval_key},
@@ -436,6 +509,7 @@ def _verify(args: argparse.Namespace) -> int:
             "commit_sha": commit_sha,
             "app_build_digest": app_build_digest,
             "change_detection": _change_summary(changes),
+            "private_real_case_count": private_real_case_count,
             "splits": split_reports,
         }
         _write_report(output_dir, report)

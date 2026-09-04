@@ -17,8 +17,15 @@ from app.api.dependencies import require_admin, require_factory
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import CustomQuoteRule, Product, User
+from app.schemas.product_asset import (
+    ProductAssetCreate,
+    ProductAssetListResponse,
+    ProductAssetResponse,
+    ProductAssetReview,
+)
 from app.services.catalog_service import is_product_eligible
 from app.services.glb_validation import GlbValidationError, validate_glb_upload
+from app.services import product_asset_service
 from app.services.product_asset_service import product_asset_contract
 from app.services.upload_validation import UploadValidationError, validate_image_upload
 
@@ -58,11 +65,40 @@ def _validate_product_lifecycle(product: Product) -> None:
         raise HTTPException(status_code=422, detail="价格上限不能低于参考价")
 
 
-def _product_to_dict(p: Product) -> dict:
+def _product_to_dict(
+    p: Product,
+    *,
+    expose_pending_model: bool = False,
+) -> dict:
     price_text = (
         f"¥{p.price:,} - {p.price_max:,}" if p.price_max else f"¥{p.price:,}"
     )
     eligibility = is_product_eligible(p)
+    asset_contract = product_asset_contract(p)
+    approved_assets = product_asset_service.public_product_assets(p)
+    approved_glb = product_asset_service.approved_product_asset(p, "glb")
+    approved_image_url = product_asset_service.approved_product_asset_url(p, "image")
+    public_model_source = public_model_license = None
+    public_model_reviewed_at = public_model_reviewed_by = None
+    if asset_contract["approved_model_url"]:
+        public_model_source = approved_glb.source if approved_glb else p.model_source
+        public_model_license = (
+            approved_glb.authorization if approved_glb else p.model_license
+        )
+        public_model_reviewed_at = (
+            approved_glb.reviewed_at if approved_glb else p.model_reviewed_at
+        )
+        public_model_reviewed_by = (
+            approved_glb.reviewed_by if approved_glb else p.model_reviewed_by
+        )
+    assets = (
+        [
+            ProductAssetResponse.model_validate(asset).model_dump()
+            for asset in (p.assets or [])
+        ]
+        if expose_pending_model
+        else approved_assets
+    )
     return {
         "id": p.id,
         "sku": p.sku,
@@ -77,17 +113,41 @@ def _product_to_dict(p: Product) -> dict:
         "size": p.size,
         "selling_point": p.selling_point,
         "alternative": p.alternative,
-        "image_url": p.image_url,
-        "model_url": p.model_url,
+        "image_url": (
+            p.image_url
+            if expose_pending_model
+            else approved_image_url
+        ),
+        "model_url": (
+            p.model_url
+            if expose_pending_model
+            else asset_contract["approved_model_url"]
+        ),
         "model_status": p.model_status,
         "model_width_mm": p.model_width_mm,
         "model_height_mm": p.model_height_mm,
         "model_depth_mm": p.model_depth_mm,
-        "model_license": p.model_license,
-        "model_source": p.model_source,
-        "model_reviewed_at": p.model_reviewed_at,
-        "model_reviewed_by": p.model_reviewed_by,
-        "model_review_note": p.model_review_note,
+        "model_license": (
+            p.model_license
+            if expose_pending_model
+            else public_model_license
+        ),
+        "model_source": (
+            p.model_source
+            if expose_pending_model
+            else public_model_source
+        ),
+        "model_reviewed_at": (
+            p.model_reviewed_at
+            if expose_pending_model
+            else public_model_reviewed_at
+        ),
+        "model_reviewed_by": (
+            p.model_reviewed_by
+            if expose_pending_model
+            else public_model_reviewed_by
+        ),
+        "model_review_note": p.model_review_note if expose_pending_model else None,
         "model_spec_json": p.model_spec_json,
         "data_origin": p.data_origin,
         "source_name": p.source_name,
@@ -114,7 +174,8 @@ def _product_to_dict(p: Product) -> dict:
             "eligible": eligibility.eligible,
             "reason_codes": list(eligibility.reason_codes),
         },
-        **product_asset_contract(p),
+        "assets": assets,
+        **asset_contract,
     }
 
 
@@ -233,7 +294,7 @@ def create_product(
     db.add(product)
     db.commit()
     db.refresh(product)
-    return _product_to_dict(product)
+    return _product_to_dict(product, expose_pending_model=True)
 
 
 class ProductUpdate(BaseModel):
@@ -321,7 +382,7 @@ def update_product(
     _validate_product_lifecycle(product)
     db.commit()
     db.refresh(product)
-    return _product_to_dict(product)
+    return _product_to_dict(product, expose_pending_model=True)
 
 
 @router.delete("/{product_id}")
@@ -336,6 +397,77 @@ def deactivate_product(
     product.is_active = False  # 软删除，保留历史方案引用
     db.commit()
     return {"status": "ok"}
+
+
+@router.get(
+    "/{product_id}/assets",
+    response_model=ProductAssetListResponse,
+)
+def get_product_assets(
+    product_id: int,
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+) -> ProductAssetListResponse:
+    if db.get(Product, product_id) is None:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    return ProductAssetListResponse(
+        assets=[
+            ProductAssetResponse.model_validate(asset)
+            for asset in product_asset_service.list_product_assets(db, product_id)
+        ]
+    )
+
+
+@router.post(
+    "/{product_id}/assets",
+    response_model=ProductAssetResponse,
+    status_code=201,
+)
+def create_product_asset(
+    product_id: int,
+    data: ProductAssetCreate,
+    user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+) -> ProductAssetResponse:
+    try:
+        asset = product_asset_service.create_product_asset(
+            db,
+            product_id=product_id,
+            payload=data,
+            actor=f"user:{user.id}",
+        )
+    except product_asset_service.ProductAssetNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except product_asset_service.ProductAssetConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ProductAssetResponse.model_validate(asset)
+
+
+@router.post(
+    "/{product_id}/assets/{asset_id}/review",
+    response_model=ProductAssetResponse,
+)
+def review_product_asset(
+    product_id: int,
+    asset_id: int,
+    data: ProductAssetReview,
+    user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> ProductAssetResponse:
+    try:
+        asset = product_asset_service.review_product_asset(
+            db,
+            product_id=product_id,
+            asset_id=asset_id,
+            decision=data.decision,
+            note=data.note,
+            actor=f"user:{user.id}",
+        )
+    except product_asset_service.ProductAssetNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except product_asset_service.ProductAssetConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ProductAssetResponse.model_validate(asset)
 
 
 @router.post("/upload-image")
@@ -403,12 +535,17 @@ async def upload_product_model(
     product.model_reviewed_by = None
     product.model_review_note = None
     try:
+        product_asset_service.register_uploaded_glb(
+            db,
+            product=product,
+            actor=f"user:{_user.id}",
+        )
         db.commit()
     except Exception:
         stored_path.unlink(missing_ok=True)
         raise
     db.refresh(product)
-    return _product_to_dict(product)
+    return _product_to_dict(product, expose_pending_model=True)
 
 
 class ProductModelReview(BaseModel):
@@ -436,13 +573,25 @@ def review_product_model(
         product.model_source or ""
     ).strip():
         raise HTTPException(status_code=422, detail="模型授权和来源不完整")
-    product.model_status = "ready" if data.decision == "approve" else "rejected"
-    product.model_reviewed_at = datetime.now(timezone.utc)
-    product.model_reviewed_by = f"user:{user.id}"
-    product.model_review_note = (data.note or "").strip() or None
-    db.commit()
+    try:
+        asset = product_asset_service.register_uploaded_glb(
+            db,
+            product=product,
+            actor=f"user:{user.id}",
+        )
+        product_asset_service.review_product_asset(
+            db,
+            product_id=product.id,
+            asset_id=asset.id,
+            decision=data.decision,
+            note=(data.note or "").strip() or None,
+            actor=f"user:{user.id}",
+        )
+    except product_asset_service.ProductAssetConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.refresh(product)
-    return _product_to_dict(product)
+    return _product_to_dict(product, expose_pending_model=True)
 
 
 # ---------------------------------------------------------------- 定制报价规则写接口

@@ -14,6 +14,7 @@ export type AgentExitReason =
   | "missing_facts"
   | "invalid_facts"
   | "approval_required"
+  | "timeout"
   | "retry_exhausted"
   | "safety_blocked"
   | "tool_failed"

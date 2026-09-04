@@ -11,10 +11,13 @@ import logging
 from typing import Any, Dict, List, Mapping, Optional
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import CustomQuoteRule, Product
-from app.services.product_asset_service import product_asset_contract
+from app.services.product_asset_service import (
+    approved_product_asset_url,
+    product_asset_contract,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -142,7 +145,12 @@ def eligible_products(
     max_dimensions_mm: Mapping[str, int] | None = None,
     required_quantity: int | None = None,
 ) -> list[Product]:
-    products = db.scalars(select(Product).where(Product.is_active.is_(True))).all()
+    products = db.scalars(
+        select(Product)
+        .where(Product.is_active.is_(True))
+        .options(selectinload(Product.assets))
+        .execution_options(populate_existing=True)
+    ).all()
     return [
         product for product in products
         if is_product_eligible(
@@ -155,6 +163,87 @@ def eligible_products(
             required_quantity=required_quantity,
         ).eligible
     ]
+
+
+def _explicit_preferences(value: Any) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    return list(
+        dict.fromkeys(
+            str(item).strip()
+            for item in values
+            if isinstance(item, str) and item.strip()
+        )
+    )
+
+
+def rank_products_by_preferences(
+    products: list[Product],
+    *,
+    preferred_styles: Any = None,
+    preferred_materials: Any = None,
+) -> list[tuple[Product, list[dict[str, str]]]]:
+    """仅按显式偏好确定性排序，不产生推测性的相似度分数。"""
+    styles = _explicit_preferences(preferred_styles)
+    materials = _explicit_preferences(preferred_materials)
+
+    def exact_match(value: Any, preferences: list[str]) -> int | None:
+        normalized = str(value or "").strip().casefold()
+        return next(
+            (
+                index
+                for index, preference in enumerate(preferences)
+                if normalized == preference.casefold()
+            ),
+            None,
+        )
+
+    def contained_match(value: Any, preferences: list[str]) -> int | None:
+        normalized = "".join(str(value or "").split()).casefold()
+        return next(
+            (
+                index
+                for index, preference in enumerate(preferences)
+                if "".join(preference.split()).casefold() in normalized
+            ),
+            None,
+        )
+
+    ranked: list[
+        tuple[tuple[int, int, int, int, int, int, int], Product, list[dict[str, str]]]
+    ] = []
+    for product in products:
+        style_index = exact_match(product.style, styles)
+        material_index = contained_match(product.material, materials)
+        reasons: list[dict[str, str]] = []
+        if style_index is not None:
+            reasons.append(
+                {
+                    "code": "style_preference_match",
+                    "preference": styles[style_index],
+                    "value": product.style or "",
+                }
+            )
+        if material_index is not None:
+            reasons.append(
+                {
+                    "code": "material_preference_match",
+                    "preference": materials[material_index],
+                    "value": product.material or "",
+                }
+            )
+        match_count = int(style_index is not None) + int(material_index is not None)
+        sort_key = (
+            -match_count,
+            int(style_index is None),
+            style_index if style_index is not None else len(styles),
+            int(material_index is None),
+            material_index if material_index is not None else len(materials),
+            product.price,
+            product.id or 0,
+        )
+        ranked.append((sort_key, product, reasons))
+    ranked.sort(key=lambda item: item[0])
+    return [(product, reasons) for _, product, reasons in ranked]
 
 
 def _rule_available_in_region(
@@ -403,7 +492,12 @@ def verify_and_enrich_plans(
 ) -> None:
     """统一校验 SKU、确定性替代、回填价格并生成版本化报价。"""
     current = _as_utc(at) or datetime.now(timezone.utc)
-    all_products = db.scalars(select(Product).where(Product.is_active.is_(True))).all()
+    all_products = db.scalars(
+        select(Product)
+        .where(Product.is_active.is_(True))
+        .options(selectinload(Product.assets))
+        .execution_options(populate_existing=True)
+    ).all()
     by_sku = {product.sku: product for product in all_products if product.sku}
     products = eligible_products(
         db,
@@ -566,7 +660,7 @@ def verify_and_enrich_plans(
                 "reason": item.get("reason") or product.selling_point or "",
                 "alternative": product.alternative or "",
                 "alternativeSkus": list(product.alternative_skus or []),
-                "imageUrl": product.image_url,
+                "imageUrl": approved_product_asset_url(product, "image"),
                 "modelUrl": asset_contract["approved_model_url"],
                 "modelStatus": product.model_status,
                 "modelDimensionsMm": {

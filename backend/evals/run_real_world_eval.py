@@ -47,6 +47,7 @@ _HIGHER_IS_BETTER = (
     "generation_success_rate",
 )
 _LOWER_IS_BETTER = (
+    "human_modification_mean",
     "severe_cross_user_access",
     "unbounded_retry_cases",
 )

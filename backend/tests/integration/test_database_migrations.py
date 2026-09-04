@@ -77,6 +77,94 @@ def test_langgraph_checkpoint_migration_round_trip_from_empty_database():
 
 
 @pytest.mark.integration
+def test_product_asset_migration_backfills_only_trusted_legacy_glb_as_approved():
+    backend_dir = Path(__file__).resolve().parents[2]
+    artifacts_dir = backend_dir / ".test_artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+    database_path = artifacts_dir / f"product_assets_{uuid4().hex}.db"
+    database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.attributes["database_url"] = database_url
+    engine = None
+    try:
+        command.upgrade(config, "e3f4a5b6c7d8")
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO products "
+                    "(id, name, price, model_url, model_status, model_width_mm, "
+                    "model_height_mm, model_depth_mm, model_license, model_source, "
+                    "model_reviewed_at, model_reviewed_by, image_url, region_codes, "
+                    "alternative_skus, is_active) "
+                    "VALUES (9001, '可信旧商品', 1000, '/uploads/models/legacy.glb', "
+                    "'ready', 100, 100, 100, '商用授权', 'supplier:legacy', "
+                    "'2026-09-01 00:00:00', 'user:1', '/uploads/products/legacy.png', "
+                    "'[]', '[]', 1)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO products "
+                    "(id, name, price, model_url, model_status, model_width_mm, "
+                    "model_height_mm, model_depth_mm, model_license, model_source, "
+                    "model_reviewed_at, model_reviewed_by, region_codes, "
+                    "alternative_skus, is_active) "
+                    "VALUES (9002, '空白证据旧商品', 1000, "
+                    "'/uploads/models/blank.glb', 'ready', 100, 100, 100, '   ', "
+                    "'supplier:blank', '2026-09-01 00:00:00', 'user:1', "
+                    "'[]', '[]', 1)"
+                )
+            )
+        engine.dispose()
+        engine = None
+
+        command.upgrade(config, "head")
+        engine = create_engine(database_url)
+        columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("product_assets")
+        }
+        assert {
+            "product_id",
+            "kind",
+            "url",
+            "source",
+            "authorization",
+            "review_status",
+            "reviewed_at",
+            "reviewed_by",
+            "review_note",
+        } <= columns
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT kind, review_status FROM product_assets "
+                    "WHERE product_id = 9001 ORDER BY kind"
+                )
+            ).all()
+        assert rows == [("glb", "approved"), ("image", "pending_review")]
+        with engine.connect() as connection:
+            blank_evidence_status = connection.execute(
+                text(
+                    "SELECT review_status FROM product_assets "
+                    "WHERE product_id = 9002 AND kind = 'glb'"
+                )
+            ).scalar_one()
+        assert blank_evidence_status == "pending_review"
+        engine.dispose()
+        engine = None
+
+        command.downgrade(config, "e3f4a5b6c7d8")
+        engine = create_engine(database_url)
+        assert "product_assets" not in inspect(engine).get_table_names()
+    finally:
+        if engine is not None:
+            engine.dispose()
+        database_path.unlink(missing_ok=True)
+
+
+@pytest.mark.integration
 def test_alembic_upgrades_empty_database_to_current_schema():
     backend_dir = Path(__file__).resolve().parents[2]
     artifacts_dir = backend_dir / ".test_artifacts"
@@ -113,6 +201,8 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "order_quotes",
             "design_agent_turns",
             "design_agent_events",
+            "product_assets",
+            "agent_approvals",
             "langgraph_checkpoints",
             "langgraph_checkpoint_writes",
             "failure_clusters",
@@ -121,6 +211,28 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "model_provider_circuits",
             "evaluation_run_bindings",
         } <= tables
+        approval_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "agent_approvals"
+            )
+        }
+        assert {
+            "task_id",
+            "turn_id",
+            "approval_type",
+            "status",
+            "request_reason",
+            "reason_code",
+            "request_context_json",
+            "requested_at",
+            "client_decision_id",
+            "decision",
+            "conclusion",
+            "decided_by_type",
+            "decided_by_id",
+            "decided_at",
+        } <= approval_columns
         room_confirmation_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns(

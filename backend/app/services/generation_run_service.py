@@ -403,6 +403,33 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def agent_execution_control(run: GenerationRun | None) -> dict[str, Any]:
+    """将生成运行投影为可持久化、可公开的 Agent 执行控制状态。"""
+    if run is None:
+        return {
+            "cost_cny": None,
+            "cost_reserved_cny": 0.0,
+            "cost_limit_cny": None,
+            "execution_deadline_at": None,
+            "cancel_requested_at": None,
+        }
+
+    def timestamp(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        return _as_utc(value).isoformat().replace("+00:00", "Z")
+
+    return {
+        "cost_cny": float(run.cost_cny) if run.cost_cny is not None else None,
+        "cost_reserved_cny": float(run.cost_reserved_cny or 0.0),
+        "cost_limit_cny": (
+            float(run.cost_limit_cny) if run.cost_limit_cny is not None else None
+        ),
+        "execution_deadline_at": timestamp(run.execution_deadline_at),
+        "cancel_requested_at": timestamp(run.cancel_requested_at),
+    }
+
+
 def _deadline_reached(run: GenerationRun, *, now: datetime) -> bool:
     return (
         run.execution_deadline_at is not None
@@ -432,6 +459,7 @@ def _sync_agent_checkpoint(*, task: DesignTask, run: GenerationRun) -> bool:
     if not isinstance(checkpoint, dict) or checkpoint.get("run_id") != run.id:
         return False
     updated = dict(checkpoint)
+    updated.update(agent_execution_control(run))
     result = dict(updated.get("result") or {})
     result.update({"run_id": run.id, "generation_status": run.status})
     budget_events = [

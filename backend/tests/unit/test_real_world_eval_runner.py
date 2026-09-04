@@ -229,6 +229,61 @@ def test_regression_comparison_fails_when_quality_drops_on_same_cases(tmp_path):
     assert by_metric["quote_consistency_rate"]["regressed"] is False
 
 
+def test_regression_comparison_treats_more_human_modification_as_regression(
+    tmp_path,
+):
+    dataset = _manifest(tmp_path)
+    baseline_results = tuple(
+        CaseResult(
+            **{
+                **_result(case_id).__dict__,
+                "human_review_count": 1,
+                "human_edit_count": 1,
+                "human_move_count": 1,
+            }
+        )
+        for case_id in ("case-a", "case-b")
+    )
+    candidate_results = tuple(
+        CaseResult(
+            **{
+                **_result(case_id).__dict__,
+                "human_review_count": 1,
+                "human_edit_count": 2,
+                "human_move_count": 2,
+            }
+        )
+        for case_id in ("case-a", "case-b")
+    )
+    baseline = build_evaluation_report(
+        dataset=dataset,
+        split="regression",
+        evidence=_evidence(dataset, model="m1", results=baseline_results),
+    )
+    candidate = build_evaluation_report(
+        dataset=dataset,
+        split="regression",
+        evidence=_evidence(dataset, model="m2", results=candidate_results),
+    )
+
+    comparison = compare_evaluation_reports(candidate, baseline)
+    item = next(
+        row
+        for row in comparison["items"]
+        if row["metric"] == "human_modification_mean"
+    )
+
+    assert comparison["passed"] is False
+    assert item == {
+        "metric": "human_modification_mean",
+        "direction": "lower",
+        "baseline": 1.0,
+        "candidate": 2.0,
+        "delta": 1.0,
+        "regressed": True,
+    }
+
+
 def test_regression_comparison_allows_product_data_version_change(tmp_path):
     dataset = _manifest(tmp_path)
     report = build_evaluation_report(

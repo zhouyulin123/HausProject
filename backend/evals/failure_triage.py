@@ -59,6 +59,7 @@ _SEVERITIES = ("critical", "high", "medium", "low")
 _SPLITS = ("development", "regression", "blind")
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _EXECUTION_REF_PATTERN = re.compile(r"^exec-hmac-sha256:[0-9a-f]{64}$")
+_LOW_SATISFACTION_MAX_MEAN = 2.0
 
 
 class FailureTriageInputError(ValueError):
@@ -215,6 +216,21 @@ def _derived_failures(
                         occurrence_count=missing_count,
                     )
                 )
+        if (
+            result.human_rating_count > 0
+            and result.human_rating_sum / result.human_rating_count
+            <= _LOW_SATISFACTION_MAX_MEAN
+        ):
+            failures.append(
+                FailureRecord(
+                    **common,
+                    code="low_human_satisfaction",
+                    failure_type="human_feedback",
+                    severity="high",
+                    tags=("human_feedback", "satisfaction.low"),
+                    metrics=("human_satisfaction_mean",),
+                )
+            )
         if result.severe_cross_user_access:
             failures.append(
                 FailureRecord(
