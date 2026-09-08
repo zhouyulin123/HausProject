@@ -412,7 +412,10 @@ def test_owner_can_queue_and_query_versioned_blender_render(
     scene_api_context,
 ):
     client, owner_id, stranger_id, plan_version_id = scene_api_context
-    headers = {"X-Session-ID": owner_id}
+    headers = {
+        "X-Session-ID": owner_id,
+        "X-Request-ID": "blender-trace-first-001",
+    }
     created = client.post(
         f"/api/design/plan-versions/{plan_version_id}/scene",
         headers=headers,
@@ -427,7 +430,10 @@ def test_owner_can_queue_and_query_versioned_blender_render(
     )
     duplicate = client.post(
         f"/api/design/scenes/{scene_id}/render-jobs",
-        headers=headers,
+        headers={
+            "X-Session-ID": owner_id,
+            "X-Request-ID": "blender-trace-retry-002",
+        },
         json={"baseVersion": 1, "profile": "preview"},
     )
     restored = client.get(
@@ -441,6 +447,7 @@ def test_owner_can_queue_and_query_versioned_blender_render(
 
     assert queued.status_code == 202
     assert queued.json()["status"] == "queued"
+    assert queued.json()["request_id"] == "blender-trace-first-001"
     assert queued.json()["max_attempts"] >= 1
     assert queued.json()["execution_deadline_at"] is not None
     assert queued.json()["heartbeat_at"] is None
@@ -451,7 +458,9 @@ def test_owner_can_queue_and_query_versioned_blender_render(
     assert queued.json()["scene_version"] == 1
     assert duplicate.status_code == 202
     assert duplicate.json()["id"] == queued.json()["id"]
+    assert duplicate.json()["request_id"] == "blender-trace-first-001"
     assert restored.status_code == 200
+    assert restored.json()["request_id"] == "blender-trace-first-001"
     assert restored.json()["profile"] == "preview"
     assert forbidden.status_code == 404
 

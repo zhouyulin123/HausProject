@@ -127,12 +127,20 @@ def test_render_api_requires_key_is_idempotent_and_supports_restore(monkeypatch)
         )
         first = client.post(
             "/api/design/render",
-            headers={"X-Session-ID": owner_id, "Idempotency-Key": "effect-1"},
+            headers={
+                "X-Session-ID": owner_id,
+                "Idempotency-Key": "effect-1",
+                "X-Request-ID": "effect-trace-first-001",
+            },
             json=body,
         )
         same = client.post(
             "/api/design/render",
-            headers={"X-Session-ID": owner_id, "Idempotency-Key": "effect-1"},
+            headers={
+                "X-Session-ID": owner_id,
+                "Idempotency-Key": "effect-1",
+                "X-Request-ID": "effect-trace-retry-002",
+            },
             json=body,
         )
 
@@ -140,6 +148,8 @@ def test_render_api_requires_key_is_idempotent_and_supports_restore(monkeypatch)
         assert first.status_code == 202
         assert same.status_code == 202
         assert same.json()["job_id"] == first.json()["job_id"]
+        assert first.json()["request_id"] == "effect-trace-first-001"
+        assert same.json()["request_id"] == "effect-trace-first-001"
         with factory() as db:
             assert db.query(EffectRenderJob).count() == 1
 
@@ -153,7 +163,9 @@ def test_render_api_requires_key_is_idempotent_and_supports_restore(monkeypatch)
             headers={"X-Session-ID": owner_id},
         )
         assert detail.status_code == 200
+        assert detail.json()["request_id"] == "effect-trace-first-001"
         assert restored.status_code == 200
+        assert restored.json()["request_id"] == "effect-trace-first-001"
         assert restored.json()["job_id"] == job_id
     finally:
         client.close()
