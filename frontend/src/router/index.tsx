@@ -1,5 +1,5 @@
 import { lazy, Suspense, type ComponentType } from "react";
-import { createBrowserRouter } from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router-dom";
 import Layout from "@/components/layout/Layout";
 import RouteErrorPage from "@/components/common/RouteErrorPage";
 import {
@@ -9,16 +9,15 @@ import {
 } from "@/components/auth/RouteGuard";
 import HomePage from "@/pages/HomePage";
 import { importWithRetry } from "@/lib/lazyImport";
-import { DESIGN_START_PATH } from "@/lib/designWorkspaceRouting";
+import {
+  DESIGN_START_PATH,
+  LEGACY_DESIGN_PATHS,
+} from "@/lib/designWorkspaceRouting";
 
 type PageModule = { default: ComponentType };
 const lazyPage = (importer: () => Promise<PageModule>) =>
   lazy(() => importWithRetry(importer));
 
-const CustomizePage = lazyPage(() => import("@/pages/CustomizePage"));
-const UploadPage = lazyPage(() => import("@/pages/UploadPage"));
-const ChatPage = lazyPage(() => import("@/pages/ChatPage"));
-const ResultsPage = lazyPage(() => import("@/pages/ResultsPage"));
 const DesignDetailPage = lazyPage(() => import("@/pages/DesignDetailPage"));
 const DesignStartPage = lazyPage(() => import("@/pages/DesignStartPage"));
 const DesignWorkspacePage = lazyPage(
@@ -69,10 +68,10 @@ export const router = createBrowserRouter(
       errorElement: <RouteErrorPage />,
       children: [
         { index: true, element: <HomePage /> },
-        { path: "customize", element: <CustomizePage /> },
-        { path: "upload", element: <UploadPage /> },
-        { path: "chat", element: <ChatPage /> },
-        { path: "results", element: <ResultsPage /> },
+        ...LEGACY_DESIGN_PATHS.map((path) => ({
+          path,
+          element: <Navigate replace to={DESIGN_START_PATH} />,
+        })),
         { path: DESIGN_START_PATH.slice(1), element: <DesignStartPage /> },
         {
           path: "design/:projectId/workspace",

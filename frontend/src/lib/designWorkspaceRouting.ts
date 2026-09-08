@@ -1,4 +1,10 @@
 export const DESIGN_START_PATH = "/design/new";
+export const LEGACY_DESIGN_PATHS = [
+  "customize",
+  "upload",
+  "chat",
+  "results",
+] as const;
 
 export const WORKSPACE_CATALOG_OPTIONS = {
   fallbackToMock: false,
