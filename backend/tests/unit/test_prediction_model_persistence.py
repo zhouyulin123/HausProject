@@ -125,6 +125,35 @@ def test_requirement_rule_fallback_keeps_model_null(db, monkeypatch):
     assert saved.parser_model is None
 
 
+def test_requirement_route_reuses_same_input_without_duplicate_model_call(
+    db, monkeypatch
+):
+    task = DesignTask(status="analyzing", raw_user_input="需要现代客厅")
+    db.add(task)
+    db.commit()
+    monkeypatch.setattr(tasks, "require_owned_design_task", lambda *_args, **_kwargs: task)
+    calls = 0
+
+    def parse_once(_raw):
+        nonlocal calls
+        calls += 1
+        return {
+            "space_type": "客厅",
+            "missing_fields": ["budget"],
+            "follow_up_questions": ["预算范围大概是多少？"],
+        }
+
+    monkeypatch.setattr(tasks.llm_service, "parse_requirement", parse_once)
+
+    first = tasks.get_requirement(task.id, "session-001", db)
+    second = tasks.get_requirement(task.id, "session-001", db)
+
+    assert calls == 1
+    assert second == first
+    assert db.query(RequirementParseResult).filter_by(task_id=task.id).count() == 1
+    assert db.query(TaskExecutionEvent).filter_by(task_id=task.id).count() == 1
+
+
 @pytest.mark.asyncio
 async def test_upload_route_persists_actual_vl_model(db, monkeypatch, tmp_path: Path):
     monkeypatch.setattr(upload, "require_active_session", lambda *_args, **_kwargs: None)
