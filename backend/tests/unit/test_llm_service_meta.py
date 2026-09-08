@@ -1,6 +1,7 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -43,6 +44,48 @@ def test_model_call_cost_ceiling_uses_prompt_bytes_and_output_limit():
 
     # 1 + 3 个 UTF-8 字节，加 256 个消息格式 token 上界。
     assert cost == pytest.approx(((260 * 2.0) + (100 * 8.0)) / 1_000_000)
+
+
+def test_model_call_capture_counts_and_aggregates_multiple_provider_calls(
+    monkeypatch,
+):
+    usages = iter(
+        [
+            SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+            ),
+            SimpleNamespace(
+                prompt_tokens=50,
+                completion_tokens=10,
+                total_tokens=60,
+            ),
+        ]
+    )
+
+    class Completions:
+        def create(self, **_kwargs):
+            message = SimpleNamespace(content='{"ok": true}')
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=message)],
+                usage=next(usages),
+            )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+    monkeypatch.setattr(llm_service, "get_client", lambda: client)
+
+    with llm_service.capture_model_call() as capture:
+        llm_service._chat_json("system", "first")
+        llm_service._chat_json("system", "second")
+
+    assert capture.attempted is True
+    assert capture.attempt_count == 2
+    assert capture.usage == {
+        "prompt_tokens": 150,
+        "completion_tokens": 30,
+        "total_tokens": 180,
+    }
 
 
 def test_model_cost_guard_runs_before_provider_and_is_not_converted(monkeypatch):

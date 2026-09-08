@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import pytest
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -841,6 +843,75 @@ def test_plan_refine_runs_as_metering_aware_agent_tool(
     )
     assert timeline.status_code == 200
     assert timeline.json()["events"][-1]["billing_status"] == "unknown"
+
+
+@pytest.mark.integration
+def test_agent_timeline_aggregates_multiple_model_calls_and_known_cost(
+    agent_api_context,
+    monkeypatch,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+
+    def plan_refine_tool(_db, _task, _payload, *, on_model_attempt):
+        def execute(_state):
+            on_model_attempt()
+            return {
+                "plan": {"id": "A", "planVersionId": 20},
+                "version": 2,
+                "message": "已调整方案",
+            }
+
+        return execute
+
+    @contextmanager
+    def captured_calls():
+        yield SimpleNamespace(
+            attempted=True,
+            attempt_count=2,
+            usage={"prompt_tokens": 150, "completion_tokens": 30},
+        )
+
+    monkeypatch.setattr(
+        design_agent.design_agent_service,
+        "_plan_refine_tool",
+        plan_refine_tool,
+    )
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "capture_model_call",
+        captured_calls,
+    )
+    monkeypatch.setattr(
+        design_agent.design_agent_service.settings,
+        "llm_input_price_per_mtok",
+        2.0,
+    )
+    monkeypatch.setattr(
+        design_agent.design_agent_service.settings,
+        "llm_output_price_per_mtok",
+        8.0,
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "plan-refine-metered-001",
+            "message": "把主沙发换成浅灰色",
+            "active_mode": "catalog_design",
+            "plan_id": "A",
+        },
+    )
+
+    assert response.status_code == 200
+    timeline = client.get(
+        f"/api/design/tasks/{task_id}/timeline",
+        headers={"X-Session-ID": owner_id},
+    ).json()
+    event = timeline["events"][-1]
+    assert event["attempt"] == 2
+    assert event["billing_status"] == "metered"
+    assert event["cost_cny"] == pytest.approx(0.00054)
 
 
 @pytest.mark.integration
