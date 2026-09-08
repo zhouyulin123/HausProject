@@ -301,6 +301,7 @@ def test_scene_timeout_after_planning_never_writes_late_version(monkeypatch):
         "items": [],
     }
     writes = []
+    model_attempts = []
     monkeypatch.setattr(
         design_agent_service,
         "_load_task_scene",
@@ -360,12 +361,14 @@ def test_scene_timeout_after_planning_never_writes_late_version(monkeypatch):
         2,
         turn_execution_deadline_at=started_at + timedelta(seconds=30),
         clock=lambda: next(readings),
+        on_model_attempt=lambda: model_attempts.append("scene_planning"),
     )
 
     with pytest.raises(AgentToolRejected) as caught:
         tool({"message": "移动沙发"})
 
     assert caught.value.codes == ["tool_timeout"]
+    assert model_attempts == ["scene_planning"]
     assert writes == []
 
 

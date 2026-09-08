@@ -142,3 +142,46 @@ def test_timeline_cursor_is_monotonic_and_cost_is_null_when_only_unknown():
             assert summary.has_unknown_cost is True
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("source_type", "state", "attempt", "expected_code", "expected_billing"),
+    [
+        ("agent", "completed", 1, "agent.turn.completed", "unknown"),
+        (
+            "effect",
+            "provider_unavailable",
+            1,
+            "effect.provider_unavailable",
+            "unknown",
+        ),
+    ],
+)
+def test_timeline_preserves_model_attempt_and_provider_terminal_semantics(
+    source_type,
+    state,
+    attempt,
+    expected_code,
+    expected_billing,
+):
+    engine, factory = _database()
+    try:
+        with factory() as db:
+            task = DesignTask(status="processing", progress=50)
+            db.add(task)
+            db.flush()
+
+            event = task_timeline_service.record_lifecycle_event(
+                db,
+                task_id=task.id,
+                source_type=source_type,
+                source_id=9,
+                state=state,
+                attempt=attempt,
+            )
+
+            assert event.event_code == expected_code
+            assert event.billing_status == expected_billing
+            assert event.cost_cny is None
+    finally:
+        engine.dispose()
