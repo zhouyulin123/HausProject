@@ -130,6 +130,7 @@ describe("Agent 执行状态区", () => {
         summary: summary as string,
         billing_status: billing as "metered" | "not_billable" | "unknown",
         cost_cny: billing === "metered" ? 0.6 : null,
+        request_id: id === 6 ? "trace-generation-abcdef" : null,
         occurred_at: `2026-09-08T09:0${id}:00Z`,
       })),
       next_cursor: 9,
@@ -161,6 +162,8 @@ describe("Agent 执行状态区", () => {
     expect(html).toContain("17:06");
     expect(html).toContain("¥1.20");
     expect(html).toContain("另有 2 项未知成本");
+    expect(html).toContain("追踪 trace-ge");
+    expect(html).toContain('title="trace-generation-abcdef"');
     expect(html).toContain("加载更多");
   });
 

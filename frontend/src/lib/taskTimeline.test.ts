@@ -6,6 +6,7 @@ const page = (ids: number[], overrides: Partial<TaskTimelineResponse> = {}): Tas
   task_id: 42,
   events: ids.map((eventId) => ({
     event_id: eventId,
+    request_id: null,
     source_type: "agent",
     source_id: 9,
     attempt: null,

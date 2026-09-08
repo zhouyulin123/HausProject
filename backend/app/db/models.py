@@ -427,6 +427,7 @@ class TaskExecutionEvent(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
+    request_id = Column(String(100), nullable=True, index=True)
     task_id = Column(
         Integer,
         ForeignKey("design_tasks.id", ondelete="CASCADE"),
@@ -877,6 +878,40 @@ class AnonymousSessionTask(Base):
         unique=True,
     )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DemoAgentInvocation(Base):
+    """公开 Demo 模型调用的幂等、无原始指令成本账本。"""
+
+    __tablename__ = "demo_agent_invocations"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "operation_key",
+            name="uq_demo_agent_invocations_session_operation",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(
+        String(36),
+        ForeignKey("anonymous_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    operation_key = Column(String(71), nullable=False)
+    request_digest = Column(String(71), nullable=False)
+    status = Column(String(20), nullable=False, default="running", index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    billing_status = Column(String(20), nullable=False, default="not_billable")
+    cost_cny = Column(Float, nullable=True)
+    usage_json = Column(JSON, nullable=False, default=dict)
+    result_json = Column(JSON, nullable=True)
+    response_status = Column(Integer, nullable=True)
+    error_code = Column(String(50), nullable=True)
+    request_id = Column(String(100), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class DesignRevision(Base):

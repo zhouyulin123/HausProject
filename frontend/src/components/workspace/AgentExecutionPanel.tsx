@@ -189,6 +189,9 @@ export default function AgentExecutionPanel({
                         {BILLING_LABELS[event.billing_status]}
                         {event.attempt !== null ? ` · 第 ${event.attempt} 次` : ""}
                         {` · ${formatEventTime(event.occurred_at)}`}
+                        {event.request_id && (
+                          <span title={event.request_id}>{` · 追踪 ${event.request_id.slice(0, 8)}`}</span>
+                        )}
                       </span>
                     </li>
                   ))}

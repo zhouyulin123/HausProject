@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.routes import tasks
 from app.db.database import Base, get_db
 from app.db.models import DesignTask
+from app.core.request_context import bind_request_id
 from app.services import task_timeline_service
 from app.services.anonymous_session_service import attach_task, create_anonymous_session
 
@@ -37,17 +38,18 @@ def test_task_timeline_is_owner_scoped_paginated_and_returns_safe_summaries():
             cost_cny=None,
             event_key="agent:1:completed",
         )
-        task_timeline_service.append_event(
-            db,
-            task_id=task.id,
-            source_type="generation",
-            source_id=2,
-            attempt=1,
-            event_code="generation.completed",
-            billing_status="metered",
-            cost_cny=2.5,
-            event_key="generation:2:a1:completed",
-        )
+        with bind_request_id("timeline-request-002"):
+            task_timeline_service.append_event(
+                db,
+                task_id=task.id,
+                source_type="generation",
+                source_id=2,
+                attempt=1,
+                event_code="generation.completed",
+                billing_status="metered",
+                cost_cny=2.5,
+                event_key="generation:2:a1:completed",
+            )
         task_timeline_service.append_event(
             db,
             task_id=task.id,
@@ -117,6 +119,8 @@ def test_task_timeline_is_owner_scoped_paginated_and_returns_safe_summaries():
     assert first.json()["known_cost_cny"] == 2.5
     assert first.json()["has_unknown_cost"] is True
     assert first.json()["unknown_cost_event_count"] == 1
+    assert first.json()["events"][0]["request_id"] == "timeline-request-002"
+    assert first.json()["events"][1]["request_id"] is None
     assert before_cursor == first.json()["events"][0]["event_id"]
     assert first.json()["next_after_id"] is None
     assert [event["event_code"] for event in older.json()["events"]] == [

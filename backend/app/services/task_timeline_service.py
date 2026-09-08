@@ -7,6 +7,7 @@ from typing import Literal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.request_context import current_request_id
 from app.db.models import TaskExecutionEvent
 
 
@@ -114,6 +115,7 @@ def append_event(
             raise ValueError("任务时间线 event_key 已绑定不同事件")
         return existing
     event = TaskExecutionEvent(
+        request_id=current_request_id(),
         task_id=task_id,
         source_type=source_type,
         source_id=source_id,

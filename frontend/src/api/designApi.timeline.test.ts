@@ -37,6 +37,7 @@ describe("统一任务时间线 API", () => {
         summary: "方案生成完成",
         billing_status: "unknown",
         cost_cny: null,
+        request_id: "timeline-request-008",
         occurred_at: "2026-09-08T09:00:00Z",
       }],
       next_cursor: 8,

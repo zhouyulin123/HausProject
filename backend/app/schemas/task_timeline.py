@@ -18,6 +18,7 @@ TimelineSource = Literal[
 
 class TaskTimelineEventResponse(BaseModel):
     event_id: int
+    request_id: str | None = None
     source_type: TimelineSource
     source_id: int
     attempt: int | None = None

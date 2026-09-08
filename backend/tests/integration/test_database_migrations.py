@@ -387,6 +387,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
         }
         assert {
             "task_id",
+            "request_id",
             "source_type",
             "source_id",
             "attempt",
@@ -418,6 +419,28 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "billing_status",
             "cost_cny",
         } <= requirement_parse_columns
+        demo_invocation_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "demo_agent_invocations"
+            )
+        }
+        assert {
+            "session_id",
+            "operation_key",
+            "request_digest",
+            "status",
+            "attempt_count",
+            "billing_status",
+            "cost_cny",
+            "usage_json",
+            "result_json",
+            "response_status",
+            "error_code",
+            "request_id",
+            "created_at",
+            "completed_at",
+        } <= demo_invocation_columns
         effect_render_job_foreign_keys = {
             tuple(foreign_key["constrained_columns"]): foreign_key["referred_table"]
             for foreign_key in inspect(inspection_engine).get_foreign_keys(

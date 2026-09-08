@@ -104,6 +104,7 @@ def get_task_timeline(
         events=[
             TaskTimelineEventResponse(
                 event_id=event.id,
+                request_id=event.request_id,
                 source_type=event.source_type,
                 source_id=event.source_id,
                 attempt=event.attempt,

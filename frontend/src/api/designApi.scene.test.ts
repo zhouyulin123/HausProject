@@ -504,7 +504,12 @@ describe("3D 场景 API", () => {
           scene,
           history,
         }),
+        headers: expect.any(Headers),
       }),
+    );
+    const requestHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
+    expect(requestHeaders.get("Idempotency-Key")).toMatch(
+      /^demo-[0-9a-f-]{36}$/,
     );
   });
 

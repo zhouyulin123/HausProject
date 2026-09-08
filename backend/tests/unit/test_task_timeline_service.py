@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
 from app.db.models import DesignTask
+from app.core.request_context import bind_request_id
 from app.services import task_timeline_service
 
 
@@ -73,6 +74,46 @@ def test_timeline_is_append_only_idempotent_and_preserves_unknown_cost():
             assert summary.known_cost_cny == 1.25
             assert summary.has_unknown_cost is True
             assert summary.unknown_cost_event_count == 1
+    finally:
+        engine.dispose()
+
+
+def test_timeline_captures_originating_request_id_and_keeps_it_on_replay():
+    engine, factory = _database()
+    try:
+        with factory() as db:
+            task = DesignTask(status="processing", progress=50)
+            db.add(task)
+            db.flush()
+
+            with bind_request_id("request-origin-001"):
+                first = task_timeline_service.append_event(
+                    db,
+                    task_id=task.id,
+                    source_type="generation",
+                    source_id=11,
+                    attempt=1,
+                    event_code="generation.completed",
+                    billing_status="metered",
+                    cost_cny=1.25,
+                    event_key="generation:11:a1:completed",
+                )
+            with bind_request_id("request-replay-002"):
+                replay = task_timeline_service.append_event(
+                    db,
+                    task_id=task.id,
+                    source_type="generation",
+                    source_id=11,
+                    attempt=1,
+                    event_code="generation.completed",
+                    billing_status="metered",
+                    cost_cny=1.25,
+                    event_key="generation:11:a1:completed",
+                )
+
+            assert replay.id == first.id
+            assert first.request_id == "request-origin-001"
+            assert replay.request_id == "request-origin-001"
     finally:
         engine.dispose()
 

@@ -1120,9 +1120,11 @@ export async function runDemoAgentCommand(
   instruction: string,
   scene: SceneDocument,
   history: DemoConversationTurn[] = [],
+  idempotencyKey = `demo-${globalThis.crypto.randomUUID()}`,
 ): Promise<DemoAgentCommandResult> {
   return request<DemoAgentCommandResult>("/api/demo/agent-command", {
     method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
     body: JSON.stringify({ instruction, scene, history: history.slice(-8) }),
   });
 }
@@ -1359,6 +1361,7 @@ export type TaskTimelineBillingStatus = "metered" | "not_billable" | "unknown";
 
 export interface TaskTimelineEvent {
   event_id: number;
+  request_id: string | null;
   source_type: TaskTimelineSource;
   source_id: number;
   attempt: number | null;
