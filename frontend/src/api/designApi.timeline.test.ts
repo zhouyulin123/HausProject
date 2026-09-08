@@ -40,6 +40,8 @@ describe("统一任务时间线 API", () => {
         occurred_at: "2026-09-08T09:00:00Z",
       }],
       next_cursor: 8,
+      next_before_id: null,
+      next_after_id: 8,
       known_cost_cny: null,
       has_unknown_cost: true,
       unknown_cost_event_count: 1,
@@ -56,5 +58,30 @@ describe("统一任务时间线 API", () => {
       .resolves.toEqual(payload);
     expect(String(fetchMock.mock.calls[1]?.[0]))
       .toBe("/api/design/tasks/42/timeline?limit=25&after_id=5");
+  });
+
+  it("向前分页使用 before_id，且不与 after_id 混用", async () => {
+    const payload = {
+      task_id: 42,
+      events: [],
+      next_cursor: null,
+      next_before_id: null,
+      next_after_id: null,
+      known_cost_cny: null,
+      has_unknown_cost: false,
+      unknown_cost_event_count: 0,
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: "session-001" }))
+      .mockResolvedValueOnce(jsonResponse(payload));
+    vi.stubGlobal("window", { localStorage: createLocalStorage() });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchDesignTaskTimeline } = await import("./designApi");
+    await fetchDesignTaskTimeline(42, { beforeId: 9, limit: 25 });
+
+    expect(String(fetchMock.mock.calls[1]?.[0]))
+      .toBe("/api/design/tasks/42/timeline?limit=25&before_id=9");
   });
 });

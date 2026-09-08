@@ -131,12 +131,13 @@ def test_timeline_cursor_is_monotonic_and_cost_is_null_when_only_unknown():
                 db, task_id=task.id, after_id=None, limit=2
             )
             second_page, final_cursor = task_timeline_service.list_events(
-                db, task_id=task.id, after_id=cursor, limit=2
+                db, task_id=task.id, after_id=None, before_id=cursor, limit=2
             )
             summary = task_timeline_service.cost_summary(db, task_id=task.id)
 
             assert len(first_page) == 2
-            assert [event.id for event in second_page] == [3]
+            assert [event.id for event in first_page] == [2, 3]
+            assert [event.id for event in second_page] == [1]
             assert final_cursor is None
             assert summary.known_cost_cny is None
             assert summary.has_unknown_cost is True

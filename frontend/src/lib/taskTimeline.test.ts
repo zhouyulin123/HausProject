@@ -16,6 +16,8 @@ const page = (ids: number[], overrides: Partial<TaskTimelineResponse> = {}): Tas
     occurred_at: `2026-09-08T09:00:0${eventId}Z`,
   })),
   next_cursor: ids.at(-1) ?? null,
+  next_before_id: null,
+  next_after_id: null,
   known_cost_cny: null,
   has_unknown_cost: false,
   unknown_cost_event_count: 0,
@@ -39,5 +41,26 @@ describe("统一任务时间线分页", () => {
     expect(merged.has_unknown_cost).toBe(true);
     expect(merged.unknown_cost_event_count).toBe(2);
     expect(merged.next_cursor).toBeNull();
+  });
+
+  it("向前加载保留增量游标，向后刷新保留旧页游标", () => {
+    const current = page([10, 11], {
+      next_before_id: 10,
+      next_after_id: null,
+    });
+    const withOlder = mergeTaskTimelinePages(
+      current,
+      page([8, 9], { next_before_id: 8, next_after_id: null }),
+      "older",
+    );
+    const withNewer = mergeTaskTimelinePages(
+      withOlder,
+      page([12], { next_before_id: null, next_after_id: null }),
+      "newer",
+    );
+
+    expect(withNewer.events.map((event) => event.event_id)).toEqual([8, 9, 10, 11, 12]);
+    expect(withNewer.next_before_id).toBe(8);
+    expect(withNewer.next_after_id).toBeNull();
   });
 });

@@ -77,9 +77,31 @@ def test_task_timeline_is_owner_scoped_paginated_and_returns_safe_summaries():
             f"/api/design/tasks/{task_id}/timeline?limit=2",
             headers={"X-Session-ID": owner_id},
         )
-        cursor = first.json()["next_cursor"]
-        second = client.get(
-            f"/api/design/tasks/{task_id}/timeline?limit=2&after_id={cursor}",
+        before_cursor = first.json()["next_before_id"]
+        older = client.get(
+            f"/api/design/tasks/{task_id}/timeline?limit=2&before_id={before_cursor}",
+            headers={"X-Session-ID": owner_id},
+        )
+        with factory() as db:
+            task_timeline_service.append_event(
+                db,
+                task_id=task_id,
+                source_type="blender",
+                source_id=4,
+                attempt=1,
+                event_code="blender.completed",
+                billing_status="unknown",
+                cost_cny=None,
+                event_key="blender:4:a1:completed",
+            )
+            db.commit()
+        after_cursor = first.json()["events"][-1]["event_id"]
+        newer = client.get(
+            f"/api/design/tasks/{task_id}/timeline?limit=2&after_id={after_cursor}",
+            headers={"X-Session-ID": owner_id},
+        )
+        ambiguous = client.get(
+            f"/api/design/tasks/{task_id}/timeline?before_id=2&after_id=1",
             headers={"X-Session-ID": owner_id},
         )
         forbidden = client.get(
@@ -89,17 +111,25 @@ def test_task_timeline_is_owner_scoped_paginated_and_returns_safe_summaries():
 
     assert first.status_code == 200
     assert [event["event_code"] for event in first.json()["events"]] == [
-        "agent.turn.completed",
         "generation.completed",
+        "effect.failed",
     ]
     assert first.json()["known_cost_cny"] == 2.5
     assert first.json()["has_unknown_cost"] is True
     assert first.json()["unknown_cost_event_count"] == 1
-    assert cursor == first.json()["events"][-1]["event_id"]
-    assert len(second.json()["events"]) == 1
-    assert second.json()["next_cursor"] is None
+    assert before_cursor == first.json()["events"][0]["event_id"]
+    assert first.json()["next_after_id"] is None
+    assert [event["event_code"] for event in older.json()["events"]] == [
+        "agent.turn.completed",
+    ]
+    assert older.json()["next_before_id"] is None
+    assert [event["event_code"] for event in newer.json()["events"]] == [
+        "blender.completed",
+    ]
+    assert newer.json()["next_after_id"] is None
+    assert ambiguous.status_code == 422
     assert forbidden.status_code == 404
-    serialized = str(first.json()) + str(second.json())
+    serialized = str(first.json()) + str(older.json()) + str(newer.json())
     assert "prompt" not in serialized.lower()
     assert "exception" not in serialized.lower()
     assert "用户原始输入" not in serialized
