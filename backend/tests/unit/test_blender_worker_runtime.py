@@ -8,6 +8,7 @@ from app.workers.blender_worker import (
     execute_blender_process,
     execute_supervised_blender_process,
 )
+from app.core.request_context import current_request_id
 
 
 def test_worker_executes_static_command_without_shell_and_sanitizes_python_env(
@@ -95,3 +96,41 @@ def test_supervised_worker_terminates_process_after_ownership_is_lost(tmp_path):
             poll_seconds=0,
         )
     assert process.terminated is True
+
+
+def test_blender_worker_binds_persisted_request_id_for_full_attempt(monkeypatch):
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    job = type(
+        "Job",
+        (),
+        {"id": 7, "attempt": 1, "request_id": "blender-worker-trace-001"},
+    )()
+    monkeypatch.setattr("app.workers.blender_worker.SessionLocal", FakeSession)
+    monkeypatch.setattr(
+        "app.workers.blender_worker.blender_job_service.claim_next_job",
+        lambda *_args, **_kwargs: job,
+    )
+    monkeypatch.setattr(
+        "app.workers.blender_worker.blender_job_service.mark_failed",
+        lambda *_args, **_kwargs: True,
+    )
+
+    def load_payload(_job_id):
+        assert current_request_id() == "blender-worker-trace-001"
+        raise ValueError("stop after context assertion")
+
+    monkeypatch.setattr("app.workers.blender_worker._load_job_payload", load_payload)
+
+    from app.workers import blender_worker
+
+    assert blender_worker.process_one_job(
+        worker_id="worker-a",
+        executable=Path("C:/Blender/blender.exe"),
+    )
+    assert current_request_id() is None
