@@ -550,6 +550,26 @@ def test_case_annotation_rejects_run_dependent_human_evaluation(tmp_path):
         )
 
 
+@pytest.mark.parametrize("constraint_type", ["walkway_width", "maximum_occupancy"])
+def test_rejects_layout_constraints_without_frozen_scene_evidence(
+    tmp_path,
+    constraint_type,
+):
+    dataset = _dataset(tmp_path)
+    payload = _payload(dataset)
+    payload["layout_hard_constraints"][0]["type"] = constraint_type
+
+    with pytest.raises(
+        AnnotationValidationError,
+        match="无法由冻结 SceneDocument 确定性评估",
+    ):
+        load_case_annotation(
+            _write_annotation(tmp_path, payload),
+            dataset=dataset,
+            dataset_root=tmp_path,
+        )
+
+
 def test_execution_review_is_bound_to_exact_output_digest(tmp_path):
     dataset = _dataset(tmp_path)
     output_digest = "sha256:" + "a" * 64

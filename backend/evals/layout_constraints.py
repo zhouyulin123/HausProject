@@ -20,11 +20,39 @@ from evals.annotations import LayoutHardConstraint
 
 EvidenceStatus = Literal["passed", "failed", "no_evidence"]
 
+# SceneDocument does not freeze a walkable-area graph or an occupancy model.
+# Keep these names readable for legacy input, but never admit them into a new
+# trusted annotation until the scene contract contains those facts.
+UNREPRESENTED_LAYOUT_CONSTRAINT_TYPES = frozenset(
+    {"walkway_width", "maximum_occupancy"}
+)
+SUPPORTED_LAYOUT_CONSTRAINT_TYPES = frozenset(
+    {
+        "minimum_clearance",
+        "inside_room",
+        "no_overlap",
+        "door_swing_clearance",
+        "wall_offset",
+    }
+)
+
 
 @dataclass(frozen=True)
 class LayoutConstraintEvidence:
     status: EvidenceStatus
     reason_code: str
+
+
+def validate_layout_constraint_for_admission(
+    constraint: LayoutHardConstraint,
+) -> None:
+    """拒绝无法由冻结 SceneDocument 复算的标注约束。"""
+    if constraint.type in UNREPRESENTED_LAYOUT_CONSTRAINT_TYPES:
+        raise ValueError(
+            "layout_hard_constraints 包含无法由冻结 SceneDocument "
+            "确定性评估的约束类型："
+            f"{constraint.type}"
+        )
 
 
 def _compare(actual: float, operator: str, expected: float) -> bool:
@@ -243,6 +271,9 @@ def evaluate_layout_constraint(
         "wall_offset": _wall_offset,
         "door_swing_clearance": _door_clearance,
     }
+    if constraint.type not in SUPPORTED_LAYOUT_CONSTRAINT_TYPES:
+        # Legacy records remain readable, but cannot produce trusted evidence.
+        return LayoutConstraintEvidence("no_evidence", "constraint_not_represented")
     evaluator = evaluators.get(constraint.type)
     if evaluator is None:
         return LayoutConstraintEvidence("no_evidence", "constraint_not_represented")

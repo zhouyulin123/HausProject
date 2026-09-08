@@ -58,6 +58,14 @@ def build_real_world_readiness(
         for case in dataset.cases
         for reason in case.ineligible_reasons()
     )
+    synthetic_release_cases = sum(
+        case.origin == "synthetic" and case.split in REQUIRED_SPLITS
+        for case in dataset.cases
+    )
+    if dataset.schema_version != "2.0":
+        blocker_counts["trusted_schema_required"] = 1
+    if synthetic_release_cases:
+        blocker_counts["synthetic_release_case"] = synthetic_release_cases
     eligible_total = len(dataset.eligible_cases())
     private_real_eligible_total = sum(
         case.origin == "private_real" for case in dataset.eligible_cases()
@@ -78,7 +86,9 @@ def build_real_world_readiness(
         "blocker_counts": dict(sorted(blocker_counts.items())),
         "minimum_required": MINIMUM_REQUIRED,
         "minimum_met": (
-            private_real_eligible_total >= MINIMUM_REQUIRED
+            dataset.schema_version == "2.0"
+            and synthetic_release_cases == 0
+            and private_real_eligible_total >= MINIMUM_REQUIRED
             and all(counts["eligible"] > 0 for counts in split_counts.values())
         ),
         "checked_at": checked_at or datetime.now(timezone.utc),

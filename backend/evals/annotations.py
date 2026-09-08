@@ -374,6 +374,12 @@ class CaseAnnotation(_StrictModel):
             [constraint.constraint_id for constraint in self.layout_hard_constraints],
             "layout_hard_constraints constraint_id",
         )
+        # Import lazily to keep the annotation contract usable by the geometry
+        # evaluator, which imports LayoutHardConstraint for type checking.
+        from evals.layout_constraints import validate_layout_constraint_for_admission
+
+        for constraint in self.layout_hard_constraints:
+            validate_layout_constraint_for_admission(constraint)
         return self
 
     @property

@@ -1,11 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  FailureTriageImportControl,
   FailureTriageContent,
   QualitySummaryContent,
   RealWorldReadinessContent,
+  failureTriageImportErrorMessage,
 } from "./AdminQualityPage";
-import type { RealWorldReadiness } from "@/api/adminApi";
+import { AdminApiError, type RealWorldReadiness } from "@/api/adminApi";
 import type { FailureClusterListResponse } from "@/types/quality";
 import type { QualitySummary } from "@/types/quality";
 
@@ -87,6 +89,40 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("Blender 队列");
     expect(html).toContain("节点耗时");
     expect(html).toContain("parse_requirements");
+    expect(html).toContain("用户反馈回流");
+    expect(html).toContain("采用");
+    expect(html).toContain(">10<");
+    expect(html).toContain("删除");
+    expect(html).toContain("替换");
+    expect(html).toContain("移动");
+    expect(html).toContain("最终选择");
+    expect(html).toContain("37.5%");
+    expect(html).toContain("4.25 / 5");
+  });
+
+  it("反馈零分母显示缺少样本，而不是 0% 的错误结论", () => {
+    const html = renderToStaticMarkup(
+      <QualitySummaryContent
+        summary={{
+          ...summary,
+          feedback: {
+            total: 0,
+            action_counts: { adopt: 0, remove: 0, replace: 0, move: 0, final_select: 0 },
+            modification_total: 0,
+            modification_rate: null,
+            final_select_total: 0,
+            satisfaction_count: 0,
+            satisfaction_mean: null,
+            glb_load_failure_total: 0,
+          },
+        }}
+      />,
+    );
+    expect(html).toContain("修改率");
+    expect(html).toContain("满意度");
+    expect(html).toContain("--");
+    expect(html).not.toContain("0.0%");
+    expect(html).not.toContain("0 / 5");
   });
 
   it("失败簇展示严重度、状态和当前阶段的明确动作", () => {
@@ -254,5 +290,33 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("重试");
     expect(html).not.toContain("0 / 20");
     expect(html).not.toContain("开发集 0");
+  });
+
+  it("失败分诊区提供仅接受 JSON 的本地导入命令且不显示报告内容", () => {
+    const html = renderToStaticMarkup(
+      <FailureTriageImportControl
+        importing={false}
+        error=""
+        success=""
+        onFile={() => undefined}
+      />,
+    );
+    expect(html).toContain("导入签名报告");
+    expect(html).toContain('accept="application/json,.json"');
+    expect(html).not.toContain("report-001");
+    expect(html).not.toContain("case_id");
+  });
+
+  it("失败分诊导入区显示解析、验签和冲突错误语义", () => {
+    expect(failureTriageImportErrorMessage(new Error("报告 JSON 解析失败")))
+      .toBe("报告 JSON 解析失败，请选择有效的 JSON 文件");
+    expect(failureTriageImportErrorMessage(new AdminApiError(
+      "失败分诊报告签名无效",
+      422,
+    ))).toBe("报告验签失败，未导入任何数据");
+    expect(failureTriageImportErrorMessage(new AdminApiError(
+      "report_id 已用于不同报告",
+      409,
+    ))).toBe("报告与已导入记录冲突，请核对报告版本和签名");
   });
 });

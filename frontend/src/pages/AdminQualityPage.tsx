@@ -6,15 +6,19 @@ import {
   ChartNoAxesColumnIncreasing,
   CircleDollarSign,
   Clock3,
+  FileUp,
+  Loader2,
   RefreshCw,
   ShieldCheck,
   UserCheck,
   Wrench,
 } from "lucide-react";
 import {
+  AdminApiError,
   fetchFailureClusters,
   fetchQualitySummary,
   fetchRealWorldReadiness,
+  importFailureTriageReportFile,
   updateFailureCluster,
 } from "@/api/adminApi";
 import type { RealWorldReadiness, RealWorldSplit } from "@/api/adminApi";
@@ -73,7 +77,65 @@ const REAL_WORLD_BLOCKER_LABELS: Record<string, string> = {
   split_not_assigned: "未分配评测分组",
   duplicate_case: "案例重复",
   case_not_private_real: "不是真实私有案例",
+  trusted_schema_required: "清单版本不支持可信证据",
+  synthetic_release_case: "发布分组混入合成案例",
 };
+
+export function failureTriageImportErrorMessage(error: unknown): string {
+  if (error instanceof AdminApiError && error.status === 409) {
+    return "报告与已导入记录冲突，请核对报告版本和签名";
+  }
+  if (error instanceof AdminApiError && error.status === 422) {
+    return "报告验签失败，未导入任何数据";
+  }
+  if (error instanceof AdminApiError && error.status === 503) {
+    return "服务端验签尚未配置，报告未导入";
+  }
+  if (error instanceof Error && error.message === "报告 JSON 解析失败") {
+    return "报告 JSON 解析失败，请选择有效的 JSON 文件";
+  }
+  return error instanceof Error ? error.message : "失败分诊报告导入失败";
+}
+
+export function FailureTriageImportControl({
+  importing,
+  error,
+  success,
+  onFile,
+}: {
+  importing: boolean;
+  error: string;
+  success: string;
+  onFile: (file: File) => void;
+}) {
+  return (
+    <section className="mt-9 border-t border-cream-300 pt-7" aria-label="导入失败分诊报告">
+      <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+        <div>
+          <h2 className="text-sm font-semibold text-stone-700">失败分诊报告</h2>
+          <p className="mt-1 text-xs text-stone-400">导入评测流程生成并签名的 JSON 报告</p>
+        </div>
+        <label className={`inline-flex min-h-9 items-center justify-center gap-2 border border-stone-300 bg-white/70 px-3 text-sm font-medium text-stone-700 transition-colors hover:border-sage-500 hover:text-sage-700 ${importing ? "pointer-events-none opacity-50" : "cursor-pointer"}`}>
+          {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
+          {importing ? "正在导入" : "导入签名报告"}
+          <input
+            type="file"
+            accept="application/json,.json"
+            className="sr-only"
+            disabled={importing}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              if (file) onFile(file);
+            }}
+          />
+        </label>
+      </div>
+      {error && <p role="alert" className="mt-3 border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">{error}</p>}
+      {success && <p role="status" className="mt-3 border border-sage-200 bg-sage-50 px-4 py-3 text-xs text-sage-700">{success}</p>}
+    </section>
+  );
+}
 
 export function RealWorldReadinessContent({
   data,
@@ -435,6 +497,61 @@ function RenderQueueTile({
   );
 }
 
+function FeedbackMetric({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+}) {
+  return (
+    <div className="min-w-0 border-l-2 border-sage-200 pl-3">
+      <p className="text-xs text-stone-400">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-stone-800">{value}</p>
+      {detail && <p className="mt-1 text-[11px] text-stone-400">{detail}</p>}
+    </div>
+  );
+}
+
+function FeedbackSummary({ summary }: { summary: QualitySummary }) {
+  const feedback = summary.feedback;
+  const actions = [
+    ["采用", feedback.action_counts.adopt],
+    ["删除", feedback.action_counts.remove],
+    ["替换", feedback.action_counts.replace],
+    ["移动", feedback.action_counts.move],
+    ["最终选择", feedback.action_counts.final_select],
+  ] as const;
+  const satisfaction = feedback.satisfaction_mean == null
+    ? "--"
+    : `${feedback.satisfaction_mean.toFixed(2)} / 5`;
+  return (
+    <section className="mt-9 border-t border-cream-200 pt-5" aria-label="用户反馈回流">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-stone-700">用户反馈回流</h2>
+        <span className="text-xs text-stone-400">{feedback.total} 条匿名动作反馈</span>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-4 border-y border-cream-200 bg-white/60 px-4 py-4 sm:grid-cols-4 lg:grid-cols-7">
+        {actions.map(([label, value]) => (
+          <FeedbackMetric key={label} label={label} value={integerFormatter.format(value)} />
+        ))}
+        <FeedbackMetric
+          label="修改率"
+          value={feedback.modification_rate == null ? "--" : formatRate(feedback.modification_rate)}
+          detail={feedback.total > 0 ? `${feedback.modification_total} 次修改` : "暂无动作样本"}
+        />
+        <FeedbackMetric
+          label="满意度"
+          value={satisfaction}
+          detail={feedback.satisfaction_count > 0 ? `${feedback.satisfaction_count} 份评分` : "暂无评分样本"}
+        />
+      </div>
+    </section>
+  );
+}
+
 export function QualitySummaryContent({ summary }: { summary: QualitySummary }) {
   const generatedAt = new Date(summary.generated_at).toLocaleString("zh-CN", {
     hour12: false,
@@ -509,6 +626,8 @@ export function QualitySummaryContent({ summary }: { summary: QualitySummary }) 
         />
       </section>
 
+      <FeedbackSummary summary={summary} />
+
       <section className="mt-9 grid gap-3 lg:grid-cols-2" aria-label="异步渲染队列">
         <RenderQueueTile label="效果图队列" metrics={summary.effect_render} />
         <RenderQueueTile label="Blender 队列" metrics={summary.blender_render} />
@@ -557,6 +676,9 @@ export default function AdminQualityPage() {
   const [realWorldLoading, setRealWorldLoading] = useState(true);
   const [realWorldError, setRealWorldError] = useState("");
   const [realWorldReloadKey, setRealWorldReloadKey] = useState(0);
+  const [failureImporting, setFailureImporting] = useState(false);
+  const [failureImportError, setFailureImportError] = useState("");
+  const [failureImportSuccess, setFailureImportSuccess] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -639,6 +761,25 @@ export default function AdminQualityPage() {
     }
   }, [loadFailureClusters]);
 
+  const handleFailureReportFile = useCallback(async (file: File) => {
+    setFailureImporting(true);
+    setFailureImportError("");
+    setFailureImportSuccess("");
+    try {
+      const result = await importFailureTriageReportFile(file);
+      setFailureImportSuccess(
+        result.imported
+          ? `已导入 ${result.cluster_count} 个失败簇`
+          : "该签名报告已导入，失败簇已刷新",
+      );
+      await loadFailureClusters();
+    } catch (reason) {
+      setFailureImportError(failureTriageImportErrorMessage(reason));
+    } finally {
+      setFailureImporting(false);
+    }
+  }, [loadFailureClusters]);
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10">
       <div className="flex flex-col gap-5 border-b border-cream-300 pb-6 sm:flex-row sm:items-end sm:justify-between">
@@ -695,6 +836,12 @@ export default function AdminQualityPage() {
         loading={realWorldLoading}
         error={realWorldError}
         onRetry={() => setRealWorldReloadKey((value) => value + 1)}
+      />
+      <FailureTriageImportControl
+        importing={failureImporting}
+        error={failureImportError}
+        success={failureImportSuccess}
+        onFile={(file) => void handleFailureReportFile(file)}
       />
       <FailureTriageContent
         data={failureClusters}

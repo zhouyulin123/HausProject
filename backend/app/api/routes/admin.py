@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import require_admin, require_factory
+from app.api.dependencies import require_admin
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import FailureCluster, User
@@ -54,7 +54,7 @@ def get_quality_summary(
     response_model=RealWorldReadinessResponse,
 )
 def get_real_world_readiness(
-    _factory: User = Depends(require_factory),
+    _admin: User = Depends(require_admin),
 ) -> RealWorldReadinessResponse:
     try:
         readiness = build_real_world_readiness()

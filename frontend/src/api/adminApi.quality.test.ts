@@ -7,6 +7,28 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+const validFailureReport = {
+  schema_version: "2.0" as const,
+  report_id: "report-001",
+  taxonomy_version: "taxonomy-1",
+  data_version: "data-1",
+  manifest_digest: `sha256:${"1".repeat(64)}`,
+  evidence_digest: `sha256:${"2".repeat(64)}`,
+  output_digests: [`sha256:${"3".repeat(64)}`],
+  candidate_version: "candidate-1",
+  signature_algorithm: "hmac-sha256" as const,
+  signature_key_id: "eval-key-v1",
+  signature: "a".repeat(64),
+  generated_at: "2026-09-02T08:00:00Z",
+  failures: [{
+    failure_type: "quote",
+    code: "quote_mismatch",
+    severity: "critical" as const,
+    occurrence_count: 2,
+    affected_count: 1,
+  }],
+};
+
 describe("运营质量汇总 API", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -66,10 +88,13 @@ describe("运营质量汇总 API", () => {
 
     await fetchFailureClusters();
     await syncFailureTriageReport({
-      schema_version: "1.0",
+      schema_version: "2.0",
       report_id: "report-001",
       taxonomy_version: "taxonomy-1",
       data_version: "data-1",
+      manifest_digest: `sha256:${"1".repeat(64)}`,
+      evidence_digest: `sha256:${"2".repeat(64)}`,
+      output_digests: [`sha256:${"3".repeat(64)}`],
       candidate_version: "candidate-1",
       signature_algorithm: "hmac-sha256",
       signature_key_id: "eval-key-v1",
@@ -120,5 +145,56 @@ describe("运营质量汇总 API", () => {
       "/api/admin/quality/real-world-readiness",
       expect.any(Object),
     );
+  });
+
+  it("只解析并同步用户选择的签名 JSON 报告", async () => {
+    const response = { imported: true, cluster_count: 1, clusters: [] };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { importFailureTriageReportFile } = await import("./adminApi");
+    const file = new File([JSON.stringify(validFailureReport)], "triage.json", {
+      type: "application/json",
+    });
+    await expect(importFailureTriageReportFile(file)).resolves.toEqual(response);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/admin/quality/failure-clusters/sync",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(validFailureReport);
+  });
+
+  it("在本地拒绝损坏 JSON 和缺少签名的报告，不发起请求", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+    const { importFailureTriageReportFile } = await import("./adminApi");
+
+    await expect(importFailureTriageReportFile(
+      new File(["{bad"], "broken.json", { type: "application/json" }),
+    )).rejects.toThrow("报告 JSON 解析失败");
+    await expect(importFailureTriageReportFile(
+      new File([JSON.stringify({ ...validFailureReport, signature: "" })], "unsigned.json"),
+    )).rejects.toThrow("报告格式无效或缺少签名字段");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("保留验签与冲突响应状态供页面给出明确提示", async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ detail: "失败分诊报告签名无效" }),
+        { status: 422, headers: { "Content-Type": "application/json" } },
+      ))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ detail: "report_id 已用于不同报告" }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ));
+    vi.stubGlobal("fetch", fetchMock);
+    const { AdminApiError, syncFailureTriageReport } = await import("./adminApi");
+
+    await expect(syncFailureTriageReport(validFailureReport)).rejects.toEqual(
+      expect.objectContaining({ status: 422, message: "失败分诊报告签名无效" }),
+    );
+    await expect(syncFailureTriageReport(validFailureReport)).rejects.toBeInstanceOf(AdminApiError);
   });
 });

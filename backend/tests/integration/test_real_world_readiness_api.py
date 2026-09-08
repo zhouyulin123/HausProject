@@ -21,9 +21,10 @@ def _user(user_id: int, role: str) -> User:
     )
 
 
-def test_real_world_readiness_requires_factory_and_hides_case_content(monkeypatch):
+def test_real_world_readiness_requires_admin_and_hides_case_content(monkeypatch):
     customer = _user(9201, auth_service.ROLE_CUSTOMER)
     factory = _user(9202, auth_service.ROLE_FACTORY)
+    admin_user = _user(9204, auth_service.ROLE_ADMIN)
 
     app.dependency_overrides[get_current_user] = lambda: customer
     try:
@@ -31,6 +32,10 @@ def test_real_world_readiness_requires_factory_and_hides_case_content(monkeypatc
             assert client.get("/api/admin/quality/real-world-readiness").status_code == 403
 
         app.dependency_overrides[get_current_user] = lambda: factory
+        with TestClient(app) as client:
+            assert client.get("/api/admin/quality/real-world-readiness").status_code == 403
+
+        app.dependency_overrides[get_current_user] = lambda: admin_user
         checked_at = datetime(2026, 9, 8, tzinfo=timezone.utc)
         monkeypatch.setattr(
             admin,
@@ -69,8 +74,8 @@ def test_real_world_readiness_requires_factory_and_hides_case_content(monkeypatc
 
 
 def test_real_world_readiness_returns_service_unavailable_on_manifest_error(monkeypatch):
-    factory = _user(9203, auth_service.ROLE_FACTORY)
-    app.dependency_overrides[get_current_user] = lambda: factory
+    admin_user = _user(9203, auth_service.ROLE_ADMIN)
+    app.dependency_overrides[get_current_user] = lambda: admin_user
     monkeypatch.setattr(
         admin,
         "build_real_world_readiness",

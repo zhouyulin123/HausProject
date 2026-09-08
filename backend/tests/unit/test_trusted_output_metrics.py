@@ -18,7 +18,11 @@ from app.db.models import (
     UploadedImage,
 )
 from app.services import design_version_service, generation_run_service
-from evals.real_world import EvaluationInputError, load_case_manifest
+from evals.real_world import (
+    DatasetValidationError,
+    EvaluationInputError,
+    load_case_manifest,
+)
 from evals.trusted_evidence import (
     RunBinding,
     bind_evaluation_run,
@@ -501,15 +505,8 @@ def test_collector_reports_no_evidence_for_unrepresented_geometry_constraint(
     db,
     tmp_path,
 ):
-    dataset = _dataset(tmp_path, constraint_type="walkway_width")
-    run, _ = _completed_run(db, dataset, scene_x=0)
-
-    result = _collect(db, dataset, run)["executions"][0]["result"]
-
-    # 未实现的约束也属于真实业务要求，必须留在分母中并按未通过处理。
-    assert result["layout_checks"] == 1
-    assert result["layout_hard_passes"] == 0
-    assert result["layout_no_evidence"] == 1
+    with pytest.raises(DatasetValidationError, match="无法由冻结 SceneDocument 确定性评估"):
+        _dataset(tmp_path, constraint_type="walkway_width")
 
 
 def test_collector_rejects_tampered_revision_even_if_snapshot_is_unchanged(db, tmp_path):
