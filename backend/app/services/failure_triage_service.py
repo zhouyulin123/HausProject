@@ -155,7 +155,7 @@ def _upsert_cluster(
     cluster.detected_version = report.candidate_version
     if _SEVERITY_RANK[failure.severity] > _SEVERITY_RANK[cluster.severity]:
         cluster.severity = failure.severity
-    if cluster.status == "verified":
+    if cluster.status in {"resolved", "verified"}:
         cluster.status = "open"
         cluster.fixed_version = None
         cluster.verified_version = None

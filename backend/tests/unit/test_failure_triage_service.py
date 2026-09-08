@@ -168,6 +168,34 @@ def test_status_machine_rejects_skips_and_requires_versions(db):
     assert cluster.verified_version is None
 
 
+def test_signed_report_reopens_resolved_cluster_when_failure_recurs(db):
+    sync_verified_report(db, _report("report-001"), signing_key=_SIGNING_KEY)
+    cluster = db.scalar(select(FailureCluster))
+    assert cluster is not None
+    update_failure_cluster(
+        db,
+        cluster,
+        FailureClusterUpdate(status="in_progress", owner="quality-admin"),
+    )
+    update_failure_cluster(
+        db,
+        cluster,
+        FailureClusterUpdate(status="resolved", fixed_version="rules-2"),
+    )
+
+    sync_verified_report(
+        db,
+        _report("report-002", "candidate-3"),
+        signing_key=_SIGNING_KEY,
+    )
+
+    db.refresh(cluster)
+    assert cluster.status == "open"
+    assert cluster.fixed_version is None
+    assert cluster.verified_version is None
+    assert cluster.detected_version == "candidate-3"
+
+
 def test_admin_update_cannot_mutate_verified_cluster(db):
     sync_verified_report(db, _report("report-001"), signing_key=_SIGNING_KEY)
     cluster = db.scalar(select(FailureCluster))
