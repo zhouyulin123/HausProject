@@ -280,6 +280,22 @@ def get_requirement(
     )
     raw_input = task.raw_user_input or ""
 
+    existing = db.scalar(
+        select(RequirementParseResult)
+        .where(
+            RequirementParseResult.task_id == task.id,
+            RequirementParseResult.raw_input == raw_input,
+        )
+        .order_by(RequirementParseResult.id.desc())
+    )
+    if existing is not None:
+        return RequirementResponse(
+            parsed_requirement=deepcopy(existing.parsed_json or {}),
+            missing_fields=list(existing.missing_fields or []),
+            follow_up_questions=list(existing.follow_up_questions or []),
+            parser=existing.parser,
+        )
+
     parser = "llm"
     parser_model = None
     with llm_service.capture_model_call() as model_call:
