@@ -9,6 +9,7 @@ import {
 } from "@/api/designApi";
 import type { EffectRenderJob } from "@/api/designApi";
 import type { DesignPlan } from "@/types/design";
+import type { SceneSyncState } from "@/lib/sceneEditingPolicy";
 
 type Status = "idle" | "loading" | "done" | "error" | "cancelled";
 
@@ -18,10 +19,51 @@ const loadingLines = [
   "正在渲染灯光与材质质感...",
 ];
 
-function clientRenderKey(planVersionId: number): string {
+export interface EffectSceneBinding {
+  syncState: SceneSyncState;
+  sceneId: number | null;
+  sceneVersion: number | null;
+}
+
+function clientRenderKey(
+  planVersionId: number,
+  sceneId: number,
+  sceneVersion: number,
+): string {
   const nonce = globalThis.crypto?.randomUUID?.()
     ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `effect:${planVersionId}:${nonce}`;
+  return `effect:${planVersionId}:${sceneId}:${sceneVersion}:${nonce}`;
+}
+
+export function effectRenderAvailability(binding: EffectSceneBinding): {
+  ready: boolean;
+  message: string;
+} {
+  if (
+    binding.syncState === "saved"
+    && binding.sceneId
+    && binding.sceneVersion
+  ) {
+    return { ready: true, message: `场景版本 ${binding.sceneVersion} 已保存` };
+  }
+  const messages: Record<SceneSyncState, string> = {
+    loading: "正在恢复服务端场景，请稍候",
+    demo: "当前方案还没有可渲染的服务端场景",
+    saved: "服务端场景引用不完整，无法生成效果图",
+    dirty: "当前 3D 编辑尚未保存，请等待自动保存完成",
+    saving: "当前 3D 编辑正在保存，请稍候",
+    conflict: "3D 场景存在版本冲突，请先恢复最新版本",
+    offline: "3D 场景尚未同步到服务端，请恢复连接",
+  };
+  return { ready: false, message: messages[binding.syncState] };
+}
+
+export function effectRenderMatchesScene(
+  job: EffectRenderJob,
+  binding: Pick<EffectSceneBinding, "sceneId" | "sceneVersion">,
+): boolean {
+  return job.sceneId === binding.sceneId
+    && job.sceneVersion === binding.sceneVersion;
 }
 
 export function visibleEffectRenderStatus(job: EffectRenderJob): Status {
@@ -39,12 +81,19 @@ export function effectRenderFailureMessage(job: EffectRenderJob | null): string 
 }
 
 /** 方案主效果图：任务由独立 Worker 执行，组件重挂载时恢复服务端状态。 */
-export default function EffectImage({ plan }: { plan: DesignPlan }) {
+export default function EffectImage({
+  plan,
+  sceneBinding,
+}: {
+  plan: DesignPlan;
+  sceneBinding: EffectSceneBinding;
+}) {
   const [status, setStatus] = useState<Status>("idle");
   const [job, setJob] = useState<EffectRenderJob | null>(null);
   const [lineIndex, setLineIndex] = useState(0);
   const enqueueingRef = useRef(false);
   const idempotencyKeyRef = useRef<string | null>(null);
+  const availability = effectRenderAvailability(sceneBinding);
 
   const applyJob = useCallback((next: EffectRenderJob) => {
     setJob(next);
@@ -55,27 +104,53 @@ export default function EffectImage({ plan }: { plan: DesignPlan }) {
     let active = true;
     setJob(null);
     setStatus("idle");
-    if (!plan.planVersionId) return () => { active = false; };
-    fetchLatestEffectRender(plan.planVersionId)
+    idempotencyKeyRef.current = null;
+    if (
+      !plan.planVersionId
+      || !availability.ready
+      || !sceneBinding.sceneId
+      || !sceneBinding.sceneVersion
+    ) return () => { active = false; };
+    fetchLatestEffectRender(
+      plan.planVersionId,
+      sceneBinding.sceneId,
+      sceneBinding.sceneVersion,
+    )
       .then((restored) => {
-        if (!active || !restored) return;
+        if (
+          !active
+          || !restored
+          || !effectRenderMatchesScene(restored, sceneBinding)
+        ) return;
         applyJob(restored);
       })
       .catch(() => {
         if (active) setStatus("error");
       });
     return () => { active = false; };
-  }, [applyJob, plan.planVersionId]);
+  }, [
+    applyJob,
+    availability.ready,
+    plan.planVersionId,
+    sceneBinding.sceneId,
+    sceneBinding.sceneVersion,
+  ]);
 
   useEffect(() => {
     if (status !== "loading" || !job) return;
     const timer = window.setInterval(() => {
       fetchEffectRender(job.jobId)
-        .then(applyJob)
+        .then((next) => {
+          if (!effectRenderMatchesScene(next, sceneBinding)) {
+            setStatus("error");
+            return;
+          }
+          applyJob(next);
+        })
         .catch(() => setStatus("error"));
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [applyJob, job, status]);
+  }, [applyJob, job, sceneBinding, status]);
 
   useEffect(() => {
     if (status !== "loading") return;
@@ -95,15 +170,30 @@ export default function EffectImage({ plan }: { plan: DesignPlan }) {
       if (!plan.planVersionId) {
         throw new Error("当前方案没有可追溯的服务端版本");
       }
-      if (newVariation || !idempotencyKeyRef.current) {
-        idempotencyKeyRef.current = clientRenderKey(plan.planVersionId);
+      if (
+        !availability.ready
+        || !sceneBinding.sceneId
+        || !sceneBinding.sceneVersion
+      ) {
+        throw new Error(availability.message);
       }
-      applyJob(
-        await queueEffectRender(
+      if (newVariation || !idempotencyKeyRef.current) {
+        idempotencyKeyRef.current = clientRenderKey(
           plan.planVersionId,
-          idempotencyKeyRef.current,
-        ),
+          sceneBinding.sceneId,
+          sceneBinding.sceneVersion,
+        );
+      }
+      const queued = await queueEffectRender(
+        plan.planVersionId,
+        sceneBinding.sceneId,
+        sceneBinding.sceneVersion,
+        idempotencyKeyRef.current,
       );
+      if (!effectRenderMatchesScene(queued, sceneBinding)) {
+        throw new Error("效果图任务未绑定当前场景版本");
+      }
+      applyJob(queued);
     } catch {
       setStatus("error");
     } finally {
@@ -191,14 +281,17 @@ export default function EffectImage({ plan }: { plan: DesignPlan }) {
             </p>
             {status === "idle" && (
               <p className="mt-1 px-6 text-xs text-stone-500">
-                AI 会结合当前户型和方案生成效果图
+                {availability.ready
+                  ? `AI 将严格使用${availability.message}生成效果图`
+                  : availability.message}
               </p>
             )}
           </div>
           <button
             type="button"
             onClick={() => run(status !== "idle")}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-sage-600 px-4 py-2 text-sm font-medium text-white shadow-card transition-colors hover:bg-sage-700"
+            disabled={!availability.ready}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-sage-600 px-4 py-2 text-sm font-medium text-white shadow-card transition-colors hover:bg-sage-700 disabled:cursor-not-allowed disabled:bg-stone-400 disabled:shadow-none"
           >
             <Sparkles className="h-4 w-4" />
             {status === "idle" ? "生成效果图" : "重新生成"}

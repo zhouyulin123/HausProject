@@ -687,6 +687,8 @@ export interface EffectRenderJob {
   jobId: number;
   taskId: number;
   planVersionId: number;
+  sceneId: number;
+  sceneVersion: number;
   status: EffectRenderStatus;
   progress: number;
   attemptCount: number;
@@ -700,6 +702,8 @@ interface EffectRenderJobWire {
   job_id: number;
   task_id: number;
   plan_version_id: number;
+  scene_id: number;
+  scene_version: number;
   status: EffectRenderStatus;
   progress: number;
   attempt_count: number;
@@ -714,6 +718,8 @@ function mapEffectRenderJob(data: EffectRenderJobWire): EffectRenderJob {
     jobId: data.job_id,
     taskId: data.task_id,
     planVersionId: data.plan_version_id,
+    sceneId: data.scene_id,
+    sceneVersion: data.scene_version,
     status: data.status,
     progress: data.progress,
     attemptCount: data.attempt_count,
@@ -726,6 +732,8 @@ function mapEffectRenderJob(data: EffectRenderJobWire): EffectRenderJob {
 
 export async function queueEffectRender(
   planVersionId: number,
+  sceneId: number,
+  sceneVersion: number,
   idempotencyKey: string,
 ): Promise<EffectRenderJob> {
   if (!currentTaskId) throw new Error("当前没有可渲染的设计任务");
@@ -735,6 +743,8 @@ export async function queueEffectRender(
     body: JSON.stringify({
       task_id: currentTaskId,
       plan_version_id: planVersionId,
+      scene_id: sceneId,
+      scene_version: sceneVersion,
     }),
   });
   return mapEffectRenderJob(data);
@@ -748,10 +758,12 @@ export async function fetchEffectRender(jobId: number): Promise<EffectRenderJob>
 
 export async function fetchLatestEffectRender(
   planVersionId: number,
+  sceneId: number,
+  sceneVersion: number,
 ): Promise<EffectRenderJob | null> {
   try {
     const data = await request<EffectRenderJobWire>(
-      `/api/design/render?plan_version_id=${planVersionId}`,
+      `/api/design/render?plan_version_id=${planVersionId}&scene_id=${sceneId}&scene_version=${sceneVersion}`,
     );
     return mapEffectRenderJob(data);
   } catch (error) {

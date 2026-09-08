@@ -309,6 +309,7 @@ export default function RoomView3D({
   onMovePersisted,
   onGlbLoadFailed,
   onSceneReferenceChange,
+  onSceneSyncChange,
   authoritativeScene,
 }: {
   plan: DesignPlan;
@@ -327,6 +328,10 @@ export default function RoomView3D({
     sku: string;
   }) => void;
   onSceneReferenceChange?: (reference: SceneReference | null) => void;
+  onSceneSyncChange?: (
+    state: ReturnType<typeof useSceneEditor>["syncState"],
+    reference: SceneReference | null,
+  ) => void;
   authoritativeScene?: DesignScene | null;
 }) {
   const editor = useSceneEditor(
@@ -344,6 +349,14 @@ export default function RoomView3D({
   const [cameraPreset, setCameraPreset] =
     useState<RoomCameraPreset>("perspective");
   const scene = editor.history.present;
+
+  useEffect(() => {
+    onSceneSyncChange?.(editor.syncState, editor.sceneReference);
+  }, [
+    editor.sceneReference,
+    editor.syncState,
+    onSceneSyncChange,
+  ]);
 
   useEffect(() => {
     if (authoritativeScene) editor.applyAuthoritativeScene(authoritativeScene);

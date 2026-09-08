@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -16,9 +16,11 @@ import {
 } from "lucide-react";
 import { mockDesigns } from "@/data/mockDesigns";
 import {
+  ApiError,
   createPlanShare,
   exportProposalPdf,
   fetchPlanByVersion,
+  fetchDesignSceneByPlanVersion,
   getCurrentTaskId,
   refinePlan,
   revokePlanShare,
@@ -33,6 +35,8 @@ import BudgetBreakdown from "@/components/design/BudgetBreakdown";
 import ColorPalette from "@/components/design/ColorPalette";
 import MaterialBoard from "@/components/design/MaterialBoard";
 import EffectImage from "@/components/design/EffectImage";
+import type { EffectSceneBinding } from "@/components/design/EffectImage";
+import type { SceneReference, SceneSyncState } from "@/lib/sceneEditingPolicy";
 import ShopQuoteCard from "@/components/design/ShopQuoteCard";
 import EmptyState from "@/components/common/EmptyState";
 import Button from "@/components/common/Button";
@@ -90,6 +94,11 @@ export default function DesignDetailPage() {
   const [refineInstruction, setRefineInstruction] = useState("");
   const [refineState, setRefineState] = useState<"idle" | "doing" | "fail">("idle");
   const [refineMessage, setRefineMessage] = useState("");
+  const [effectSceneBinding, setEffectSceneBinding] = useState<EffectSceneBinding>({
+    syncState: "loading",
+    sceneId: null,
+    sceneVersion: null,
+  });
 
   const localPlan = useMemo(() => {
     // 优先按服务端 planVersionId 精确定位，避免多个任务的 plan-a 串号
@@ -119,6 +128,61 @@ export default function DesignDetailPage() {
   }, [localPlan, id, user]);
 
   const plan = refinedPlan ?? localPlan ?? fetchedPlan;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!plan?.planVersionId) {
+      setEffectSceneBinding({
+        syncState: "demo",
+        sceneId: null,
+        sceneVersion: null,
+      });
+      return () => { cancelled = true; };
+    }
+    setEffectSceneBinding({
+      syncState: "loading",
+      sceneId: null,
+      sceneVersion: null,
+    });
+    fetchDesignSceneByPlanVersion(plan.planVersionId)
+      .then((scene) => {
+        if (cancelled) return;
+        setEffectSceneBinding({
+          syncState: "saved",
+          sceneId: scene.id,
+          sceneVersion: scene.current_version,
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setEffectSceneBinding({
+          syncState: error instanceof ApiError && error.status === 404
+            ? "demo"
+            : "offline",
+          sceneId: null,
+          sceneVersion: null,
+        });
+      });
+    return () => { cancelled = true; };
+  }, [plan?.planVersionId]);
+
+  const handleSceneSyncChange = useCallback((
+    syncState: SceneSyncState,
+    reference: SceneReference | null,
+  ) => {
+    const next = {
+      syncState,
+      sceneId: reference?.id ?? null,
+      sceneVersion: reference?.version ?? null,
+    };
+    setEffectSceneBinding((current) =>
+      current.syncState === next.syncState
+      && current.sceneId === next.sceneId
+      && current.sceneVersion === next.sceneVersion
+        ? current
+        : next,
+    );
+  }, []);
 
   const handleRefine = async () => {
     const instruction = refineInstruction.trim();
@@ -446,7 +510,7 @@ export default function DesignDetailPage() {
             <>
               {/* 视觉预览区 */}
               <div className="grid gap-4 sm:grid-cols-2">
-                <EffectImage plan={plan} />
+                <EffectImage plan={plan} sceneBinding={effectSceneBinding} />
                 <div className="grid grid-rows-2 gap-4">
                   <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-cream-100 to-cream-300">
                     <div className="absolute inset-6 rounded-xl border-2 border-dashed border-wood-400/50" />
@@ -502,6 +566,7 @@ export default function DesignDetailPage() {
                   plan={plan}
                   roomType={primaryRoom}
                   roomModel={roomModel}
+                  onSceneSyncChange={handleSceneSyncChange}
                 />
               </Suspense>
               <p className="mt-3 px-1 text-xs leading-relaxed text-stone-400">
