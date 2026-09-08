@@ -867,7 +867,10 @@ def test_legacy_plan_refine_route_delegates_to_unified_agent(
 
     response = client.post(
         f"/api/design/tasks/{task_id}/plans/plan-a/refine",
-        headers={"X-Session-ID": owner_id},
+        headers={
+            "X-Session-ID": owner_id,
+            "Idempotency-Key": "legacy-refine-request-001",
+        },
         json={"instruction": "换成浅灰色"},
     )
 
@@ -876,6 +879,58 @@ def test_legacy_plan_refine_route_delegates_to_unified_agent(
     assert captured["task_id"] == task_id
     assert captured["payload"].plan_id == "plan-a"
     assert captured["payload"].message == "换成浅灰色"
+
+
+@pytest.mark.integration
+def test_legacy_plan_refine_requires_caller_idempotency_and_does_not_alias_requests(
+    agent_api_context,
+    monkeypatch,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+    turn_ids: list[str] = []
+
+    def run_turn(_db, *, task, payload):
+        turn_ids.append(payload.client_turn_id)
+        return {
+            "status": "completed",
+            "result": {
+                "plan": {"id": "plan-a"},
+                "version": len(turn_ids) + 1,
+                "message": "已调整方案",
+            },
+        }
+
+    monkeypatch.setattr(tasks.design_agent_service, "run_turn", run_turn)
+    url = f"/api/design/tasks/{task_id}/plans/plan-a/refine"
+    body = {"instruction": "换成浅灰色"}
+
+    missing = client.post(
+        url,
+        headers={"X-Session-ID": owner_id},
+        json=body,
+    )
+    first = client.post(
+        url,
+        headers={
+            "X-Session-ID": owner_id,
+            "Idempotency-Key": "legacy-refine-request-a",
+        },
+        json=body,
+    )
+    second = client.post(
+        url,
+        headers={
+            "X-Session-ID": owner_id,
+            "Idempotency-Key": "legacy-refine-request-b",
+        },
+        json=body,
+    )
+
+    assert missing.status_code == 422
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(turn_ids) == 2
+    assert turn_ids[0] != turn_ids[1]
 
 
 @pytest.mark.integration

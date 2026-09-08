@@ -24,6 +24,8 @@ class TaskTimelineResponse(BaseModel):
     task_id: int
     events: list[TaskTimelineEventResponse]
     next_cursor: int | None = None
+    next_before_id: int | None = None
+    next_after_id: int | None = None
     known_cost_cny: float | None = None
     has_unknown_cost: bool
     unknown_cost_event_count: int

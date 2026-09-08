@@ -231,18 +231,32 @@ def list_events(
     task_id: int,
     after_id: int | None,
     limit: int,
+    before_id: int | None = None,
 ) -> tuple[list[TaskExecutionEvent], int | None]:
     statement = select(TaskExecutionEvent).where(
         TaskExecutionEvent.task_id == task_id
     )
     if after_id is not None:
         statement = statement.where(TaskExecutionEvent.id > after_id)
+    elif before_id is not None:
+        statement = statement.where(TaskExecutionEvent.id < before_id)
+    forward = after_id is not None
     rows = list(
-        db.scalars(statement.order_by(TaskExecutionEvent.id).limit(limit + 1))
+        db.scalars(
+            statement.order_by(
+                TaskExecutionEvent.id
+                if forward
+                else TaskExecutionEvent.id.desc()
+            ).limit(limit + 1)
+        )
     )
     has_more = len(rows) > limit
     events = rows[:limit]
-    return events, events[-1].id if has_more and events else None
+    if not forward:
+        events.reverse()
+    if not has_more or not events:
+        return events, None
+    return events, events[-1].id if forward else events[0].id
 
 
 def cost_summary(db: Session, *, task_id: int) -> TaskCostSummary:

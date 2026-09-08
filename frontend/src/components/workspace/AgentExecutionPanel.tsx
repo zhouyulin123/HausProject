@@ -211,7 +211,7 @@ export default function AgentExecutionPanel({
             )}
             <div className="mt-2 flex items-center gap-3">
               {timelineLoading && <span className="text-[9px] text-[#778278]">正在加载时间线</span>}
-              {timeline?.next_cursor != null && onLoadMore && (
+              {timeline?.next_before_id != null && onLoadMore && (
                 <button
                   type="button"
                   onClick={onLoadMore}

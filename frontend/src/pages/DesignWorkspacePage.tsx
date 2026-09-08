@@ -39,6 +39,7 @@ import {
   mergeAgentExecutionEvents,
 } from "@/lib/agentExecution";
 import { mergeTaskTimelinePages } from "@/lib/taskTimeline";
+import { createTaskTimelinePollingLoop } from "@/lib/taskTimelinePolling";
 import { useFeedbackDelivery } from "@/hooks/useFeedbackDelivery";
 import {
   buildFinalSelectFeedbackEvent,
@@ -93,7 +94,8 @@ export default function DesignWorkspacePage() {
   const [timeline, setTimeline] = useState<TaskTimelineResponse | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const timelineRef = useRef<TaskTimelineResponse | null>(null);
-  const timelineRequestRef = useRef(0);
+  const timelineEpochRef = useRef(0);
+  const timelineInFlightRef = useRef<Promise<boolean> | null>(null);
   const finalSelectRef = useRef<{ signature: string; clientEventId: string } | null>(null);
   const feedback = useFeedbackDelivery(projectId ?? 0);
 
@@ -110,25 +112,40 @@ export default function DesignWorkspacePage() {
     }
   }, [projectId]);
 
-  const refreshTimeline = useCallback(async (reset = false) => {
-    if (!projectId) return;
-    const requestId = ++timelineRequestRef.current;
-    const current = reset ? null : timelineRef.current;
-    setTimelineLoading(true);
-    try {
-      const response = await fetchDesignTaskTimeline(projectId, {
-        limit: 25,
-        afterId: current?.events.at(-1)?.event_id,
-      });
-      if (requestId !== timelineRequestRef.current) return;
-      const next = reset ? response : mergeTaskTimelinePages(current, response);
-      timelineRef.current = next;
-      setTimeline(next);
-    } catch {
-      // 时间线是增强视图；失败时保留已有数据并继续使用 Agent 执行状态。
-    } finally {
-      if (requestId === timelineRequestRef.current) setTimelineLoading(false);
+  const refreshTimeline = useCallback((
+    direction: "initial" | "older" | "newer" = "newer",
+  ): Promise<boolean> => {
+    if (!projectId) return Promise.resolve(false);
+    if (timelineInFlightRef.current) return timelineInFlightRef.current;
+    const current = direction === "initial" ? null : timelineRef.current;
+    if (direction === "older" && current?.next_before_id == null) {
+      return Promise.resolve(true);
     }
+    const epoch = timelineEpochRef.current;
+    setTimelineLoading(true);
+    const request = fetchDesignTaskTimeline(projectId, {
+      limit: 25,
+      beforeId: direction === "older" ? current?.next_before_id ?? undefined : undefined,
+      afterId: direction === "newer" ? current?.events.at(-1)?.event_id : undefined,
+    })
+      .then((response) => {
+        if (epoch !== timelineEpochRef.current) return false;
+        const next = direction === "initial"
+          ? response
+          : mergeTaskTimelinePages(current, response, direction);
+        timelineRef.current = next;
+        setTimeline(next);
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => {
+        if (timelineInFlightRef.current === request) {
+          timelineInFlightRef.current = null;
+          if (epoch === timelineEpochRef.current) setTimelineLoading(false);
+        }
+      });
+    timelineInFlightRef.current = request;
+    return request;
   }, [projectId]);
 
   const restoreServerPlans = useCallback(async (taskId: number) => {
@@ -176,7 +193,7 @@ export default function DesignWorkspacePage() {
       void restoreServerPlans(projectId);
     }
     if (response.approval_required) void refreshApprovals();
-    void refreshTimeline();
+    void refreshTimeline("newer");
   }, [applyAgentState, projectId, refreshApprovals, refreshTimeline, restoreServerPlans]);
 
   const appendConversationTurn = useCallback((message: string, reply: string) => {
@@ -199,10 +216,28 @@ export default function DesignWorkspacePage() {
   }, [project?.id, refreshApprovals]);
 
   useEffect(() => {
-    timelineRequestRef.current += 1;
+    timelineEpochRef.current += 1;
+    timelineInFlightRef.current = null;
     timelineRef.current = null;
     setTimeline(null);
-    if (project) void refreshTimeline(true);
+    if (!project) return;
+    const polling = createTaskTimelinePollingLoop({
+      poll: async () => {
+        const succeeded = await refreshTimeline(
+          timelineRef.current ? "newer" : "initial",
+        );
+        if (!succeeded) throw new Error("timeline_unavailable");
+      },
+      isHidden: () => document.hidden,
+    });
+    const handleVisibilityChange = () => polling.visibilityChanged();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    polling.start();
+    return () => {
+      timelineEpochRef.current += 1;
+      polling.stop();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [project?.id, refreshTimeline]);
 
   useEffect(() => {
@@ -330,7 +365,7 @@ export default function DesignWorkspacePage() {
             });
           }
         }
-        void refreshTimeline();
+        void refreshTimeline("newer");
       })
       .catch(() => {
         if (!cancelled) setAgentConnection("unavailable");
@@ -601,7 +636,7 @@ export default function DesignWorkspacePage() {
           execution={project.execution}
           timeline={timeline}
           timelineLoading={timelineLoading}
-          onLoadMore={() => { void refreshTimeline(); }}
+          onLoadMore={() => { void refreshTimeline("older"); }}
         />
 
         <AgentApprovalPanel
