@@ -1329,6 +1329,30 @@ export interface AgentEventFeedResponse {
   next_before_id: number | null;
 }
 
+export type TaskTimelineSource = "agent" | "generation" | "effect" | "blender";
+export type TaskTimelineBillingStatus = "metered" | "not_billable" | "unknown";
+
+export interface TaskTimelineEvent {
+  event_id: number;
+  source_type: TaskTimelineSource;
+  source_id: number;
+  attempt: number | null;
+  event_code: string;
+  summary: string;
+  billing_status: TaskTimelineBillingStatus;
+  cost_cny: number | null;
+  occurred_at: string;
+}
+
+export interface TaskTimelineResponse {
+  task_id: number;
+  events: TaskTimelineEvent[];
+  next_cursor: number | null;
+  known_cost_cny: number | null;
+  has_unknown_cost: boolean;
+  unknown_cost_event_count: number;
+}
+
 export interface AgentTurnResponse {
   task_id: number;
   turn_id: number;
@@ -1531,6 +1555,21 @@ export async function fetchDesignAgentEvents(
   }
   return request<AgentEventFeedResponse>(
     `/api/design/tasks/${taskId}/agent-events?${params.toString()}`,
+  );
+}
+
+export async function fetchDesignTaskTimeline(
+  taskId: number,
+  options: { limit?: number; afterId?: number } = {},
+): Promise<TaskTimelineResponse> {
+  const params = new URLSearchParams();
+  const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
+  params.set("limit", String(limit));
+  if (options.afterId !== undefined) {
+    params.set("after_id", String(options.afterId));
+  }
+  return request<TaskTimelineResponse>(
+    `/api/design/tasks/${taskId}/timeline?${params.toString()}`,
   );
 }
 

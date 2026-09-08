@@ -22,12 +22,14 @@ import {
   fetchDesignAgentState,
   fetchDesignAgentEvents,
   fetchDesignScene,
+  fetchDesignTaskTimeline,
   fetchDesignTaskPlans,
   fetchFurnitureCatalog,
   mutateWorkspacePlan,
   resumeAgentGeneration,
   type AgentTurnResponse,
   type AgentApproval,
+  type TaskTimelineResponse,
 } from "@/api/designApi";
 import { parseCustomFurniturePreview } from "@/lib/customFurnitureWorkspace";
 import { restoreCustomFurnitureDraftReference } from "@/lib/customFurniturePlacement";
@@ -36,6 +38,7 @@ import {
   agentExecutionFromTurn,
   mergeAgentExecutionEvents,
 } from "@/lib/agentExecution";
+import { mergeTaskTimelinePages } from "@/lib/taskTimeline";
 import { useFeedbackDelivery } from "@/hooks/useFeedbackDelivery";
 import {
   buildFinalSelectFeedbackEvent,
@@ -87,6 +90,10 @@ export default function DesignWorkspacePage() {
   const [approvalsLoading, setApprovalsLoading] = useState(false);
   const [approvalsError, setApprovalsError] = useState("");
   const [decidingApprovalId, setDecidingApprovalId] = useState<number | null>(null);
+  const [timeline, setTimeline] = useState<TaskTimelineResponse | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const timelineRef = useRef<TaskTimelineResponse | null>(null);
+  const timelineRequestRef = useRef(0);
   const finalSelectRef = useRef<{ signature: string; clientEventId: string } | null>(null);
   const feedback = useFeedbackDelivery(projectId ?? 0);
 
@@ -100,6 +107,27 @@ export default function DesignWorkspacePage() {
       setApprovalsError("审批记录读取失败，请稍后重试。");
     } finally {
       setApprovalsLoading(false);
+    }
+  }, [projectId]);
+
+  const refreshTimeline = useCallback(async (reset = false) => {
+    if (!projectId) return;
+    const requestId = ++timelineRequestRef.current;
+    const current = reset ? null : timelineRef.current;
+    setTimelineLoading(true);
+    try {
+      const response = await fetchDesignTaskTimeline(projectId, {
+        limit: 25,
+        afterId: current?.events.at(-1)?.event_id,
+      });
+      if (requestId !== timelineRequestRef.current) return;
+      const next = reset ? response : mergeTaskTimelinePages(current, response);
+      timelineRef.current = next;
+      setTimeline(next);
+    } catch {
+      // 时间线是增强视图；失败时保留已有数据并继续使用 Agent 执行状态。
+    } finally {
+      if (requestId === timelineRequestRef.current) setTimelineLoading(false);
     }
   }, [projectId]);
 
@@ -148,7 +176,8 @@ export default function DesignWorkspacePage() {
       void restoreServerPlans(projectId);
     }
     if (response.approval_required) void refreshApprovals();
-  }, [applyAgentState, projectId, refreshApprovals, restoreServerPlans]);
+    void refreshTimeline();
+  }, [applyAgentState, projectId, refreshApprovals, refreshTimeline, restoreServerPlans]);
 
   const appendConversationTurn = useCallback((message: string, reply: string) => {
     if (!projectId) return;
@@ -168,6 +197,13 @@ export default function DesignWorkspacePage() {
   useEffect(() => {
     if (project) void refreshApprovals();
   }, [project?.id, refreshApprovals]);
+
+  useEffect(() => {
+    timelineRequestRef.current += 1;
+    timelineRef.current = null;
+    setTimeline(null);
+    if (project) void refreshTimeline(true);
+  }, [project?.id, refreshTimeline]);
 
   useEffect(() => {
     if (!project) return;
@@ -294,6 +330,7 @@ export default function DesignWorkspacePage() {
             });
           }
         }
+        void refreshTimeline();
       })
       .catch(() => {
         if (!cancelled) setAgentConnection("unavailable");
@@ -308,6 +345,7 @@ export default function DesignWorkspacePage() {
     project?.generationRunId,
     project?.id,
     project?.status,
+    refreshTimeline,
     setGeneratedPlans,
     setMessages,
   ]);
@@ -561,6 +599,9 @@ export default function DesignWorkspacePage() {
           status={project.status}
           exitReason={project.exitReason}
           execution={project.execution}
+          timeline={timeline}
+          timelineLoading={timelineLoading}
+          onLoadMore={() => { void refreshTimeline(); }}
         />
 
         <AgentApprovalPanel

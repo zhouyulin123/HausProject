@@ -150,7 +150,7 @@ describe("Agent 执行状态区", () => {
     expect(html).toContain("效果图");
     expect(html).toContain("3D 渲染");
     expect(html).toContain("计费未知");
-    expect(html).toContain("09:06");
+    expect(html).toContain("17:06");
     expect(html).toContain("¥1.20");
     expect(html).toContain("另有 2 项未知成本");
     expect(html).toContain("加载更多");

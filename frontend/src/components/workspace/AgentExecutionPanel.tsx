@@ -7,6 +7,11 @@ import {
 } from "lucide-react";
 import type { DesignProjectStatus } from "@/lib/designProject";
 import type { AgentExecutionState, AgentExitReason } from "@/types/agent";
+import type {
+  TaskTimelineBillingStatus,
+  TaskTimelineResponse,
+  TaskTimelineSource,
+} from "@/api/designApi";
 
 const NODE_LABELS: Record<string, string> = {
   idle: "等待开始",
@@ -56,21 +61,50 @@ function formatDeadline(value: string | null): string | null {
   }).format(date);
 }
 
+const SOURCE_LABELS: Record<TaskTimelineSource, string> = {
+  agent: "智能体",
+  generation: "方案生成",
+  effect: "效果图",
+  blender: "3D 渲染",
+};
+
+const BILLING_LABELS: Record<TaskTimelineBillingStatus, string> = {
+  metered: "已计费",
+  not_billable: "不计费",
+  unknown: "计费未知",
+};
+
+function formatEventTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
 export default function AgentExecutionPanel({
   status,
   exitReason,
   execution,
+  timeline = null,
+  timelineLoading = false,
+  onLoadMore,
 }: {
   status: DesignProjectStatus;
   exitReason: AgentExitReason | null;
   execution: AgentExecutionState;
+  timeline?: TaskTimelineResponse | null;
+  timelineLoading?: boolean;
+  onLoadMore?: () => void;
 }) {
   const deadline = formatDeadline(
     execution.turnExecutionDeadlineAt ?? execution.executionDeadlineAt,
   );
-  const recentEvents = [...execution.events]
-    .sort((left, right) => left.sequence - right.sequence)
-    .slice(-4);
+  const fallbackEvents = [...execution.events]
+    .sort((left, right) => left.sequence - right.sequence);
+  const knownCost = timeline ? timeline.known_cost_cny : execution.costCny;
 
   return (
     <section
@@ -104,8 +138,15 @@ export default function AgentExecutionPanel({
         <div className="bg-[#131a15] px-3 py-2.5">
           <dt className="flex items-center gap-1.5 text-[9px] text-[#778278]"><CircleDollarSign className="h-3 w-3" />成本</dt>
           <dd className="mt-1 text-xs text-[#dce1da]">
-            {execution.costCny === null ? "尚无已结算成本" : formatMoney(execution.costCny)}
+            {knownCost === null
+              ? timeline ? "尚无已知成本" : "尚无已结算成本"
+              : formatMoney(knownCost)}
           </dd>
+          {timeline?.has_unknown_cost && (
+            <dd className="mt-1 text-[9px] text-[#f1c08b]">
+              另有 {timeline.unknown_cost_event_count} 项未知成本
+            </dd>
+          )}
           {(execution.costReservedCny > 0 || execution.costLimitCny !== null) && (
             <dd className="mt-1 text-[9px] text-[#778278]">
               {execution.costReservedCny > 0 && `预留 ${formatMoney(execution.costReservedCny)}`}
@@ -126,10 +167,35 @@ export default function AgentExecutionPanel({
 
       <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(220px,auto)]">
         <div className="min-w-0">
-          <p className="flex items-center gap-1.5 text-[9px] text-[#778278]"><Wrench className="h-3 w-3" />最近执行记录</p>
-          {recentEvents.length ? (
-            <ol className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
-              {recentEvents.map((event) => (
+          <details open>
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[9px] text-[#778278]">
+              <Wrench className="h-3 w-3" />任务时间线
+            </summary>
+            {timeline ? (
+              timeline.events.length ? (
+                <ol className="mt-1.5 grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
+                  {timeline.events.map((event) => (
+                    <li
+                      key={event.event_id}
+                      data-event-id={event.event_id}
+                      className="min-w-0 border-l border-white/10 pl-2 text-[10px] text-[#aeb7af]"
+                    >
+                      <span className="mr-1.5 text-[#d5ff67]">{SOURCE_LABELS[event.source_type]}</span>
+                      <span>{event.summary}</span>
+                      <span className="ml-1.5 font-mono text-[9px] text-[#6f7a71]">
+                        {BILLING_LABELS[event.billing_status]}
+                        {event.attempt !== null ? ` · 第 ${event.attempt} 次` : ""}
+                        {` · ${formatEventTime(event.occurred_at)}`}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="mt-1.5 text-[10px] text-[#6f7a71]">暂无统一任务事件</p>
+              )
+            ) : fallbackEvents.length ? (
+              <ol className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
+                {fallbackEvents.map((event) => (
                 <li
                   key={event.event_id ?? `${event.turn_id ?? "turn"}-${event.sequence}-${event.type}-${event.node}-${event.created_at ?? "time"}`}
                   data-event-id={event.event_id}
@@ -138,11 +204,25 @@ export default function AgentExecutionPanel({
                   <span className="mr-1.5 font-mono text-[#6f7a71]">{String(event.sequence).padStart(2, "0")}</span>
                   {event.summary || readableNode(event.node)}
                 </li>
-              ))}
-            </ol>
-          ) : (
-            <p className="mt-1.5 text-[10px] text-[#6f7a71]">暂无工具执行记录</p>
-          )}
+                ))}
+              </ol>
+            ) : (
+              <p className="mt-1.5 text-[10px] text-[#6f7a71]">暂无工具执行记录</p>
+            )}
+            <div className="mt-2 flex items-center gap-3">
+              {timelineLoading && <span className="text-[9px] text-[#778278]">正在加载时间线</span>}
+              {timeline?.next_cursor != null && onLoadMore && (
+                <button
+                  type="button"
+                  onClick={onLoadMore}
+                  disabled={timelineLoading}
+                  className="text-[9px] text-[#d5ff67] disabled:text-[#6f7a71]"
+                >
+                  加载更多
+                </button>
+              )}
+            </div>
+          </details>
         </div>
         <div className="lg:text-right">
           <p className="text-[9px] text-[#778278]">退出原因</p>
