@@ -5,6 +5,12 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+class NodeLatencyMetrics(BaseModel):
+    samples: int = Field(ge=1)
+    p50_ms: int = Field(ge=0)
+    p95_ms: int = Field(ge=0)
+
+
 class GenerationQualityMetrics(BaseModel):
     total: int = Field(ge=0)
     completed: int = Field(ge=0)
@@ -17,6 +23,7 @@ class GenerationQualityMetrics(BaseModel):
     duration_p95_ms: int | None = Field(default=None, ge=0)
     total_tokens: int = Field(ge=0)
     total_cost_cny: float = Field(ge=0)
+    node_latency: dict[str, NodeLatencyMetrics]
 
 
 class AgentQualityMetrics(BaseModel):
@@ -53,6 +60,21 @@ class FeedbackQualityMetrics(BaseModel):
     glb_load_failure_total: int = Field(ge=0)
 
 
+class RenderQueueQualityMetrics(BaseModel):
+    total: int = Field(ge=0)
+    queued: int = Field(ge=0)
+    running: int = Field(ge=0)
+    completed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    dead_letter: int = Field(ge=0)
+    cancelled: int = Field(ge=0)
+    success_rate: float | None = Field(default=None, ge=0, le=1)
+    queue_wait_p50_ms: int | None = Field(default=None, ge=0)
+    queue_wait_p95_ms: int | None = Field(default=None, ge=0)
+    execution_p50_ms: int | None = Field(default=None, ge=0)
+    execution_p95_ms: int | None = Field(default=None, ge=0)
+
+
 class QualitySummaryResponse(BaseModel):
     generated_at: datetime
     window_days: int = Field(ge=1, le=365)
@@ -60,4 +82,6 @@ class QualitySummaryResponse(BaseModel):
     agent: AgentQualityMetrics
     layout: LayoutQualityMetrics
     feedback: FeedbackQualityMetrics
+    effect_render: RenderQueueQualityMetrics
+    blender_render: RenderQueueQualityMetrics
     failure_codes: dict[str, int]

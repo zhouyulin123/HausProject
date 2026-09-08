@@ -19,6 +19,9 @@ const summary: QualitySummary = {
     duration_p95_ms: 9120,
     total_tokens: 987654,
     total_cost_cny: 128.46,
+    node_latency: {
+      parse_requirements: { samples: 120, p50_ms: 320, p95_ms: 980 },
+    },
   },
   agent: {
     turn_total: 486,
@@ -49,6 +52,18 @@ const summary: QualitySummary = {
     satisfaction_mean: 4.25,
     glb_load_failure_total: 6,
   },
+  effect_render: {
+    total: 20, queued: 2, running: 1, completed: 15, failed: 0,
+    dead_letter: 2, cancelled: 0, success_rate: 15 / 17,
+    queue_wait_p50_ms: 800, queue_wait_p95_ms: 2400,
+    execution_p50_ms: 12000, execution_p95_ms: 30000,
+  },
+  blender_render: {
+    total: 10, queued: 1, running: 1, completed: 7, failed: 1,
+    dead_letter: 0, cancelled: 0, success_rate: 0.875,
+    queue_wait_p50_ms: 1500, queue_wait_p95_ms: 5000,
+    execution_p50_ms: 18000, execution_p95_ms: 45000,
+  },
   failure_codes: { invalid_quote: 7, tool_failed: 5 },
 };
 
@@ -63,6 +78,10 @@ describe("运营质量看板内容", () => {
     expect(html).toContain(">7<");
     expect(html).toContain("GLB 加载失败");
     expect(html).toContain(">6<");
+    expect(html).toContain("效果图队列");
+    expect(html).toContain("Blender 队列");
+    expect(html).toContain("节点耗时");
+    expect(html).toContain("parse_requirements");
   });
 
   it("失败簇展示严重度、状态和当前阶段的明确动作", () => {

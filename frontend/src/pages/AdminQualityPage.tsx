@@ -34,6 +34,7 @@ import type {
   FailureStatus,
   QualitySummary,
   QualityWindowDays,
+  QualityRenderQueueMetrics,
 } from "@/types/quality";
 
 const integerFormatter = new Intl.NumberFormat("zh-CN");
@@ -305,6 +306,33 @@ function Distribution({
   );
 }
 
+function RenderQueueTile({
+  label,
+  metrics,
+}: {
+  label: string;
+  metrics: QualityRenderQueueMetrics;
+}) {
+  return (
+    <article className="border border-cream-200 bg-white/80 p-4 sm:p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-stone-700">{label}</h2>
+        <Activity className="h-4 w-4 text-sage-600" />
+      </div>
+      <p className="mt-4 text-2xl font-semibold text-stone-800">
+        {formatRate(metrics.success_rate)}
+      </p>
+      <p className="mt-1 text-xs text-stone-400">成功率 · {metrics.completed} 完成 / {metrics.failed + metrics.dead_letter} 失败</p>
+      <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-stone-500">
+        <span>排队 {metrics.queued}</span>
+        <span>执行中 {metrics.running}</span>
+        <span>排队 P95 {formatDuration(metrics.queue_wait_p95_ms)}</span>
+        <span>执行 P95 {formatDuration(metrics.execution_p95_ms)}</span>
+      </div>
+    </article>
+  );
+}
+
 export function QualitySummaryContent({ summary }: { summary: QualitySummary }) {
   const generatedAt = new Date(summary.generated_at).toLocaleString("zh-CN", {
     hour12: false,
@@ -377,6 +405,30 @@ export function QualitySummaryContent({ summary }: { summary: QualitySummary }) 
           detail="匿名逐实例事件，不含 URL、用户文本或错误堆栈"
           icon={AlertTriangle}
         />
+      </section>
+
+      <section className="mt-9 grid gap-3 lg:grid-cols-2" aria-label="异步渲染队列">
+        <RenderQueueTile label="效果图队列" metrics={summary.effect_render} />
+        <RenderQueueTile label="Blender 队列" metrics={summary.blender_render} />
+      </section>
+
+      <section className="mt-9 border-t border-cream-200 pt-5" aria-label="节点耗时">
+        <div className="flex items-baseline justify-between gap-4">
+          <h2 className="text-sm font-semibold text-stone-700">节点耗时</h2>
+          <span className="font-mono text-[10px] text-stone-400">P50 / P95</span>
+        </div>
+        {Object.keys(summary.generation.node_latency).length === 0 ? (
+          <p className="mt-4 border border-dashed border-cream-300 px-4 py-5 text-sm text-stone-400">当前周期没有节点耗时样本</p>
+        ) : (
+          <div className="mt-4 divide-y divide-cream-100 border-y border-cream-200">
+            {Object.entries(summary.generation.node_latency).map(([node, latency]) => (
+              <div key={node} className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 py-3 text-xs">
+                <code className="truncate text-stone-600" title={node}>{node}</code>
+                <span className="text-right text-stone-500">{formatDuration(latency.p50_ms)} / {formatDuration(latency.p95_ms)} · {latency.samples} 次</span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <div className="mt-9 grid gap-8 lg:grid-cols-2">

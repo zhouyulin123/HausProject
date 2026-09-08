@@ -12,6 +12,26 @@ export interface QualityGenerationMetrics {
   duration_p95_ms: number | null;
   total_tokens: number;
   total_cost_cny: number;
+  node_latency: Record<string, {
+    samples: number;
+    p50_ms: number;
+    p95_ms: number;
+  }>;
+}
+
+export interface QualityRenderQueueMetrics {
+  total: number;
+  queued: number;
+  running: number;
+  completed: number;
+  failed: number;
+  dead_letter: number;
+  cancelled: number;
+  success_rate: number | null;
+  queue_wait_p50_ms: number | null;
+  queue_wait_p95_ms: number | null;
+  execution_p50_ms: number | null;
+  execution_p95_ms: number | null;
 }
 
 export interface QualityAgentMetrics {
@@ -53,6 +73,8 @@ export interface QualitySummary {
   agent: QualityAgentMetrics;
   layout: QualityLayoutMetrics;
   feedback: QualityFeedbackMetrics;
+  effect_render: QualityRenderQueueMetrics;
+  blender_render: QualityRenderQueueMetrics;
   failure_codes: Record<string, number>;
 }
 

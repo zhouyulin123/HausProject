@@ -12,9 +12,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
+    BlenderRenderJob,
     DesignAgentEvent,
     DesignAgentTurn,
     DesignFeedbackEvent,
+    EffectRenderJob,
     GenerationRun,
     GenerationRunEvent,
     LayoutRun,
@@ -63,6 +65,64 @@ def _total_tokens(run: GenerationRun) -> int:
         return 0
     value = usage.get("total_tokens")
     return value if isinstance(value, int) and value >= 0 else 0
+
+
+def _node_latency(events: list[GenerationRunEvent]) -> dict[str, dict[str, int]]:
+    durations: dict[str, list[int]] = {}
+    for event in events:
+        node = event.node.strip() if isinstance(event.node, str) else ""
+        if (
+            not _CODE_PATTERN.fullmatch(node)
+            or not isinstance(event.duration_ms, int)
+            or event.duration_ms < 0
+        ):
+            continue
+        durations.setdefault(node, []).append(event.duration_ms)
+    return {
+        node: {
+            "samples": len(values),
+            "p50_ms": _percentile(values, 0.5),
+            "p95_ms": _percentile(values, 0.95),
+        }
+        for node, values in sorted(durations.items())
+    }
+
+
+def _elapsed_ms(start: datetime | None, end: datetime | None) -> int | None:
+    if start is None or end is None:
+        return None
+    return max(0, round((end - start).total_seconds() * 1000))
+
+
+def _render_queue_metrics(jobs: list[Any]) -> dict[str, Any]:
+    statuses = Counter(job.status for job in jobs)
+    queue_waits = [
+        value
+        for job in jobs
+        if (value := _elapsed_ms(job.created_at, job.started_at)) is not None
+    ]
+    execution_durations = [
+        value
+        for job in jobs
+        if (value := _elapsed_ms(job.started_at, job.completed_at)) is not None
+    ]
+    terminal_total = (
+        statuses["completed"] + statuses["failed"] + statuses["dead_letter"]
+    )
+    return {
+        "total": len(jobs),
+        "queued": statuses["queued"],
+        "running": statuses["running"],
+        "completed": statuses["completed"],
+        "failed": statuses["failed"],
+        "dead_letter": statuses["dead_letter"],
+        "cancelled": statuses["cancelled"],
+        "success_rate": _rate(statuses["completed"], terminal_total),
+        "queue_wait_p50_ms": _percentile(queue_waits, 0.5),
+        "queue_wait_p95_ms": _percentile(queue_waits, 0.95),
+        "execution_p50_ms": _percentile(execution_durations, 0.5),
+        "execution_p95_ms": _percentile(execution_durations, 0.95),
+    }
 
 
 def _failure_codes(events: list[DesignAgentEvent]) -> dict[str, int]:
@@ -140,6 +200,12 @@ def build_quality_summary(
     ).all()
     generation_events = db.scalars(
         select(GenerationRunEvent).where(GenerationRunEvent.created_at >= cutoff)
+    ).all()
+    effect_render_jobs = db.scalars(
+        select(EffectRenderJob).where(EffectRenderJob.created_at >= cutoff)
+    ).all()
+    blender_render_jobs = db.scalars(
+        select(BlenderRenderJob).where(BlenderRenderJob.created_at >= cutoff)
     ).all()
     feedback_rows = db.execute(
         select(
@@ -227,6 +293,7 @@ def build_quality_summary(
                 for run in generation_runs
                 if run.cost_cny is not None and run.cost_cny >= 0
             ),
+            "node_latency": _node_latency(generation_events),
         },
         "agent": {
             "turn_total": len(agent_turns),
@@ -259,5 +326,7 @@ def build_quality_summary(
             ),
             "glb_load_failure_total": glb_load_failure_total,
         },
+        "effect_render": _render_queue_metrics(effect_render_jobs),
+        "blender_render": _render_queue_metrics(blender_render_jobs),
         "failure_codes": dict(sorted(failure_codes.items())),
     }

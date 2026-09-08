@@ -25,6 +25,7 @@ const emptySummary: QualitySummary = {
     duration_p95_ms: null,
     total_tokens: 0,
     total_cost_cny: 0,
+    node_latency: {},
   },
   agent: { turn_total: 0, handoff_total: 0, handoff_rate: null, statuses: {} },
   layout: {
@@ -49,6 +50,18 @@ const emptySummary: QualitySummary = {
     satisfaction_count: 0,
     satisfaction_mean: null,
     glb_load_failure_total: 0,
+  },
+  effect_render: {
+    total: 0, queued: 0, running: 0, completed: 0, failed: 0,
+    dead_letter: 0, cancelled: 0, success_rate: null,
+    queue_wait_p50_ms: null, queue_wait_p95_ms: null,
+    execution_p50_ms: null, execution_p95_ms: null,
+  },
+  blender_render: {
+    total: 0, queued: 0, running: 0, completed: 0, failed: 0,
+    dead_letter: 0, cancelled: 0, success_rate: null,
+    queue_wait_p50_ms: null, queue_wait_p95_ms: null,
+    execution_p50_ms: null, execution_p95_ms: null,
   },
   failure_codes: {},
 };

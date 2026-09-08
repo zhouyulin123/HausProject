@@ -24,7 +24,9 @@ export function hasQualitySamples(summary: QualitySummary): boolean {
     summary.agent.turn_total > 0 ||
     summary.layout.total > 0 ||
     summary.feedback.total > 0 ||
-    summary.feedback.glb_load_failure_total > 0
+    summary.feedback.glb_load_failure_total > 0 ||
+    summary.effect_render.total > 0 ||
+    summary.blender_render.total > 0
   );
 }
 

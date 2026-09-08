@@ -6,12 +6,14 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
 from app.db.models import (
+    BlenderRenderJob,
     DesignAgentEvent,
     DesignAgentTurn,
     DesignFeedbackEvent,
     DesignPlanVersion,
     DesignRevision,
     DesignTask,
+    EffectRenderJob,
     GenerationRun,
     GenerationRunEvent,
     LayoutRun,
@@ -79,19 +81,39 @@ def test_quality_summary_uses_explicit_denominators_and_no_user_content(db):
     )
     db.add_all([completed_turn, handoff_turn])
     db.flush()
-    db.add(
-        DesignAgentEvent(
-            task_id=task.id,
-            turn_id=handoff_turn.id,
-            sequence=1,
-            event_type="validation_failed",
-            node="verify_result",
-            status="rejected",
-            source="deterministic",
-            summary="不应进入聚合响应",
-            details_json={"codes": ["invalid_sku", "budget_exceeded"]},
-            created_at=now,
-        )
+    db.add_all(
+        [
+            DesignAgentEvent(
+                task_id=task.id,
+                turn_id=handoff_turn.id,
+                sequence=1,
+                event_type="validation_failed",
+                node="verify_result",
+                status="rejected",
+                source="deterministic",
+                summary="不应进入聚合响应",
+                details_json={"codes": ["invalid_sku", "budget_exceeded"]},
+                created_at=now,
+            ),
+            GenerationRunEvent(
+                run_id=1,
+                node="parse_requirements",
+                status="completed",
+                progress=30,
+                source="llm",
+                duration_ms=120,
+                created_at=now,
+            ),
+            GenerationRunEvent(
+                run_id=2,
+                node="parse_requirements",
+                status="completed",
+                progress=30,
+                source="llm",
+                duration_ms=360,
+                created_at=now,
+            ),
+        ]
     )
     db.commit()
 
@@ -109,6 +131,13 @@ def test_quality_summary_uses_explicit_denominators_and_no_user_content(db):
         "duration_p95_ms": 3850,
         "total_tokens": 300,
         "total_cost_cny": pytest.approx(0.3),
+        "node_latency": {
+            "parse_requirements": {
+                "samples": 2,
+                "p50_ms": 240,
+                "p95_ms": 348,
+            }
+        },
     }
     assert summary["agent"]["turn_total"] == 2
     assert summary["agent"]["handoff_total"] == 1
@@ -187,6 +216,7 @@ def test_quality_summary_returns_none_rates_without_evidence(db):
 
     assert summary["generation"]["success_rate"] is None
     assert summary["generation"]["fallback_rate"] is None
+    assert summary["generation"]["node_latency"] == {}
     assert summary["agent"]["handoff_rate"] is None
     assert summary["layout"]["hard_pass_rate"] is None
     assert summary["feedback"] == {
@@ -205,6 +235,138 @@ def test_quality_summary_returns_none_rates_without_evidence(db):
         "satisfaction_mean": None,
         "glb_load_failure_total": 0,
     }
+    assert summary["effect_render"] == {
+        "total": 0,
+        "queued": 0,
+        "running": 0,
+        "completed": 0,
+        "failed": 0,
+        "dead_letter": 0,
+        "cancelled": 0,
+        "success_rate": None,
+        "queue_wait_p50_ms": None,
+        "queue_wait_p95_ms": None,
+        "execution_p50_ms": None,
+        "execution_p95_ms": None,
+    }
+    assert summary["blender_render"] == summary["effect_render"]
+
+
+def test_quality_summary_aggregates_render_queue_health(db):
+    now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    task = DesignTask(status="completed", progress=100)
+    db.add(task)
+    db.flush()
+    revision = DesignRevision(
+        task_id=task.id,
+        version=1,
+        requirement_snapshot={},
+        generator="llm",
+        created_at=now,
+    )
+    db.add(revision)
+    db.flush()
+    plan = DesignPlanVersion(
+        revision_id=revision.id,
+        plan_key="plan-a",
+        plan_name="方案 A",
+        plan_json={},
+        created_at=now,
+    )
+    db.add(plan)
+    db.flush()
+
+    common_effect = {
+        "task_id": task.id,
+        "plan_version_id": plan.id,
+        "prompt_snapshot": "不应进入聚合响应",
+        "prompt_digest": "sha256:prompt",
+        "request_digest": "sha256:request",
+        "execution_deadline_at": now + timedelta(minutes=10),
+    }
+    db.add_all(
+        [
+            EffectRenderJob(
+                **common_effect,
+                idempotency_key="effect-completed",
+                status="completed",
+                created_at=now - timedelta(seconds=10),
+                started_at=now - timedelta(seconds=8),
+                completed_at=now,
+            ),
+            EffectRenderJob(
+                **common_effect,
+                idempotency_key="effect-dead",
+                status="dead_letter",
+                created_at=now - timedelta(seconds=20),
+                started_at=now - timedelta(seconds=16),
+                completed_at=now - timedelta(seconds=10),
+            ),
+            EffectRenderJob(
+                **common_effect,
+                idempotency_key="effect-queued",
+                status="queued",
+                created_at=now,
+            ),
+        ]
+    )
+    db.add_all(
+        [
+            BlenderRenderJob(
+                scene_id=1,
+                scene_version_id=1,
+                scene_version=1,
+                profile="preview",
+                status="completed",
+                execution_deadline_at=now + timedelta(minutes=10),
+                created_at=now - timedelta(seconds=9),
+                started_at=now - timedelta(seconds=6),
+                completed_at=now,
+            ),
+            BlenderRenderJob(
+                scene_id=2,
+                scene_version_id=2,
+                scene_version=1,
+                profile="preview",
+                status="cancelled",
+                execution_deadline_at=now + timedelta(minutes=10),
+                created_at=now,
+            ),
+        ]
+    )
+    db.commit()
+
+    summary = build_quality_summary(db, now=now, window_days=30)
+
+    assert summary["effect_render"] == {
+        "total": 3,
+        "queued": 1,
+        "running": 0,
+        "completed": 1,
+        "failed": 0,
+        "dead_letter": 1,
+        "cancelled": 0,
+        "success_rate": 0.5,
+        "queue_wait_p50_ms": 3000,
+        "queue_wait_p95_ms": 3900,
+        "execution_p50_ms": 7000,
+        "execution_p95_ms": 7900,
+    }
+    assert summary["blender_render"] == {
+        "total": 2,
+        "queued": 0,
+        "running": 0,
+        "completed": 1,
+        "failed": 0,
+        "dead_letter": 0,
+        "cancelled": 1,
+        "success_rate": 1.0,
+        "queue_wait_p50_ms": 3000,
+        "queue_wait_p95_ms": 3000,
+        "execution_p50_ms": 6000,
+        "execution_p95_ms": 6000,
+    }
+    assert "不应进入聚合响应" not in str(summary)
 
 
 def test_quality_summary_counts_every_failure_terminal_and_node_code(db):
