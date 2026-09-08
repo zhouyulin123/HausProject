@@ -561,6 +561,7 @@ def test_historical_scene_stays_readable_but_expired_product_blocks_final_render
 @pytest.mark.integration
 def test_custom_draft_enters_scene_with_server_dimensions_and_survives_history(
     scene_api_context,
+    monkeypatch,
 ):
     client, owner_id, _, plan_version_id = scene_api_context
     headers = {"X-Session-ID": owner_id}
@@ -702,6 +703,13 @@ def test_custom_draft_enters_scene_with_server_dimensions_and_survives_history(
     assert custom["instanceId"] in {
         item["instanceId"] for item in version_two["scene"]["items"]
     }
+    monkeypatch.setattr(
+        scenes.scene_service,
+        "list_versions",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("恢复定制家具不得扫描全部场景历史")
+        ),
+    )
     restored = client.put(
         f"/api/design/scenes/{scene_id}",
         headers=headers,

@@ -289,6 +289,37 @@ def assert_custom_scene_bindings(
             raise CustomSceneBindingError("定制家具草稿引用、尺寸和材质不可在场景中伪造")
 
 
+def _load_reintroduced_custom_items(
+    db: Session,
+    *,
+    scene_id: int,
+    before: SceneDocument,
+    after: SceneDocument,
+) -> list[SceneItem]:
+    current_ids = {item.instance_id for item in before.items}
+    introduced_versions = {
+        item.custom_furniture_ref.introduced_scene_version
+        for item in after.items
+        if item.source_type == "custom_furniture_draft"
+        and item.instance_id not in current_ids
+        and item.custom_furniture_ref is not None
+    }
+    if not introduced_versions:
+        return []
+    versions = db.scalars(
+        select(DesignSceneVersion).where(
+            DesignSceneVersion.scene_id == scene_id,
+            DesignSceneVersion.version.in_(introduced_versions),
+        )
+    ).all()
+    return [
+        item
+        for version in versions
+        for item in SceneDocument.model_validate(version.scene_json).items
+        if item.source_type == "custom_furniture_draft"
+    ]
+
+
 def get_owned_plan_version(
     db: Session,
     *,
@@ -552,12 +583,12 @@ def update_scene(
         raise SceneValidationError(report)
     current = get_current_version(db, scene)
     current_document = SceneDocument.model_validate(current.scene_json)
-    historical_custom_items = [
-        item
-        for version in list_versions(db, scene.id)
-        for item in SceneDocument.model_validate(version.scene_json).items
-        if item.source_type == "custom_furniture_draft"
-    ]
+    historical_custom_items = _load_reintroduced_custom_items(
+        db,
+        scene_id=scene.id,
+        before=current_document,
+        after=document,
+    )
     assert_custom_scene_bindings(
         before=current_document,
         after=document,
