@@ -86,6 +86,12 @@ def _validation_error(
     )
 
 
+def _catalog_error(
+    error: scene_tools.SceneCatalogEligibilityError,
+) -> HTTPException:
+    return HTTPException(status_code=422, detail=error.details)
+
+
 def _version_response(version: DesignSceneVersion) -> SceneVersionResponse:
     return SceneVersionResponse(
         version=version.version,
@@ -180,6 +186,9 @@ def create_plan_scene(
         db.commit()
         db.refresh(scene)
         db.refresh(version)
+    except scene_tools.SceneCatalogEligibilityError as error:
+        db.rollback()
+        raise _catalog_error(error) from error
     except scene_service.SceneConflictError as error:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -268,6 +277,9 @@ def auto_layout_plan_scene(
         db.commit()
         db.refresh(scene)
         db.refresh(version)
+    except scene_tools.SceneCatalogEligibilityError as error:
+        db.rollback()
+        raise _catalog_error(error) from error
     except scene_service.SceneConflictError as error:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -390,6 +402,9 @@ def update_scene(
         db.commit()
         db.refresh(scene)
         db.refresh(version)
+    except scene_tools.SceneCatalogEligibilityError as error:
+        db.rollback()
+        raise _catalog_error(error) from error
     except scene_service.SceneConflictError as error:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -484,6 +499,16 @@ def queue_blender_render(
             detail=f"场景已经更新到版本 {scene.current_version}，请刷新后重试",
         )
     version = scene_service.get_current_version(db, scene)
+    if payload.profile == "final":
+        try:
+            scene_service.assert_scene_catalog_deliverable(
+                db,
+                SceneDocument.model_validate(version.scene_json),
+                region=scene_service.scene_delivery_region(db, scene),
+            )
+        except scene_tools.SceneCatalogEligibilityError as error:
+            db.rollback()
+            raise _catalog_error(error) from error
     existing = blender_job_service.get_existing_job(
         db,
         scene_version_id=version.id,
@@ -571,7 +596,15 @@ def run_scene_agent_command(
         )
     current = scene_service.get_current_version(db, scene)
     source_document = SceneDocument.model_validate(current.scene_json)
-    context = scene_tools.build_scene_agent_context(db, source_document)
+    delivery_region = scene_service.scene_delivery_region(db, scene)
+    catalog_scope = (
+        {"region": delivery_region} if delivery_region is not None else {}
+    )
+    context = scene_tools.build_scene_agent_context(
+        db,
+        source_document,
+        **catalog_scope,
+    )
 
     # 模型调用期间不持有数据库事务或行锁。
     db.rollback()
@@ -607,7 +640,12 @@ def run_scene_agent_command(
     workflow = SceneAgentWorkflow(
         plan_operations=lambda **_: batch,
         execute_operations=lambda document, operations: (
-            scene_tools.apply_scene_operations(db, document, operations)
+            scene_tools.apply_scene_operations(
+                db,
+                document,
+                operations,
+                **catalog_scope,
+            )
         ),
         validate_scene=lambda document: scene_service.validate_scene(
             db, document
@@ -632,6 +670,9 @@ def run_scene_agent_command(
         db.commit()
         db.refresh(locked_scene)
         db.refresh(version)
+    except scene_tools.SceneCatalogEligibilityError as error:
+        db.rollback()
+        raise _catalog_error(error) from error
     except scene_tools.SceneToolError as error:
         db.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from error

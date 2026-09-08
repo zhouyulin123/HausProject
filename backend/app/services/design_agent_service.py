@@ -619,7 +619,25 @@ def _scene_tool(
             )
         current = scene_service.get_current_version(db, scene)
         document = SceneDocument.model_validate(current.scene_json)
-        context = scene_tools.build_scene_agent_context(db, document)
+        requirement = getattr(task, "confirmed_requirement_json", None)
+        region_value = (
+            requirement.get("delivery_region")
+            if isinstance(requirement, dict)
+            else None
+        )
+        delivery_region = (
+            region_value.strip()
+            if isinstance(region_value, str) and region_value.strip()
+            else None
+        )
+        catalog_scope = (
+            {"region": delivery_region} if delivery_region is not None else {}
+        )
+        context = scene_tools.build_scene_agent_context(
+            db,
+            document,
+            **catalog_scope,
+        )
         try:
             batch: SceneOperationBatch = llm_service.plan_scene_operations(
                 instruction=state["message"],
@@ -628,7 +646,12 @@ def _scene_tool(
             workflow = SceneAgentWorkflow(
                 plan_operations=lambda **_: batch,
                 execute_operations=lambda source, operations: (
-                    scene_tools.apply_scene_operations(db, source, operations)
+                    scene_tools.apply_scene_operations(
+                        db,
+                        source,
+                        operations,
+                        **catalog_scope,
+                    )
                 ),
                 validate_scene=lambda candidate: scene_service.validate_scene(
                     db, candidate
@@ -641,6 +664,11 @@ def _scene_tool(
             )
         except LLMUnavailable as exc:
             raise AgentToolRejected(str(exc), codes=["model_unavailable"]) from exc
+        except scene_tools.SceneCatalogEligibilityError as exc:
+            raise AgentToolRejected(
+                str(exc),
+                codes=list(exc.reason_codes) or [exc.code],
+            ) from exc
         except scene_tools.SceneToolError as exc:
             code = "invalid_sku" if "SKU" in str(exc) else "scene_tool_error"
             raise AgentToolRejected(str(exc), codes=[code]) from exc

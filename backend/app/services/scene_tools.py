@@ -1,5 +1,6 @@
 """Scene Agent 的确定性白名单工具；不执行模型生成的代码。"""
 
+from datetime import datetime, timezone
 from math import pi
 import re
 
@@ -21,11 +22,35 @@ from app.schemas.scenes import (
     Transform,
     Vector3,
 )
+from app.services import catalog_service
 from app.services.product_asset_service import product_asset_contract
 
 
 class SceneToolError(ValueError):
     """白名单操作无法安全应用到当前场景。"""
+
+
+class SceneCatalogEligibilityError(SceneToolError):
+    """商品不满足统一商用目录资格，携带稳定机器可读原因。"""
+
+    code = "catalog_product_ineligible"
+
+    def __init__(self, *, sku: str, reason_codes: tuple[str, ...]) -> None:
+        message = f"商品 {sku} 当前不可用于场景新增或正式交付"
+        if "dimensions_missing" in reason_codes:
+            message = f"商品 {sku} 缺少可靠的三维尺寸，不能加入场景"
+        super().__init__(message)
+        self.sku = sku
+        self.reason_codes = reason_codes
+
+    @property
+    def details(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "message": str(self),
+            "sku": self.sku,
+            "reason_codes": list(self.reason_codes),
+        }
 
 
 def _normalize_rotation(value: float) -> float:
@@ -56,23 +81,47 @@ def _next_instance_id(document: SceneDocument, sku: str) -> str:
     return f"item-{stem}-{index}"
 
 
-def _load_product(db: Session, sku: str) -> Product:
+def _find_product(db: Session, sku: str) -> Product:
+    normalized_sku = sku.strip().upper()
     product = db.scalar(
-        select(Product).where(
-            Product.sku == sku,
-            Product.is_active.is_(True),
-        )
+        select(Product).where(Product.sku == normalized_sku)
     )
     if product is None:
-        raise SceneToolError(f"商品库中不存在可用 SKU：{sku}")
-    dimensions = (
-        product.model_width_mm,
-        product.model_height_mm,
-        product.model_depth_mm,
-    )
-    if any(value is None or value <= 0 for value in dimensions):
-        raise SceneToolError(f"商品 {sku} 缺少可靠的三维尺寸，不能加入场景")
+        raise SceneToolError(f"商品库中不存在 SKU：{normalized_sku}")
     return product
+
+
+def _load_eligible_product(
+    db: Session,
+    sku: str,
+    *,
+    region: str | None = None,
+    at: datetime | None = None,
+) -> Product:
+    product = _find_product(db, sku)
+    eligibility = catalog_service.is_product_eligible(
+        product,
+        at=at,
+        region=region,
+    )
+    if not eligibility.eligible:
+        raise SceneCatalogEligibilityError(
+            sku=product.sku or sku.strip().upper(),
+            reason_codes=eligibility.reason_codes,
+        )
+    return product
+
+
+def assert_catalog_skus_eligible(
+    db: Session,
+    skus: list[str],
+    *,
+    region: str | None = None,
+) -> None:
+    """按稳定顺序校验待新增或待交付 SKU。"""
+    checked_at = datetime.now(timezone.utc)
+    for sku in dict.fromkeys(skus):
+        _load_eligible_product(db, sku, region=region, at=checked_at)
 
 
 def _is_ceiling_anchored(product: Product) -> bool:
@@ -96,7 +145,16 @@ def _hydrate_scene_items(db: Session, document: SceneDocument) -> None:
     for item in document.items:
         if item.dimensions is not None and item.category:
             continue
-        product = _load_product(db, item.sku)
+        product = _find_product(db, item.sku)
+        dimensions = (
+            product.model_width_mm,
+            product.model_height_mm,
+            product.model_depth_mm,
+        )
+        if any(value is None or value <= 0 for value in dimensions):
+            raise SceneToolError(
+                f"商品 {item.sku} 缺少可靠的三维尺寸，不能编辑场景"
+            )
         dimensions = PositiveVector3(
             x=product.model_width_mm / 1000,
             y=product.model_height_mm / 1000,
@@ -116,6 +174,8 @@ def apply_scene_operations(
     db: Session,
     source: SceneDocument,
     operations: list[SceneOperation],
+    *,
+    region: str | None = None,
 ) -> SceneDocument:
     """顺序执行已通过 Pydantic 鉴别联合校验的操作并返回新文档。"""
     document = source.model_copy(deep=True)
@@ -126,7 +186,7 @@ def apply_scene_operations(
             item.transform.position.x = operation.position.x
             item.transform.position.z = operation.position.z
             if item.dimensions is not None:
-                product = _load_product(db, item.sku)
+                product = _find_product(db, item.sku)
                 scaled_dimensions = PositiveVector3(
                     x=item.dimensions.x * item.transform.scale.x,
                     y=item.dimensions.y * item.transform.scale.y,
@@ -150,7 +210,7 @@ def apply_scene_operations(
                 if item.instance_id != operation.instance_id
             ]
         elif isinstance(operation, AddSceneItem):
-            product = _load_product(db, operation.sku)
+            product = _load_eligible_product(db, operation.sku, region=region)
             asset_contract = product_asset_contract(product)
             dimensions = PositiveVector3(
                 x=product.model_width_mm / 1000,
@@ -184,7 +244,12 @@ def apply_scene_operations(
     return document
 
 
-def build_scene_agent_context(db: Session, document: SceneDocument) -> dict:
+def build_scene_agent_context(
+    db: Session,
+    document: SceneDocument,
+    *,
+    region: str | None = None,
+) -> dict:
     """只向模型暴露完成空间操作所需的最小商品与场景数据。"""
     products = db.scalars(
         select(Product)
@@ -196,6 +261,7 @@ def build_scene_agent_context(db: Session, document: SceneDocument) -> dict:
         )
         .order_by(Product.sku)
     ).all()
+    checked_at = datetime.now(timezone.utc)
     return {
         "scene": document.model_dump(by_alias=True, mode="json"),
         "catalog": [
@@ -211,5 +277,10 @@ def build_scene_agent_context(db: Session, document: SceneDocument) -> dict:
             }
             for product in products
             if product.sku
+            and catalog_service.is_product_eligible(
+                product,
+                at=checked_at,
+                region=region,
+            ).eligible
         ],
     }

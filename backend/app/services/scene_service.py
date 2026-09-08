@@ -3,6 +3,7 @@
 import hashlib
 import json
 
+from collections import Counter
 from itertools import combinations
 from math import hypot
 
@@ -15,6 +16,7 @@ from app.db.models import (
     DesignRevision,
     DesignScene,
     DesignSceneVersion,
+    DesignTask,
     Product,
 )
 from app.schemas.scenes import (
@@ -31,6 +33,7 @@ from app.services.scene_geometry import (
     polygons_overlap,
     vertical_ranges_overlap,
 )
+from app.services.scene_tools import assert_catalog_skus_eligible
 
 
 class SceneConflictError(ValueError):
@@ -43,6 +46,58 @@ class SceneValidationError(ValueError):
     def __init__(self, report: SceneValidationReport):
         super().__init__("3D 场景语义校验失败")
         self.report = report
+
+
+def _delivery_region_for_plan(db: Session, plan_version_id: int) -> str | None:
+    task = db.scalar(
+        select(DesignTask)
+        .join(DesignRevision, DesignRevision.task_id == DesignTask.id)
+        .join(DesignPlanVersion, DesignPlanVersion.revision_id == DesignRevision.id)
+        .where(DesignPlanVersion.id == plan_version_id)
+    )
+    requirement = task.confirmed_requirement_json if task is not None else None
+    if not isinstance(requirement, dict):
+        return None
+    value = requirement.get("delivery_region")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def scene_delivery_region(db: Session, scene: DesignScene) -> str | None:
+    return _delivery_region_for_plan(db, scene.plan_version_id)
+
+
+def assert_scene_catalog_mutation(
+    db: Session,
+    *,
+    before: SceneDocument | None,
+    after: SceneDocument,
+    region: str | None = None,
+) -> None:
+    """仅校验本次新引入的实例/SKU，历史失效实例仍可移动、删除和回放。"""
+    prior = Counter(
+        (item.instance_id, item.sku) for item in (before.items if before else [])
+    )
+    introduced: list[str] = []
+    for item in after.items:
+        identity = (item.instance_id, item.sku)
+        if prior[identity]:
+            prior[identity] -= 1
+        else:
+            introduced.append(item.sku)
+    assert_catalog_skus_eligible(db, introduced, region=region)
+
+
+def assert_scene_catalog_deliverable(
+    db: Session,
+    scene: SceneDocument,
+    *,
+    region: str | None = None,
+) -> None:
+    assert_catalog_skus_eligible(
+        db,
+        [item.sku for item in scene.items],
+        region=region,
+    )
 
 
 def get_owned_plan_version(
@@ -261,6 +316,12 @@ def create_scene(
     report = validate_scene(db, document)
     if not report.valid:
         raise SceneValidationError(report)
+    assert_scene_catalog_mutation(
+        db,
+        before=None,
+        after=document,
+        region=_delivery_region_for_plan(db, plan_version.id),
+    )
 
     scene = DesignScene(
         plan_version_id=plan_version.id,
@@ -296,6 +357,13 @@ def update_scene(
     report = validate_scene(db, document)
     if not report.valid:
         raise SceneValidationError(report)
+    current = get_current_version(db, scene)
+    assert_scene_catalog_mutation(
+        db,
+        before=SceneDocument.model_validate(current.scene_json),
+        after=document,
+        region=scene_delivery_region(db, scene),
+    )
 
     next_version = scene.current_version + 1
     version = DesignSceneVersion(

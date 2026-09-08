@@ -250,6 +250,7 @@ def test_scene_tools_reject_unknown_instance_and_missing_dimensions(scene_db):
             {"price_valid_to": datetime(2020, 1, 2, tzinfo=timezone.utc)},
             "price_expired",
         ),
+        ({"model_width_mm": None}, "dimensions_missing"),
     ],
 )
 def test_scene_agent_excludes_and_rejects_ineligible_catalog_products(
@@ -328,6 +329,20 @@ def test_expired_historical_sku_remains_readable_but_cannot_be_reintroduced_or_d
             after=replacement,
         )
     assert mutation_error.value.reason_codes == ("price_expired",)
+
+    chair = scene_db.scalar(select(Product).where(Product.sku == "CHAIR-001"))
+    chair.price_valid_to = datetime(2020, 1, 2, tzinfo=timezone.utc)
+    scene_db.commit()
+    sku_replacement = historical.model_copy(deep=True)
+    sku_replacement.items[0].sku = "CHAIR-001"
+    with pytest.raises(SceneCatalogEligibilityError) as replacement_error:
+        assert_scene_catalog_mutation(
+            scene_db,
+            before=historical,
+            after=sku_replacement,
+        )
+    assert replacement_error.value.sku == "CHAIR-001"
+    assert replacement_error.value.reason_codes == ("price_expired",)
 
     with pytest.raises(SceneCatalogEligibilityError) as delivery_error:
         assert_scene_catalog_deliverable(scene_db, historical)
