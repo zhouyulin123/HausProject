@@ -1352,6 +1352,8 @@ export interface TaskTimelineResponse {
   task_id: number;
   events: TaskTimelineEvent[];
   next_cursor: number | null;
+  next_before_id: number | null;
+  next_after_id: number | null;
   known_cost_cny: number | null;
   has_unknown_cost: boolean;
   unknown_cost_event_count: number;
@@ -1564,13 +1566,19 @@ export async function fetchDesignAgentEvents(
 
 export async function fetchDesignTaskTimeline(
   taskId: number,
-  options: { limit?: number; afterId?: number } = {},
+  options: { limit?: number; afterId?: number; beforeId?: number } = {},
 ): Promise<TaskTimelineResponse> {
+  if (options.afterId !== undefined && options.beforeId !== undefined) {
+    throw new Error("beforeId 与 afterId 不能同时使用");
+  }
   const params = new URLSearchParams();
   const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
   params.set("limit", String(limit));
   if (options.afterId !== undefined) {
     params.set("after_id", String(options.afterId));
+  }
+  if (options.beforeId !== undefined) {
+    params.set("before_id", String(options.beforeId));
   }
   return request<TaskTimelineResponse>(
     `/api/design/tasks/${taskId}/timeline?${params.toString()}`,

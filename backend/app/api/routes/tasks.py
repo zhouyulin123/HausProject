@@ -74,6 +74,7 @@ def get_task_timeline(
     task_id: int,
     x_session_id: SessionIdHeader,
     after_id: Annotated[int | None, Query(ge=1)] = None,
+    before_id: Annotated[int | None, Query(ge=1)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     db: Session = Depends(get_db),
 ):
@@ -82,10 +83,19 @@ def get_task_timeline(
         session_id=x_session_id,
         task_id=task_id,
     )
+    if after_id is not None and before_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "timeline_cursor_conflict",
+                "message": "before_id 与 after_id 不能同时使用",
+            },
+        )
     events, next_cursor = task_timeline_service.list_events(
         db,
         task_id=task_id,
         after_id=after_id,
+        before_id=before_id,
         limit=limit,
     )
     cost = task_timeline_service.cost_summary(db, task_id=task_id)
@@ -106,6 +116,8 @@ def get_task_timeline(
             for event in events
         ],
         next_cursor=next_cursor,
+        next_before_id=next_cursor if after_id is None else None,
+        next_after_id=next_cursor if after_id is not None else None,
         known_cost_cny=cost.known_cost_cny,
         has_unknown_cost=cost.has_unknown_cost,
         unknown_cost_event_count=cost.unknown_cost_event_count,
