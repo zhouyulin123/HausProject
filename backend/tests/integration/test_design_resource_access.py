@@ -78,10 +78,6 @@ def design_access_context(monkeypatch):
     ("path", "body"),
     [
         (
-            "/api/design/chat",
-            {"message": "继续优化", "task_id": 1},
-        ),
-        (
             "/api/design/render",
             {
                 "plan_version_id": 1,
@@ -130,21 +126,28 @@ def test_chat_requires_anonymous_session_header(design_access_context):
 
 
 @pytest.mark.integration
-def test_legacy_chat_creates_task_binding_when_task_id_is_absent(
+def test_legacy_chat_is_retired_without_creating_task_or_calling_model(
     design_access_context,
     monkeypatch,
 ):
     client, stranger_id, _ = design_access_context
-    monkeypatch.setattr(chat.llm_service, "chat_reply", lambda **_: "请继续")
+    monkeypatch.setattr(
+        chat.llm_service,
+        "chat_reply",
+        lambda **_: (_ for _ in ()).throw(AssertionError("废弃入口不得调用模型")),
+    )
 
     response = client.post(
         "/api/design/chat",
         headers={"X-Session-ID": stranger_id},
-        json={"message": "继续优化"},
+        json={"message": "请拆掉承重墙并改燃气管线"},
     )
 
-    assert response.status_code == 200
-    assert response.json()["task_id"] > 0
+    assert response.status_code == 410
+    assert response.json()["detail"] == {
+        "code": "legacy_chat_retired",
+        "message": "旧聊天入口已停用，请使用统一设计智能体工作台",
+    }
 
 
 @pytest.mark.integration
