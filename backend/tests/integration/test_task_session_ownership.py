@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.api.routes.tasks import create_task
 from app.db.database import Base
-from app.db.models import DesignTask, UploadedImage
+from app.db.models import DesignTask, TaskExecutionEvent, UploadedImage
 from app.schemas.tasks import TaskCreate
 from app.services.anonymous_session_service import (
     attach_image,
@@ -44,6 +44,37 @@ def test_create_task_links_owned_images_to_anonymous_session(db):
     db.refresh(image)
     assert image.task_id == response.task_id
     assert session_owns_task(db, session.id, response.task_id)
+
+
+@pytest.mark.integration
+def test_create_task_projects_previously_unbound_visual_analysis_to_timeline(db):
+    session = create_anonymous_session(db)
+    image = UploadedImage(
+        file_name="floor-plan.png",
+        original_prediction_source="vl",
+        analysis_model_call_attempted=True,
+        analysis_billing_status="unknown",
+        analysis_cost_cny=None,
+    )
+    db.add(image)
+    db.commit()
+    attach_image(db, session.id, image.id)
+
+    response = create_task(
+        TaskCreate(
+            session_id=session.id,
+            image_ids=[image.id],
+            user_input="分析这个户型",
+        ),
+        session.id,
+        db,
+    )
+
+    event = db.query(TaskExecutionEvent).filter_by(task_id=response.task_id).one()
+    assert event.source_type == "vision"
+    assert event.source_id == image.id
+    assert event.event_code == "vision.completed"
+    assert event.billing_status == "unknown"
 
 
 @pytest.mark.integration
