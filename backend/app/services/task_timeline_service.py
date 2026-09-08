@@ -14,6 +14,7 @@ TimelineSource = Literal[
     "agent",
     "requirement",
     "vision",
+    "profile",
     "generation",
     "effect",
     "blender",
@@ -30,6 +31,9 @@ EVENT_SUMMARIES = {
     "requirement.fallback": "需求解析已降级为确定性规则",
     "vision.completed": "AI 空间识别已完成",
     "vision.fallback": "空间识别已降级为占位结果",
+    "profile.completed": "用户长期画像已更新",
+    "profile.failed": "用户长期画像更新失败",
+    "profile.skipped": "用户长期画像更新已跳过",
     "generation.queued": "方案生成已排队",
     "generation.claimed": "方案生成已由 Worker 接管",
     "generation.retry_scheduled": "方案生成已安排重试",
@@ -123,6 +127,12 @@ def append_event(
     db.add(event)
     db.flush()
     return event
+
+
+def get_event_by_key(db: Session, *, event_key: str) -> TaskExecutionEvent | None:
+    return db.scalar(
+        select(TaskExecutionEvent).where(TaskExecutionEvent.event_key == event_key)
+    )
 
 
 def billing_for_model_call(

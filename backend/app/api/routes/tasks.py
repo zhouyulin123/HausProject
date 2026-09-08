@@ -394,14 +394,61 @@ def confirm_requirement(
 
     # 登录用户：从确认的需求中提取长期画像（不阻断主流程）
     if task.user_id:
-        try:
-            profile_service.extract_and_merge(
-                db,
-                user_id=task.user_id,
-                text=json.dumps(req.confirmed_requirement, ensure_ascii=False),
+        requirement_text = json.dumps(
+            req.confirmed_requirement,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        requirement_digest = hashlib.sha256(requirement_text.encode("utf-8")).hexdigest()
+        event_key = f"profile:{task.id}:{requirement_digest}"
+
+        # 同一任务的画像更新串行执行，避免并发确认重复调用模型和重复计费。
+        locked_task = db.scalar(
+            select(DesignTask).where(DesignTask.id == task.id).with_for_update()
+        )
+        if locked_task is not None and task_timeline_service.get_event_by_key(
+            db, event_key=event_key
+        ) is None:
+            profile = None
+            extraction_failed = False
+            with llm_service.capture_model_call() as model_call:
+                try:
+                    profile = profile_service.extract_and_merge(
+                        db,
+                        user_id=locked_task.user_id,
+                        text=requirement_text,
+                        commit=False,
+                    )
+                except Exception:
+                    db.rollback()
+                    extraction_failed = True
+                    logger.exception("画像提取失败: task_id=%s", task.id)
+
+            billing_status, cost_cny = task_timeline_service.billing_for_model_call(
+                attempted=model_call.attempted,
+                usage=model_call.usage,
+                input_price_per_mtok=settings.llm_input_price_per_mtok,
+                output_price_per_mtok=settings.llm_output_price_per_mtok,
             )
-        except Exception:
-            logger.exception("画像提取失败: task_id=%s", task.id)
+            if extraction_failed:
+                event_code = "profile.failed"
+            elif profile is not None:
+                event_code = "profile.completed"
+            else:
+                event_code = "profile.skipped"
+            task_timeline_service.append_event(
+                db,
+                task_id=task.id,
+                source_type="profile",
+                source_id=task.id,
+                attempt=model_call.attempt_count or None,
+                event_code=event_code,
+                billing_status=billing_status,
+                cost_cny=cost_cny,
+                event_key=event_key,
+            )
+            db.commit()
 
     return {"status": "ok"}
 

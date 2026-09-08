@@ -93,6 +93,7 @@ def extract_and_merge(
     *,
     user_id: int,
     text: str,
+    commit: bool = True,
 ) -> UserProfile | None:
     """从文本提取画像并合并；LLM 不可用时返回 None（不阻断主流程）。"""
     if not text or not text.strip():
@@ -104,7 +105,10 @@ def extract_and_merge(
         return None
     profile = get_or_create_profile(db, user_id=user_id)
     merge_profile(profile, extracted)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return profile
 
 

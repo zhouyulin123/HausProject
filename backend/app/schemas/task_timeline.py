@@ -5,7 +5,15 @@ from pydantic import BaseModel
 
 
 BillingStatus = Literal["metered", "not_billable", "unknown"]
-TimelineSource = Literal["agent", "generation", "effect", "blender"]
+TimelineSource = Literal[
+    "agent",
+    "requirement",
+    "vision",
+    "profile",
+    "generation",
+    "effect",
+    "blender",
+]
 
 
 class TaskTimelineEventResponse(BaseModel):

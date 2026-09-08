@@ -63,6 +63,9 @@ function formatDeadline(value: string | null): string | null {
 
 const SOURCE_LABELS: Record<TaskTimelineSource, string> = {
   agent: "智能体",
+  requirement: "需求解析",
+  vision: "空间识别",
+  profile: "用户画像",
   generation: "方案生成",
   effect: "效果图",
   blender: "3D 渲染",

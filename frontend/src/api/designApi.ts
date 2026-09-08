@@ -1347,7 +1347,14 @@ export interface AgentEventFeedResponse {
   next_before_id: number | null;
 }
 
-export type TaskTimelineSource = "agent" | "generation" | "effect" | "blender";
+export type TaskTimelineSource =
+  | "agent"
+  | "requirement"
+  | "vision"
+  | "profile"
+  | "generation"
+  | "effect"
+  | "blender";
 export type TaskTimelineBillingStatus = "metered" | "not_billable" | "unknown";
 
 export interface TaskTimelineEvent {
