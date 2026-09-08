@@ -18,8 +18,7 @@ from app.services.product_asset_service import (
     product_asset_contract,
 )
 from app.services.product_eligibility import (
-    AVAILABILITY_STATUSES,
-    VERIFICATION_STATUSES,
+    PRODUCT_ELIGIBILITY_REASON_CODES,
     ProductDimensions,
     ProductEligibility,
     ProductEligibilityFacts,
@@ -220,6 +219,64 @@ def eligible_products(
             required_quantity=required_quantity,
         ).eligible
     ]
+
+
+def _status_counts(products: list[Product], attribute: str, fallback: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for product in products:
+        value = str(getattr(product, attribute, None) or fallback).strip() or fallback
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def build_catalog_readiness_summary(
+    db: Session,
+    *,
+    region: str,
+    at: datetime | None = None,
+) -> dict[str, Any]:
+    """按线上统一门禁汇总目录就绪度，不修改任何商品事实。"""
+    checked_at = _as_utc(at) or datetime.now(timezone.utc)
+    normalized_region = region.strip().upper()
+    if not normalized_region:
+        raise ValueError("region must not be empty")
+
+    products = list(db.scalars(select(Product).order_by(Product.id.asc())).all())
+    reason_code_counts = {
+        code: 0 for code in PRODUCT_ELIGIBILITY_REASON_CODES
+    }
+    eligible_total = 0
+    for product in products:
+        decision = is_product_eligible(
+            product,
+            at=checked_at,
+            region=normalized_region,
+        )
+        if decision.eligible:
+            eligible_total += 1
+        for reason_code in decision.reason_codes:
+            reason_code_counts.setdefault(reason_code, 0)
+            reason_code_counts[reason_code] += 1
+
+    total = len(products)
+    active_total = sum(bool(product.is_active) for product in products)
+    return {
+        "checked_at": checked_at,
+        "region": normalized_region,
+        "total": total,
+        "active_total": active_total,
+        "inactive_total": total - active_total,
+        "eligible_total": eligible_total,
+        "ineligible_total": total - eligible_total,
+        "verification_status_counts": _status_counts(
+            products, "verification_status", "draft"
+        ),
+        "availability_status_counts": _status_counts(
+            products, "availability_status", "unknown"
+        ),
+        "data_origin_counts": _status_counts(products, "data_origin", "unknown"),
+        "reason_code_counts": reason_code_counts,
+    }
 
 
 def _explicit_preferences(value: Any) -> list[str]:

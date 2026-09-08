@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { Box, ImagePlus, Loader2, Upload, X } from "lucide-react";
-import type { AdminProduct } from "@/api/designApi";
+import { ApiError, type AdminProduct } from "@/api/designApi";
 import {
   saveProduct,
   uploadProductImage,
@@ -17,6 +17,125 @@ const rooms = ["客厅", "卧室", "餐厅", "书房", "厨房", "阳台"];
 const styles = ["奶油风", "原木风", "现代简约", "北欧风", "轻奢风", "中古风", "日式风"];
 
 type Draft = Partial<AdminProduct> & { name: string; price: number };
+
+const verificationStatuses: Array<{
+  value: AdminProduct["verification_status"];
+  label: string;
+}> = [
+  { value: "draft", label: "待核验" },
+  { value: "verified", label: "已核验" },
+  { value: "rejected", label: "核验拒绝" },
+  { value: "expired", label: "核验过期" },
+];
+
+const availabilityStatuses: Array<{
+  value: AdminProduct["availability_status"];
+  label: string;
+}> = [
+  { value: "unknown", label: "未知" },
+  { value: "in_stock", label: "有库存" },
+  { value: "low_stock", label: "库存紧张" },
+  { value: "out_of_stock", label: "缺货" },
+  { value: "preorder", label: "预售" },
+];
+
+const dataOrigins = [
+  ["unknown", "未知"],
+  ["merchant_draft", "商家草稿"],
+  ["merchant", "商家提供"],
+  ["merchant_verified", "商家已核验"],
+  ["verified", "历史已核验（需复核）"],
+  ["public_reference", "公开参考"],
+  ["demo", "演示数据"],
+] as const;
+
+function toDatetimeLocalValue(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function fromDatetimeLocalValue(value: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+export function validateProductDraft(draft: Draft): string | null {
+  if (!draft.name.trim()) return "请填写产品名称";
+  if (!Number.isFinite(draft.price) || draft.price <= 0) return "请填写有效价格";
+  if (draft.price_max != null && draft.price_max < draft.price) {
+    return "价格上限不能低于参考价";
+  }
+  if (
+    draft.lead_time_days_min != null &&
+    draft.lead_time_days_max != null &&
+    draft.lead_time_days_min > draft.lead_time_days_max
+  ) {
+    return "最短交期不能大于最长交期";
+  }
+  if (
+    draft.price_valid_from &&
+    draft.price_valid_to &&
+    new Date(draft.price_valid_from) > new Date(draft.price_valid_to)
+  ) {
+    return "价格生效时间不能晚于失效时间";
+  }
+  if (draft.verification_status !== "verified") return null;
+
+  const missing: string[] = [];
+  if (!draft.data_origin || !["merchant", "merchant_verified"].includes(draft.data_origin)) {
+    missing.push("可核验商业来源");
+  }
+  if (!draft.source_name?.trim()) missing.push("来源名称");
+  if (!draft.source_url?.trim() && !draft.source_product_id?.trim()) {
+    missing.push("来源链接或商品编号");
+  }
+  if (!draft.source_retrieved_at) missing.push("来源采集时间");
+  if (!draft.price_observed_at) missing.push("价格观察时间");
+  if (!draft.region_codes?.length) missing.push("销售地区");
+  if (!draft.price_valid_from || !draft.price_valid_to) missing.push("价格有效期");
+  if (!draft.data_version?.trim() || draft.data_version.trim().toLowerCase().startsWith("draft")) {
+    missing.push("正式数据版本");
+  }
+  if (!draft.availability_status || draft.availability_status === "unknown") {
+    missing.push("可售状态");
+  }
+  if (missing.length) {
+    const list = missing.length === 1
+      ? missing[0]
+      : `${missing.slice(0, -1).join("、")}和${missing.at(-1)}`;
+    return `标记为已核验前，请补全${list}`;
+  }
+
+  if (
+    ["in_stock", "low_stock"].includes(draft.availability_status ?? "") &&
+    (!Number.isInteger(draft.stock_quantity) || (draft.stock_quantity ?? 0) <= 0)
+  ) {
+    return "有库存商品必须填写大于 0 的库存数量";
+  }
+  if (
+    draft.availability_status === "preorder" &&
+    (!(draft.lead_time_days_min && draft.lead_time_days_min > 0) ||
+      !(draft.lead_time_days_max && draft.lead_time_days_max > 0))
+  ) {
+    return "预售商品必须填写完整交期";
+  }
+  return null;
+}
+
+export function productSaveErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status === 409) {
+    return "商品已被其他运营人员更新，请关闭窗口并刷新后重试";
+  }
+  if (error instanceof ApiError && error.status === 422) {
+    if (typeof error.detail === "string") return error.detail;
+    return "商业核验信息未通过校验，请检查来源、库存、地区和有效期";
+  }
+  return error instanceof Error ? error.message : "保存失败，请稍后重试";
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -37,7 +156,19 @@ export default function ProductFormModal({
   onSaved: () => void;
 }) {
   const [draft, setDraft] = useState<Draft>(
-    initial ?? { name: "", price: 0, category: "沙发", room: "客厅", style: "奶油风" },
+    initial ?? {
+      name: "",
+      price: 0,
+      category: "沙发",
+      room: "客厅",
+      style: "奶油风",
+      data_origin: "merchant_draft",
+      verification_status: "draft",
+      availability_status: "unknown",
+      region_codes: [],
+      data_version: "draft-v1",
+      alternative_skus: [],
+    },
   );
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -57,7 +188,11 @@ export default function ProductFormModal({
   };
 
   const submit = async () => {
-    if (!draft.name.trim() || !draft.price) return;
+    const validationError = validateProductDraft(draft);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
     if (
       modelFile &&
       (!draft.model_width_mm ||
@@ -74,7 +209,7 @@ export default function ProductFormModal({
       if (modelFile) await uploadProductModel(saved.id, modelFile);
       onSaved();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "保存失败，请稍后重试");
+      setError(productSaveErrorMessage(caught));
     } finally {
       setSaving(false);
     }
@@ -92,14 +227,19 @@ export default function ProductFormModal({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         className="thin-scrollbar max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-cream-50 p-6 shadow-lift"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="product-form-title"
       >
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-stone-800">
+          <h3 id="product-form-title" className="text-lg font-semibold text-stone-800">
             {initial ? "编辑产品" : "新增产品"}
           </h3>
           <button
             type="button"
             onClick={onClose}
+            aria-label="关闭产品编辑窗口"
+            title="关闭"
             className="flex h-8 w-8 items-center justify-center rounded-full text-stone-400 hover:bg-cream-200 hover:text-stone-700"
           >
             <X className="h-4 w-4" />
@@ -211,6 +351,184 @@ export default function ProductFormModal({
                 value={draft.alternative ?? ""}
                 onChange={(e) => set({ alternative: e.target.value })}
                 placeholder="棉麻布艺款（更透气，价格低 500）"
+              />
+            </Field>
+          </div>
+          <div className="sm:col-span-2 border-t border-cream-300 pt-4">
+            <h4 className="text-sm font-semibold text-stone-700">商业事实与核验</h4>
+          </div>
+          <Field label="数据来源">
+            <select
+              className={inputClass}
+              value={draft.data_origin ?? "unknown"}
+              onChange={(event) => set({ data_origin: event.target.value as AdminProduct["data_origin"] })}
+            >
+              {dataOrigins.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="核验状态">
+            <select
+              className={inputClass}
+              value={draft.verification_status ?? "draft"}
+              onChange={(event) => set({
+                verification_status: event.target.value as AdminProduct["verification_status"],
+              })}
+            >
+              {verificationStatuses.map(({ value, label }) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="来源名称">
+            <input
+              className={inputClass}
+              value={draft.source_name ?? ""}
+              onChange={(event) => set({ source_name: event.target.value })}
+              placeholder="供应商目录 / 品牌官网"
+            />
+          </Field>
+          <Field label="来源商品编号">
+            <input
+              className={inputClass}
+              value={draft.source_product_id ?? ""}
+              onChange={(event) => set({ source_product_id: event.target.value })}
+              placeholder="供应商 SKU"
+            />
+          </Field>
+          <div className="sm:col-span-2">
+            <Field label="来源链接">
+              <input
+                type="url"
+                className={inputClass}
+                value={draft.source_url ?? ""}
+                onChange={(event) => set({ source_url: event.target.value })}
+                placeholder="https://..."
+              />
+            </Field>
+          </div>
+          <Field label="来源采集时间">
+            <input
+              type="datetime-local"
+              className={inputClass}
+              value={toDatetimeLocalValue(draft.source_retrieved_at)}
+              onChange={(event) => set({ source_retrieved_at: fromDatetimeLocalValue(event.target.value) })}
+            />
+          </Field>
+          <Field label="价格观察时间">
+            <input
+              type="datetime-local"
+              className={inputClass}
+              value={toDatetimeLocalValue(draft.price_observed_at)}
+              onChange={(event) => set({ price_observed_at: fromDatetimeLocalValue(event.target.value) })}
+            />
+          </Field>
+          <Field label="可售状态">
+            <select
+              className={inputClass}
+              value={draft.availability_status ?? "unknown"}
+              onChange={(event) => set({
+                availability_status: event.target.value as AdminProduct["availability_status"],
+              })}
+            >
+              {availabilityStatuses.map(({ value, label }) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="库存数量">
+            <input
+              type="number"
+              min="0"
+              className={inputClass}
+              value={draft.stock_quantity ?? ""}
+              onChange={(event) => set({
+                stock_quantity: event.target.value ? Number(event.target.value) : null,
+              })}
+            />
+          </Field>
+          <div className="sm:col-span-2">
+            <Field label="销售地区">
+              <input
+                className={inputClass}
+                value={(draft.region_codes ?? []).join(", ")}
+                onChange={(event) => set({
+                  region_codes: event.target.value
+                    .split(/[,，\s]+/)
+                    .map((code) => code.trim().toUpperCase())
+                    .filter(Boolean),
+                })}
+                placeholder="CN-SH, CN-ZJ；全国使用 *"
+              />
+            </Field>
+          </div>
+          <Field label="最短交期（天）">
+            <input
+              type="number"
+              min="0"
+              className={inputClass}
+              value={draft.lead_time_days_min ?? ""}
+              onChange={(event) => set({
+                lead_time_days_min: event.target.value ? Number(event.target.value) : null,
+              })}
+            />
+          </Field>
+          <Field label="最长交期（天）">
+            <input
+              type="number"
+              min="0"
+              className={inputClass}
+              value={draft.lead_time_days_max ?? ""}
+              onChange={(event) => set({
+                lead_time_days_max: event.target.value ? Number(event.target.value) : null,
+              })}
+            />
+          </Field>
+          <Field label="价格生效时间">
+            <input
+              type="datetime-local"
+              className={inputClass}
+              value={toDatetimeLocalValue(draft.price_valid_from)}
+              onChange={(event) => set({ price_valid_from: fromDatetimeLocalValue(event.target.value) })}
+            />
+          </Field>
+          <Field label="价格失效时间">
+            <input
+              type="datetime-local"
+              className={inputClass}
+              value={toDatetimeLocalValue(draft.price_valid_to)}
+              onChange={(event) => set({ price_valid_to: fromDatetimeLocalValue(event.target.value) })}
+            />
+          </Field>
+          <Field label="数据版本">
+            <input
+              className={inputClass}
+              value={draft.data_version ?? ""}
+              onChange={(event) => set({ data_version: event.target.value })}
+              placeholder="catalog-2026-q3"
+            />
+          </Field>
+          <Field label="替代 SKU">
+            <input
+              className={inputClass}
+              value={(draft.alternative_skus ?? []).join(", ")}
+              onChange={(event) => set({
+                alternative_skus: event.target.value
+                  .split(/[,，\s]+/)
+                  .map((sku) => sku.trim().toUpperCase())
+                  .filter(Boolean),
+              })}
+              placeholder="SOFA-009, SOFA-010"
+            />
+          </Field>
+          <div className="sm:col-span-2">
+            <Field label="价格备注">
+              <input
+                className={inputClass}
+                value={draft.price_note ?? ""}
+                onChange={(event) => set({ price_note: event.target.value })}
+                placeholder="含税 / 不含配送 / 活动价条件"
               />
             </Field>
           </div>

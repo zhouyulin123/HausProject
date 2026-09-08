@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from typing import Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field, HttpUrl, TypeAdapter, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,13 +17,17 @@ from app.api.dependencies import require_admin, require_factory
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import CustomQuoteRule, Product, User
+from app.schemas.catalog_readiness import CatalogReadinessResponse
 from app.schemas.product_asset import (
     ProductAssetCreate,
     ProductAssetListResponse,
     ProductAssetResponse,
     ProductAssetReview,
 )
-from app.services.catalog_service import is_product_eligible
+from app.services.catalog_service import (
+    build_catalog_readiness_summary,
+    is_product_eligible,
+)
 from app.services.glb_validation import GlbValidationError, validate_glb_upload
 from app.services import product_asset_service
 from app.services.product_asset_service import product_asset_contract
@@ -63,6 +67,90 @@ def _validate_product_lifecycle(product: Product) -> None:
         raise HTTPException(status_code=422, detail="价格生效时间不能晚于失效时间")
     if product.price_max is not None and product.price_max < product.price:
         raise HTTPException(status_code=422, detail="价格上限不能低于参考价")
+
+
+def _validate_commercial_verification(product: Product) -> None:
+    """核验状态必须由足以追责和判断可售性的商业事实支撑。"""
+    missing_fields: list[str] = []
+    if product.data_origin not in {"merchant", "merchant_verified"}:
+        missing_fields.append("data_origin")
+    if not (product.source_name or "").strip():
+        missing_fields.append("source_name")
+    if not (product.source_url or "").strip() and not (
+        product.source_product_id or ""
+    ).strip():
+        missing_fields.append("source_reference")
+    if product.source_retrieved_at is None:
+        missing_fields.append("source_retrieved_at")
+    if product.price_observed_at is None:
+        missing_fields.append("price_observed_at")
+    if product.price_valid_from is None or product.price_valid_to is None:
+        missing_fields.append("price_validity")
+    if not product.region_codes:
+        missing_fields.append("region_codes")
+    if product.availability_status in {None, "unknown"}:
+        missing_fields.append("availability_status")
+    elif product.availability_status in {"in_stock", "low_stock"} and (
+        product.stock_quantity is None or product.stock_quantity <= 0
+    ):
+        missing_fields.append("stock_quantity")
+    elif product.availability_status == "preorder" and (
+        not product.lead_time_days_min
+        or not product.lead_time_days_max
+        or product.lead_time_days_min > product.lead_time_days_max
+    ):
+        missing_fields.append("lead_time")
+    if not (product.data_version or "").strip() or product.data_version.lower().startswith(
+        "draft"
+    ):
+        missing_fields.append("data_version")
+    if missing_fields:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "commercial_evidence_incomplete",
+                "message": "商品商业核验事实不完整",
+                "missing_fields": missing_fields,
+            },
+        )
+
+
+def _validate_source_url(value: HttpUrl | str | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    normalized = str(TypeAdapter(HttpUrl).validate_python(value))
+    if len(normalized) > 500:
+        raise ValueError("来源地址不能超过 500 个字符")
+    return normalized
+
+
+def _validate_timezone_aware(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        raise ValueError("来源时间必须包含时区")
+    return value
+
+
+def _product_values_equal(current: object, requested: object) -> bool:
+    if isinstance(current, datetime) and isinstance(requested, datetime):
+        def normalized(value: datetime) -> datetime:
+            if value.tzinfo is None:
+                return value
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+        return normalized(current) == normalized(requested)
+    if isinstance(current, list) and isinstance(requested, list):
+        return [str(item).strip().upper() for item in current] == [
+            str(item).strip().upper() for item in requested
+        ]
+    return current == requested
+
+
+def _response_datetime(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
 
 
 def _product_to_dict(
@@ -138,9 +226,9 @@ def _product_to_dict(
             else public_model_source
         ),
         "model_reviewed_at": (
-            p.model_reviewed_at
+            _response_datetime(p.model_reviewed_at)
             if expose_pending_model
-            else public_model_reviewed_at
+            else _response_datetime(public_model_reviewed_at)
         ),
         "model_reviewed_by": (
             p.model_reviewed_by
@@ -153,8 +241,8 @@ def _product_to_dict(
         "source_name": p.source_name,
         "source_url": p.source_url,
         "source_product_id": p.source_product_id,
-        "source_retrieved_at": p.source_retrieved_at,
-        "price_observed_at": p.price_observed_at,
+        "source_retrieved_at": _response_datetime(p.source_retrieved_at),
+        "price_observed_at": _response_datetime(p.price_observed_at),
         "price_note": p.price_note,
         "source_metadata": p.source_metadata,
         "verification_status": p.verification_status,
@@ -163,9 +251,9 @@ def _product_to_dict(
         "stock_quantity": p.stock_quantity,
         "lead_time_days_min": p.lead_time_days_min,
         "lead_time_days_max": p.lead_time_days_max,
-        "price_valid_from": p.price_valid_from,
-        "price_valid_to": p.price_valid_to,
-        "verified_at": p.verified_at,
+        "price_valid_from": _response_datetime(p.price_valid_from),
+        "price_valid_to": _response_datetime(p.price_valid_to),
+        "verified_at": _response_datetime(p.verified_at),
         "verified_by": p.verified_by,
         "data_version": p.data_version,
         "record_version": p.record_version,
@@ -195,6 +283,51 @@ def list_products(
         stmt = stmt.where(Product.style == style)
     products = db.scalars(stmt.order_by(Product.id)).all()
     return {"products": [_product_to_dict(p) for p in products]}
+
+
+@router.get("/admin/catalog")
+def list_managed_products(
+    verification_status: Optional[
+        Literal["draft", "verified", "rejected", "expired"]
+    ] = None,
+    data_origin: Optional[str] = None,
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_factory),
+):
+    """返回商品审核所需的完整记录（包括待审核图片/模型资产）。"""
+    stmt = select(Product)
+    if not include_inactive:
+        stmt = stmt.where(Product.is_active.is_(True))
+    if verification_status:
+        stmt = stmt.where(Product.verification_status == verification_status)
+    if data_origin:
+        stmt = stmt.where(Product.data_origin == data_origin.strip())
+    products = db.scalars(stmt.order_by(Product.id)).all()
+    return {
+        "products": [
+            _product_to_dict(product, expose_pending_model=True)
+            for product in products
+        ],
+        "count": len(products),
+    }
+
+
+@router.get("/admin/readiness", response_model=CatalogReadinessResponse)
+def get_catalog_readiness(
+    region: str = Query(
+        ...,
+        min_length=2,
+        max_length=20,
+        pattern=r"^[A-Za-z0-9*-]+$",
+    ),
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_factory),
+) -> CatalogReadinessResponse:
+    """按指定交付地区返回商品目录的只读门禁缺口。"""
+    return CatalogReadinessResponse.model_validate(
+        build_catalog_readiness_summary(db, region=region)
+    )
 
 
 @router.get("/meta")
@@ -260,6 +393,22 @@ class ProductCreate(BaseModel):
     selling_point: Optional[str] = None
     alternative: Optional[str] = None
     image_url: Optional[str] = None
+    data_origin: Literal[
+        "unknown",
+        "merchant",
+        "merchant_draft",
+        "merchant_verified",
+        "verified",
+        "demo",
+        "public_reference",
+    ] = "unknown"
+    source_name: Optional[str] = Field(default=None, max_length=100)
+    source_url: Optional[str] = None
+    source_product_id: Optional[str] = Field(default=None, max_length=100)
+    source_retrieved_at: Optional[datetime] = None
+    price_observed_at: Optional[datetime] = None
+    price_note: Optional[str] = Field(default=None, max_length=500)
+    source_metadata: Optional[dict[str, object]] = None
     model_width_mm: Optional[int] = Field(default=None, gt=0)
     model_height_mm: Optional[int] = Field(default=None, gt=0)
     model_depth_mm: Optional[int] = Field(default=None, gt=0)
@@ -278,6 +427,21 @@ class ProductCreate(BaseModel):
     data_version: str = Field(default="draft-v1", min_length=1, max_length=100)
     alternative_skus: list[str] = Field(default_factory=list, max_length=100)
 
+    @field_validator("source_url", mode="before")
+    @classmethod
+    def validate_source_url(cls, value):
+        return _validate_source_url(value)
+
+    @field_validator(
+        "source_retrieved_at",
+        "price_observed_at",
+        "price_valid_from",
+        "price_valid_to",
+    )
+    @classmethod
+    def validate_timestamps(cls, value):
+        return _validate_timezone_aware(value)
+
 
 @router.post("")
 def create_product(
@@ -288,6 +452,7 @@ def create_product(
     payload = data.model_dump()
     product = Product(**payload)
     if product.verification_status == "verified":
+        _validate_commercial_verification(product)
         product.verified_at = datetime.now(timezone.utc)
         product.verified_by = f"user:{_user.id}"
     _validate_product_lifecycle(product)
@@ -298,6 +463,7 @@ def create_product(
 
 
 class ProductUpdate(BaseModel):
+    record_version: int = Field(gt=0)
     name: Optional[str] = None
     category: Optional[str] = None
     room: Optional[str] = None
@@ -310,6 +476,24 @@ class ProductUpdate(BaseModel):
     selling_point: Optional[str] = None
     alternative: Optional[str] = None
     image_url: Optional[str] = None
+    data_origin: Optional[
+        Literal[
+            "unknown",
+            "merchant",
+            "merchant_draft",
+            "merchant_verified",
+            "verified",
+            "demo",
+            "public_reference",
+        ]
+    ] = None
+    source_name: Optional[str] = Field(default=None, max_length=100)
+    source_url: Optional[str] = None
+    source_product_id: Optional[str] = Field(default=None, max_length=100)
+    source_retrieved_at: Optional[datetime] = None
+    price_observed_at: Optional[datetime] = None
+    price_note: Optional[str] = Field(default=None, max_length=500)
+    source_metadata: Optional[dict[str, object]] = None
     model_width_mm: Optional[int] = Field(default=None, gt=0)
     model_height_mm: Optional[int] = Field(default=None, gt=0)
     model_depth_mm: Optional[int] = Field(default=None, gt=0)
@@ -330,6 +514,21 @@ class ProductUpdate(BaseModel):
     data_version: Optional[str] = Field(default=None, min_length=1, max_length=100)
     alternative_skus: Optional[list[str]] = Field(default=None, max_length=100)
 
+    @field_validator("source_url", mode="before")
+    @classmethod
+    def validate_source_url(cls, value):
+        return _validate_source_url(value)
+
+    @field_validator(
+        "source_retrieved_at",
+        "price_observed_at",
+        "price_valid_from",
+        "price_valid_to",
+    )
+    @classmethod
+    def validate_timestamps(cls, value):
+        return _validate_timezone_aware(value)
+
 
 @router.patch("/{product_id}")
 def update_product(
@@ -338,11 +537,43 @@ def update_product(
     _user: User = Depends(require_factory),
     db: Session = Depends(get_db),
 ):
-    product = db.get(Product, product_id)
+    product = db.scalar(
+        select(Product)
+        .where(Product.id == product_id)
+        .with_for_update()
+    )
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    changes = data.model_dump(exclude_unset=True)
+    submitted = data.model_dump(exclude_unset=True)
+    expected_record_version = submitted.pop("record_version")
+    if expected_record_version != product.record_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "record_version_conflict",
+                "message": "商品已被其他运营人员更新，请刷新后重试",
+                "expected_record_version": expected_record_version,
+                "current_record_version": product.record_version,
+            },
+        )
+    requested_verification = submitted.get("verification_status")
+    changes = {
+        key: value
+        for key, value in submitted.items()
+        if not _product_values_equal(getattr(product, key), value)
+    }
+    if not changes:
+        return _product_to_dict(product, expose_pending_model=True)
+
     commercial_fields = {
+        "data_origin",
+        "source_name",
+        "source_url",
+        "source_product_id",
+        "source_retrieved_at",
+        "price_observed_at",
+        "price_note",
+        "source_metadata",
         "price",
         "price_max",
         "availability_status",
@@ -367,11 +598,24 @@ def update_product(
     for k, v in changes.items():
         setattr(product, k, v)
     product.record_version = (product.record_version or 1) + 1
-    if changes.get("verification_status") == "verified":
+    commercial_changed = bool(commercial_fields.intersection(changes))
+    if commercial_changed:
+        product.verification_status = "draft"
+        product.verified_at = None
+        product.verified_by = None
+
+    _validate_product_lifecycle(product)
+    if requested_verification == "verified":
+        _validate_commercial_verification(product)
+        product.verification_status = "verified"
         product.verified_at = datetime.now(timezone.utc)
         product.verified_by = f"user:{_user.id}"
-    elif commercial_fields.intersection(changes):
-        product.verification_status = "draft"
+    elif requested_verification in {
+        "draft",
+        "rejected",
+        "expired",
+    }:
+        product.verification_status = requested_verification
         product.verified_at = None
         product.verified_by = None
     if model_review_fields.intersection(changes) and product.model_url:
@@ -379,7 +623,6 @@ def update_product(
         product.model_reviewed_at = None
         product.model_reviewed_by = None
         product.model_review_note = None
-    _validate_product_lifecycle(product)
     db.commit()
     db.refresh(product)
     return _product_to_dict(product, expose_pending_model=True)

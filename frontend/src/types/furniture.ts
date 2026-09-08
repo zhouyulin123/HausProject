@@ -1,6 +1,7 @@
 export type FurnitureDataOrigin =
   | "merchant"
   | "merchant_draft"
+  | "merchant_verified"
   | "public_reference"
   | "verified"
   | "demo"

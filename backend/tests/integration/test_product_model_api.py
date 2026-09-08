@@ -133,7 +133,7 @@ def test_upload_product_model_requires_license_and_source(product_api):
     client, upload_dir = product_api
     assert client.patch(
         "/api/products/1",
-        json={"model_license": "", "model_source": ""},
+        json={"record_version": 1, "model_license": "", "model_source": ""},
     ).status_code == 200
 
     response = client.post(
@@ -182,6 +182,11 @@ def test_product_lifecycle_fields_round_trip_and_verifier_is_server_owned(produc
             "model_width_mm": 1600,
             "model_depth_mm": 850,
             "model_height_mm": 750,
+            "data_origin": "merchant",
+            "source_name": "供应商目录",
+            "source_product_id": "TABLE-001",
+            "source_retrieved_at": "2026-09-01T00:00:00Z",
+            "price_observed_at": "2026-09-01T00:00:00Z",
         },
     )
 
@@ -197,7 +202,11 @@ def test_product_lifecycle_fields_round_trip_and_verifier_is_server_owned(produc
 
     verified = client.patch(
         f"/api/products/{body['id']}",
-        json={"verification_status": "verified", "verified_by": "spoofed-user"},
+        json={
+            "record_version": body["record_version"],
+            "verification_status": "verified",
+            "verified_by": "spoofed-user",
+        },
     )
 
     assert verified.status_code == 200
@@ -205,6 +214,263 @@ def test_product_lifecycle_fields_round_trip_and_verifier_is_server_owned(produc
     assert verified.json()["verified_by"] == "user:999"
     assert verified.json()["verified_at"] is not None
     assert verified.json()["record_version"] == 2
+    unchanged = client.patch(
+        f"/api/products/{body['id']}",
+        json={
+            "record_version": verified.json()["record_version"],
+            "price": verified.json()["price"],
+            "region_codes": verified.json()["region_codes"],
+            "price_valid_from": verified.json()["price_valid_from"],
+            "price_valid_to": verified.json()["price_valid_to"],
+            "verification_status": "verified",
+        },
+    )
+    assert unchanged.status_code == 200
+    assert unchanged.json()["record_version"] == 2
+    assert unchanged.json()["verified_at"] == verified.json()["verified_at"]
+
+
+@pytest.mark.integration
+def test_product_verification_rejects_incomplete_commercial_evidence(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products",
+        json={
+            "sku": "VERIFY-INCOMPLETE-001",
+            "name": "商业事实不完整商品",
+            "category": "餐桌",
+            "room": "餐厅",
+            "style": "现代简约",
+            "price": 3200,
+            "model_width_mm": 1600,
+            "model_depth_mm": 850,
+            "model_height_mm": 750,
+        },
+    ).json()
+
+    response = client.patch(
+        f"/api/products/{created['id']}",
+        json={
+            "record_version": created["record_version"],
+            "verification_status": "verified",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "commercial_evidence_incomplete"
+    assert set(response.json()["detail"]["missing_fields"]) == {
+        "data_origin",
+        "source_name",
+        "source_reference",
+        "source_retrieved_at",
+        "price_observed_at",
+        "price_validity",
+        "region_codes",
+        "availability_status",
+        "data_version",
+    }
+
+
+@pytest.mark.integration
+def test_product_verification_rejects_draft_origin_and_missing_stock(product_api):
+    client, _ = product_api
+    response = client.post(
+        "/api/products",
+        json={
+            "sku": "VERIFY-DRAFT-001",
+            "name": "仍为草稿来源的商品",
+            "category": "沙发",
+            "room": "客厅",
+            "style": "现代简约",
+            "price": 4999,
+            "data_origin": "merchant_draft",
+            "source_name": "供应商目录",
+            "source_product_id": "VERIFY-DRAFT-001",
+            "source_retrieved_at": "2026-09-01T00:00:00Z",
+            "price_observed_at": "2026-09-01T00:00:00Z",
+            "availability_status": "in_stock",
+            "region_codes": ["CN-SH"],
+            "price_valid_from": "2026-09-01T00:00:00Z",
+            "price_valid_to": "2026-12-31T23:59:59Z",
+            "data_version": "supplier-2026-q3",
+            "verification_status": "verified",
+        },
+    )
+
+    assert response.status_code == 422
+    assert set(response.json()["detail"]["missing_fields"]) == {
+        "data_origin",
+        "stock_quantity",
+    }
+
+
+@pytest.mark.integration
+def test_product_management_list_exposes_pending_and_inactive_records(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products",
+        json={
+            "sku": "MANAGE-DRAFT-001",
+            "name": "待核验管理商品",
+            "category": "沙发",
+            "room": "客厅",
+            "style": "现代简约",
+            "price": 4200,
+            "data_origin": "merchant_draft",
+            "source_name": "供应商商品表",
+            "source_url": "https://supplier.example/products/sofa-001",
+            "source_product_id": "SOFA-001",
+            "source_retrieved_at": "2026-09-08T08:00:00Z",
+            "price_observed_at": "2026-09-08T08:00:00Z",
+            "price_note": "待人工核验",
+        },
+    )
+    assert created.status_code == 200
+    product_id = created.json()["id"]
+    assert client.delete(f"/api/products/{product_id}").status_code == 200
+
+    managed = client.get("/api/products/admin/catalog")
+
+    assert managed.status_code == 200
+    assert all(item["id"] != product_id for item in managed.json()["products"])
+    managed = client.get("/api/products/admin/catalog?include_inactive=true")
+    record = next(
+        item for item in managed.json()["products"] if item["id"] == product_id
+    )
+    assert record["verification_status"] == "draft"
+    assert record["source_url"] == "https://supplier.example/products/sofa-001"
+    assert record["eligibility"]["reason_codes"]
+
+
+@pytest.mark.integration
+def test_product_source_fields_are_validated_and_reset_verification(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products",
+        json={
+            "sku": "SOURCE-001",
+            "name": "来源事实商品",
+            "category": "餐桌",
+            "room": "餐厅",
+            "style": "原木风",
+            "price": 3200,
+            "data_origin": "merchant",
+            "source_name": "供应商目录",
+            "source_url": "https://supplier.example/products/table-001",
+            "source_product_id": "TABLE-001",
+            "source_retrieved_at": "2026-09-08T08:00:00+08:00",
+            "price_observed_at": "2026-09-08T08:00:00+08:00",
+            "price_note": "含税报价，待确认库存",
+            "availability_status": "in_stock",
+            "stock_quantity": 8,
+            "region_codes": ["CN-SH"],
+            "price_valid_from": "2026-09-01T00:00:00Z",
+            "price_valid_to": "2026-12-31T23:59:59Z",
+            "data_version": "supplier-2026-q3",
+            "verification_status": "verified",
+        },
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body["source_product_id"] == "TABLE-001"
+    assert body["verified_by"] == "user:999"
+
+    changed = client.patch(
+        f"/api/products/{body['id']}",
+        json={
+            "record_version": body["record_version"],
+            "source_url": "https://supplier.example/products/table-002",
+            "verification_status": "verified",
+        },
+    )
+    assert changed.status_code == 200
+    assert changed.json()["verification_status"] == "verified"
+    assert changed.json()["verified_at"] is not None
+    assert changed.json()["verified_by"] == "user:999"
+    downgraded = client.patch(
+        f"/api/products/{body['id']}",
+        json={"record_version": changed.json()["record_version"], "price": 3300},
+    )
+    assert downgraded.status_code == 200
+    assert downgraded.json()["verification_status"] == "draft"
+    assert downgraded.json()["verified_at"] is None
+    assert downgraded.json()["verified_by"] is None
+    stale = client.patch(
+        f"/api/products/{body['id']}",
+        json={"record_version": body["record_version"], "price": 3300},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["current_record_version"] == 3
+
+    rejected = client.patch(
+        f"/api/products/{body['id']}",
+        json={
+            "record_version": downgraded.json()["record_version"],
+            "price_note": "供应商价格证据不一致",
+            "verification_status": "rejected",
+        },
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["verification_status"] == "rejected"
+    assert rejected.json()["verified_at"] is None
+    assert rejected.json()["verified_by"] is None
+
+    cleared_url = client.patch(
+        f"/api/products/{body['id']}",
+        json={
+            "record_version": rejected.json()["record_version"],
+            "source_url": "",
+            "source_product_id": "TABLE-OFFLINE-001",
+            "verification_status": "verified",
+        },
+    )
+    assert cleared_url.status_code == 200
+    assert cleared_url.json()["source_url"] is None
+    assert cleared_url.json()["source_product_id"] == "TABLE-OFFLINE-001"
+    assert cleared_url.json()["verification_status"] == "verified"
+
+    legacy_origin = client.patch(
+        f"/api/products/{body['id']}",
+        json={
+            "record_version": cleared_url.json()["record_version"],
+            "data_origin": "verified",
+            "verification_status": "draft",
+        },
+    )
+    assert legacy_origin.status_code == 200
+    assert legacy_origin.json()["data_origin"] == "verified"
+    assert legacy_origin.json()["verification_status"] == "draft"
+
+    assert (
+        client.post(
+            "/api/products",
+            json={
+                "sku": "SOURCE-BAD-URL",
+                "name": "非法来源地址",
+                "category": "餐桌",
+                "room": "餐厅",
+                "style": "原木风",
+                "price": 3200,
+                "source_url": "not-a-url",
+            },
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/api/products",
+            json={
+                "sku": "SOURCE-NAIVE-TIME",
+                "name": "无时区来源时间",
+                "category": "餐桌",
+                "room": "餐厅",
+                "style": "原木风",
+                "price": 3200,
+                "source_retrieved_at": "2026-09-08T08:00:00",
+            },
+        ).status_code
+        == 422
+    )
 
 
 @pytest.mark.integration

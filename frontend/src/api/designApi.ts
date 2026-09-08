@@ -151,6 +151,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return rawRequest<T>(path, { ...init, headers });
 }
 
+async function factoryRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  const token = readToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return rawRequest<T>(path, { ...init, headers });
+}
+
 // ---------------------------------------------------------------- 视觉装饰
 // 后端返回的方案不含渐变占位图信息，由前端按风格关键词补齐
 
@@ -548,6 +555,50 @@ export interface AdminProduct {
   model_reviewed_at: string | null;
   model_reviewed_by: string | null;
   model_review_note: string | null;
+  data_origin: FurnitureDataOrigin;
+  source_name: string | null;
+  source_url: string | null;
+  source_product_id: string | null;
+  source_retrieved_at: string | null;
+  price_observed_at: string | null;
+  price_note: string | null;
+  source_metadata: Record<string, unknown> | null;
+  verification_status: "draft" | "verified" | "rejected" | "expired";
+  availability_status:
+    | "in_stock"
+    | "low_stock"
+    | "out_of_stock"
+    | "preorder"
+    | "unknown";
+  region_codes: string[];
+  stock_quantity: number | null;
+  lead_time_days_min: number | null;
+  lead_time_days_max: number | null;
+  price_valid_from: string | null;
+  price_valid_to: string | null;
+  verified_at: string | null;
+  verified_by: string | null;
+  data_version: string;
+  record_version: number;
+  alternative_skus: string[];
+  eligibility: {
+    eligible: boolean;
+    reason_codes: string[];
+  };
+}
+
+export interface AdminCatalogReadiness {
+  checked_at: string;
+  region: string;
+  total: number;
+  active_total: number;
+  inactive_total: number;
+  eligible_total: number;
+  ineligible_total: number;
+  verification_status_counts: Record<string, number>;
+  availability_status_counts: Record<string, number>;
+  data_origin_counts: Record<string, number>;
+  reason_code_counts: Record<string, number>;
 }
 
 export interface QuoteRule {
@@ -569,33 +620,48 @@ export interface QuoteRule {
 }
 
 export async function fetchAdminProducts(): Promise<AdminProduct[]> {
-  const data = await request<{ products: AdminProduct[] }>("/api/products");
+  const data = await factoryRequest<{ products: AdminProduct[]; count: number }>(
+    "/api/products/admin/catalog",
+  );
   return data.products;
+}
+
+export async function fetchAdminCatalogReadiness(
+  region: string,
+): Promise<AdminCatalogReadiness> {
+  const normalizedRegion = region.trim().toUpperCase();
+  const query = new URLSearchParams({ region: normalizedRegion });
+  return factoryRequest<AdminCatalogReadiness>(
+    `/api/products/admin/readiness?${query.toString()}`,
+  );
 }
 
 export async function saveProduct(
   product: Partial<AdminProduct> & { name: string; price: number },
 ): Promise<AdminProduct> {
   if (product.id) {
-    return request<AdminProduct>(`/api/products/${product.id}`, {
+    if (!Number.isInteger(product.record_version) || !product.record_version) {
+      throw new Error("编辑商品缺少记录版本，请刷新目录后重试");
+    }
+    return factoryRequest<AdminProduct>(`/api/products/${product.id}`, {
       method: "PATCH",
       body: JSON.stringify(product),
     });
   }
-  return request<AdminProduct>("/api/products", {
+  return factoryRequest<AdminProduct>("/api/products", {
     method: "POST",
     body: JSON.stringify(product),
   });
 }
 
 export async function deleteProduct(id: number): Promise<void> {
-  await request(`/api/products/${id}`, { method: "DELETE" });
+  await factoryRequest(`/api/products/${id}`, { method: "DELETE" });
 }
 
 export async function uploadProductImage(file: File): Promise<string> {
   const form = new FormData();
   form.append("file", file);
-  const data = await request<{ image_url: string }>("/api/products/upload-image", {
+  const data = await factoryRequest<{ image_url: string }>("/api/products/upload-image", {
     method: "POST",
     body: form,
   });
@@ -608,7 +674,7 @@ export async function uploadProductModel(
 ): Promise<AdminProduct> {
   const form = new FormData();
   form.append("file", file);
-  return request<AdminProduct>(`/api/products/${productId}/model`, {
+  return factoryRequest<AdminProduct>(`/api/products/${productId}/model`, {
     method: "POST",
     body: form,
   });
@@ -619,14 +685,14 @@ export async function reviewProductModel(
   decision: "approve" | "reject",
   note?: string,
 ): Promise<AdminProduct> {
-  return request<AdminProduct>(`/api/products/${productId}/model-review`, {
+  return factoryRequest<AdminProduct>(`/api/products/${productId}/model-review`, {
     method: "POST",
     body: JSON.stringify({ decision, note: note || null }),
   });
 }
 
 export async function fetchQuoteRules(): Promise<QuoteRule[]> {
-  const data = await request<{ rules: QuoteRule[] }>("/api/products/quote-rules");
+  const data = await factoryRequest<{ rules: QuoteRule[] }>("/api/products/quote-rules");
   return data.rules;
 }
 
@@ -634,12 +700,12 @@ export async function saveQuoteRule(
   rule: Partial<QuoteRule> & { project_name: string; unit_price: number },
 ): Promise<void> {
   if (rule.id) {
-    await request(`/api/products/quote-rules/${rule.id}`, {
+    await factoryRequest(`/api/products/quote-rules/${rule.id}`, {
       method: "PATCH",
       body: JSON.stringify(rule),
     });
   } else {
-    await request("/api/products/quote-rules", {
+    await factoryRequest("/api/products/quote-rules", {
       method: "POST",
       body: JSON.stringify(rule),
     });
@@ -647,7 +713,7 @@ export async function saveQuoteRule(
 }
 
 export async function deleteQuoteRule(id: number): Promise<void> {
-  await request(`/api/products/quote-rules/${id}`, { method: "DELETE" });
+  await factoryRequest(`/api/products/quote-rules/${id}`, { method: "DELETE" });
 }
 
 // ---------------------------------------------------------------- 店铺设置

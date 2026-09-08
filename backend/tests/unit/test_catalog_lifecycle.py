@@ -65,6 +65,8 @@ def _product(sku: str, **overrides) -> Product:
         ({"verification_status": "rejected"}, "verification_rejected"),
         ({"verification_status": "expired"}, "verification_expired"),
         ({"data_origin": "public_reference"}, "public_reference"),
+        ({"data_origin": "unknown"}, "provenance_unverified"),
+        ({"data_origin": "demo"}, "provenance_unverified"),
         ({"availability_status": "out_of_stock", "stock_quantity": 0}, "out_of_stock"),
         ({"availability_status": "unknown"}, "availability_unknown"),
         ({"price_valid_from": NOW + timedelta(seconds=1)}, "price_not_started"),

@@ -10,6 +10,28 @@ VERIFICATION_STATUSES = frozenset({"draft", "verified", "rejected", "expired"})
 AVAILABILITY_STATUSES = frozenset(
     {"in_stock", "low_stock", "out_of_stock", "preorder", "unknown"}
 )
+PRODUCT_ELIGIBILITY_REASON_CODES = (
+    "inactive",
+    "public_reference",
+    "provenance_unverified",
+    "verification_required",
+    "verification_rejected",
+    "verification_expired",
+    "verification_invalid",
+    "out_of_stock",
+    "availability_unknown",
+    "lead_time_unknown",
+    "availability_invalid",
+    "insufficient_stock",
+    "price_validity_unknown",
+    "price_not_started",
+    "price_expired",
+    "region_required",
+    "region_unavailable",
+    "dimensions_missing",
+    "dimensions_exceeded",
+    "budget_exceeded",
+)
 
 
 @dataclass(frozen=True)
@@ -68,6 +90,10 @@ def evaluate_product_eligibility(
         reasons.append("inactive")
     if facts.data_origin == "public_reference":
         reasons.append("public_reference")
+    elif facts.data_origin not in {"merchant", "merchant_verified", "verified"} and not (
+        policy.allow_draft and facts.data_origin == "merchant_draft"
+    ):
+        reasons.append("provenance_unverified")
 
     verification = facts.verification_status or "draft"
     if verification == "draft" and not policy.allow_draft:
