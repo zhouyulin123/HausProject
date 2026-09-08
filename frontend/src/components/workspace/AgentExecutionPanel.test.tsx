@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AgentExecutionState } from "@/types/agent";
+import type { TaskTimelineResponse } from "@/api/designApi";
 import AgentExecutionPanel from "./AgentExecutionPanel";
 
 const execution: AgentExecutionState = {
@@ -105,5 +106,78 @@ describe("Agent 执行状态区", () => {
     expect(html).toContain('data-event-id="25"');
     expect(html).toContain("第一轮工具");
     expect(html).toContain("第二轮工具");
+  });
+
+  it("展示超过四条的跨来源统一时间线、状态、时间和加载更多入口", () => {
+    const timeline: TaskTimelineResponse = {
+      task_id: 42,
+      events: [
+        [1, "agent", "需求理解完成", "not_billable"],
+        [2, "generation", "方案生成排队", "unknown"],
+        [3, "generation", "方案生成完成", "metered"],
+        [4, "effect", "效果图开始渲染", "unknown"],
+        [5, "blender", "三维资产进入队列", "not_billable"],
+        [6, "effect", "效果图渲染完成", "metered"],
+      ].map(([id, source, summary, billing]) => ({
+        event_id: id as number,
+        source_type: source as "agent" | "generation" | "effect" | "blender",
+        source_id: id as number,
+        attempt: id === 3 ? 2 : null,
+        event_code: `${source}.event`,
+        summary: summary as string,
+        billing_status: billing as "metered" | "not_billable" | "unknown",
+        cost_cny: billing === "metered" ? 0.6 : null,
+        occurred_at: `2026-09-08T09:0${id}:00Z`,
+      })),
+      next_cursor: 6,
+      known_cost_cny: 1.2,
+      has_unknown_cost: true,
+      unknown_cost_event_count: 2,
+    };
+    const html = renderToStaticMarkup(
+      <AgentExecutionPanel
+        status="running"
+        exitReason={null}
+        execution={execution}
+        timeline={timeline}
+        timelineLoading={false}
+        onLoadMore={() => undefined}
+      />,
+    );
+
+    for (const event of timeline.events) expect(html).toContain(event.summary);
+    expect(html).toContain("方案生成");
+    expect(html).toContain("效果图");
+    expect(html).toContain("3D 渲染");
+    expect(html).toContain("计费未知");
+    expect(html).toContain("09:06");
+    expect(html).toContain("¥1.20");
+    expect(html).toContain("另有 2 项未知成本");
+    expect(html).toContain("加载更多");
+  });
+
+  it("总账只有未知成本时不显示零元，并明确时间线加载状态", () => {
+    const html = renderToStaticMarkup(
+      <AgentExecutionPanel
+        status="running"
+        exitReason={null}
+        execution={{ ...execution, costCny: 9.99 }}
+        timeline={{
+          task_id: 42,
+          events: [],
+          next_cursor: null,
+          known_cost_cny: null,
+          has_unknown_cost: true,
+          unknown_cost_event_count: 1,
+        }}
+        timelineLoading
+      />,
+    );
+
+    expect(html).toContain("尚无已知成本");
+    expect(html).toContain("另有 1 项未知成本");
+    expect(html).toContain("正在加载时间线");
+    expect(html).not.toContain("¥0.00");
+    expect(html).not.toContain("¥9.99");
   });
 });
