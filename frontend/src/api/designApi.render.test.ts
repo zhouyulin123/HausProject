@@ -35,17 +35,29 @@ describe("异步效果图 API", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(response({ session_id: "session-a" }))
-      .mockResolvedValueOnce(response({ job_id: 12, status: "queued", progress: 0 }, 202));
+      .mockResolvedValueOnce(response({
+        job_id: 12,
+        status: "queued",
+        progress: 0,
+        scene_id: 9,
+        scene_version: 3,
+      }, 202));
     vi.stubGlobal("window", { localStorage: storage });
     vi.stubGlobal("fetch", fetchMock);
 
     const { queueEffectRender } = await import("./designApi");
 
-    const job = await queueEffectRender(42, "render-key-1");
+    const job = await queueEffectRender(42, 9, 3, "render-key-1");
 
     expect(job.jobId).toBe(12);
+    expect(job).toMatchObject({ sceneId: 9, sceneVersion: 3 });
     const [, request] = fetchMock.mock.calls.at(-1)!;
     expect(new Headers(request.headers).get("Idempotency-Key")).toBe("render-key-1");
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      plan_version_id: 42,
+      scene_id: 9,
+      scene_version: 3,
+    });
   });
 
   it("支持按 Job、方案版本恢复以及取消", async () => {
@@ -55,9 +67,9 @@ describe("异步效果图 API", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(response({ session_id: "session-a" }))
-      .mockResolvedValueOnce(response({ job_id: 12, status: "running", progress: 50 }))
-      .mockResolvedValueOnce(response({ job_id: 12, status: "completed", progress: 100, image_url: "/uploads/a.png", mode: "text2img" }))
-      .mockResolvedValueOnce(response({ job_id: 12, status: "cancelled", progress: 100 }));
+      .mockResolvedValueOnce(response({ job_id: 12, status: "running", progress: 50, scene_id: 9, scene_version: 3 }))
+      .mockResolvedValueOnce(response({ job_id: 12, status: "completed", progress: 100, image_url: "/uploads/a.png", mode: "text2img", scene_id: 9, scene_version: 3 }))
+      .mockResolvedValueOnce(response({ job_id: 12, status: "cancelled", progress: 100, scene_id: 9, scene_version: 3 }));
     vi.stubGlobal("window", { localStorage: storage });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -68,7 +80,10 @@ describe("异步效果图 API", () => {
     } = await import("./designApi");
 
     expect((await fetchEffectRender(12)).status).toBe("running");
-    expect((await fetchLatestEffectRender(42))?.imageUrl).toBe("/uploads/a.png");
+    expect((await fetchLatestEffectRender(42, 9, 3))?.imageUrl).toBe("/uploads/a.png");
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      "/api/design/render?plan_version_id=42&scene_id=9&scene_version=3",
+    );
     expect((await cancelEffectRender(12)).status).toBe("cancelled");
   });
 });
