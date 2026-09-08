@@ -29,6 +29,7 @@ jobs:
       EVAL_REPORT_SIGNING_KEY_ID: ${{ secrets.EVAL_REPORT_SIGNING_KEY_ID }}
       DATABASE_URL: ${{ secrets.REAL_WORLD_EVAL_DATABASE_URL }}
       LLM_MODEL: ${{ secrets.REAL_WORLD_EVAL_LLM_MODEL }}
+      REAL_WORLD_RELEASE_GATE_OUTPUT_DIR: .test_artifacts/real-world-release-gate/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,16 +45,16 @@ jobs:
         run: >-
           python -m evals.real_world_release_gate
           --repo-root .
-          --output-dir .test_artifacts/real-world-release-gate
+          --output-dir ${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}
       - name: 上传脱敏门禁报告
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: real-world-release-gate-${{ github.sha }}
           path: |
-            .test_artifacts/real-world-release-gate/real_world_release_gate.json
-            .test_artifacts/real-world-release-gate/real_world_release_gate.md
-            .test_artifacts/real-world-release-gate/failure-triage/*.failure_triage.json
-            .test_artifacts/real-world-release-gate/failure-triage/*.failure_triage.md
+            ${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}/real_world_release_gate.json
+            ${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}/real_world_release_gate.md
+            ${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}/failure-triage/*.failure_triage.json
+            ${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}/failure-triage/*.failure_triage.md
           if-no-files-found: error
           retention-days: 30
