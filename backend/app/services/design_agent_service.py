@@ -915,6 +915,7 @@ def _record_agent_timeline_event(
     event: DesignAgentEvent,
     state: str | None = None,
     model_attempted: bool = False,
+    model_capture: llm_service.ModelCallCapture | None = None,
 ) -> None:
     normalized_state = state
     if normalized_state is None:
@@ -923,13 +924,24 @@ def _record_agent_timeline_event(
             "failed": "failed",
             "conflict": "conflict",
         }.get(event.status, "completed")
+    captured_attempts = (
+        model_capture.attempt_count if model_capture is not None else 0
+    )
+    attempt_count = max(captured_attempts, 1 if model_attempted else 0)
+    _, model_cost_cny = task_timeline_service.billing_for_model_call(
+        attempted=attempt_count > 0,
+        usage=model_capture.usage if model_capture is not None else None,
+        input_price_per_mtok=settings.llm_input_price_per_mtok,
+        output_price_per_mtok=settings.llm_output_price_per_mtok,
+    )
     task_timeline_service.record_lifecycle_event(
         db,
         task_id=event.task_id,
         source_type="agent",
         source_id=event.turn_id,
         state=normalized_state,
-        attempt=1 if model_attempted else None,
+        attempt=attempt_count or None,
+        model_cost_cny=model_cost_cny,
         occurred_at=event.created_at,
     )
 
@@ -1402,6 +1414,7 @@ def _run_turn(
     *,
     task: DesignTask,
     payload: AgentTurnRequest,
+    model_capture: llm_service.ModelCallCapture | None = None,
 ) -> dict[str, Any]:
     task, turn, claimed_response, resume_turn = _claim_turn(
         db,
@@ -1639,6 +1652,7 @@ def _run_turn(
         db,
         event=events[-1],
         model_attempted=model_attempted,
+        model_capture=model_capture,
     )
     agent_approval_service.ensure_for_agent_handoff(
         db,
@@ -1681,6 +1695,7 @@ def _persist_failed_turn(
     task_id: int,
     payload: AgentTurnRequest,
     error: Exception,
+    model_capture: llm_service.ModelCallCapture | None = None,
 ) -> dict[str, Any]:
     db.rollback()
     task = _lock_task_for_turn(db, task_id)
@@ -1776,7 +1791,12 @@ def _persist_failed_turn(
     )
     db.add(event)
     db.flush()
-    _record_agent_timeline_event(db, event=event, state="failed")
+    _record_agent_timeline_event(
+        db,
+        event=event,
+        state="failed",
+        model_capture=model_capture,
+    )
     reply = "本轮执行失败，已安全停止。请稍后重试或由人工继续处理。"
     response = {
         "task_id": task.id,
@@ -1811,28 +1831,35 @@ def run_turn(
     task: DesignTask,
     payload: AgentTurnRequest,
 ) -> dict[str, Any]:
-    try:
-        return _run_turn(db, task=task, payload=payload)
-    except (
-        AgentSceneNotFound,
-        AgentSceneVersionConflict,
-        AgentIdempotencyConflict,
-        AgentTurnInProgress,
-        AgentStateVersionConflict,
-    ):
-        raise
-    except Exception as exc:
-        logger.exception(
-            "Design Agent turn 执行失败: task_id=%s client_turn_id=%s",
-            task.id,
-            payload.client_turn_id,
-        )
-        return _persist_failed_turn(
-            db,
-            task_id=task.id,
-            payload=payload,
-            error=exc,
-        )
+    with llm_service.capture_model_call() as model_capture:
+        try:
+            return _run_turn(
+                db,
+                task=task,
+                payload=payload,
+                model_capture=model_capture,
+            )
+        except (
+            AgentSceneNotFound,
+            AgentSceneVersionConflict,
+            AgentIdempotencyConflict,
+            AgentTurnInProgress,
+            AgentStateVersionConflict,
+        ):
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Design Agent turn 执行失败: task_id=%s client_turn_id=%s",
+                task.id,
+                payload.client_turn_id,
+            )
+            return _persist_failed_turn(
+                db,
+                task_id=task.id,
+                payload=payload,
+                error=exc,
+                model_capture=model_capture,
+            )
 
 
 def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:

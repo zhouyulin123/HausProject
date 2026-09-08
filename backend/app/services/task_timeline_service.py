@@ -177,6 +177,7 @@ def record_lifecycle_event(
     state: str,
     attempt: int | None = None,
     generation_cost_cny: float | None = None,
+    model_cost_cny: float | None = None,
     occurred_at: datetime | None = None,
 ) -> TaskExecutionEvent:
     """Append a normalized lifecycle event inside the caller's transaction."""
@@ -190,7 +191,11 @@ def record_lifecycle_event(
 
     is_terminal = state in {"completed", "failed", "cancelled", "dead_letter"}
     if source_type == "agent" and (attempt or 0) > 0:
-        billing_status = "unknown"
+        if model_cost_cny is not None:
+            billing_status = "metered"
+            cost_cny = model_cost_cny
+        else:
+            billing_status = "unknown"
     elif source_type == "generation" and is_terminal:
         if generation_cost_cny is not None:
             billing_status = "metered"

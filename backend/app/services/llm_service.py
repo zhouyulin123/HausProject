@@ -74,8 +74,12 @@ _provider_call_hooks: ContextVar[ProviderCallHooks | None] = ContextVar(
 class ModelCallCapture:
     """仅捕获计费元数据，不保存 Prompt、图片或用户输入。"""
 
-    attempted: bool = False
+    attempt_count: int = 0
     usage: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def attempted(self) -> bool:
+        return self.attempt_count > 0
 
 
 _model_call_capture: ContextVar[ModelCallCapture | None] = ContextVar(
@@ -97,17 +101,21 @@ def capture_model_call() -> Iterator[ModelCallCapture]:
 def _mark_model_call_attempted() -> None:
     capture = _model_call_capture.get()
     if capture is not None:
-        capture.attempted = True
+        capture.attempt_count += 1
 
 
 def _capture_model_usage(usage: Any) -> None:
     capture = _model_call_capture.get()
     if capture is None or usage is None:
         return
-    capture.usage = {
+    current = {
         "prompt_tokens": int(usage.prompt_tokens),
         "completion_tokens": int(usage.completion_tokens),
         "total_tokens": int(usage.total_tokens),
+    }
+    capture.usage = {
+        key: capture.usage.get(key, 0) + value
+        for key, value in current.items()
     }
 
 def last_generation_meta() -> Optional[Dict[str, Any]]:
