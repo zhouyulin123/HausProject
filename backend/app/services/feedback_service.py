@@ -28,6 +28,10 @@ class FeedbackIdempotencyConflict(ValueError):
     pass
 
 
+class FeedbackEvidenceRequired(ValueError):
+    pass
+
+
 def _payload_hash(payload: DesignFeedbackEventRequest) -> str:
     encoded = json.dumps(
         payload.model_dump(mode="json", exclude_none=True),
@@ -121,7 +125,12 @@ def create_feedback_event(
     task_id: int,
     payload: DesignFeedbackEventRequest,
     commit: bool = True,
+    mutation_verified: bool = False,
 ) -> DesignFeedbackEvent:
+    if payload.action_type in {"adopt", "remove", "replace"} and not mutation_verified:
+        raise FeedbackEvidenceRequired(
+            "采用、删除和替换反馈只能由已验证的方案变更事务生成"
+        )
     digest = _payload_hash(payload)
     existing = db.scalar(
         select(DesignFeedbackEvent).where(

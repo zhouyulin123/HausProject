@@ -34,6 +34,14 @@ def create_feedback_event(
         )
     except feedback_service.FeedbackResourceNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except feedback_service.FeedbackEvidenceRequired as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "verified_mutation_required",
+                "message": str(exc),
+            },
+        ) from exc
     except feedback_service.FeedbackIdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return DesignFeedbackEventResponse.model_validate(event)

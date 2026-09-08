@@ -198,6 +198,18 @@ def test_candidate_requires_nonzero_execution_review_coverage():
     )
     assert validate_candidate_review_coverage(reviewed, split="regression") == 1
 
+    partially_reviewed = VerifiedEvaluationEvidence(
+        **{
+            **evidence.__dict__,
+            "results": (
+                reviewed.results[0],
+                CaseResult(case_id="case-2", generation_succeeded=True),
+            ),
+        }
+    )
+    with pytest.raises(EvaluationInputError, match="每个成功运行"):
+        validate_candidate_review_coverage(partially_reviewed, split="regression")
+
 
 def test_only_controlled_manual_workflow_can_issue_release_proof():
     validate_release_event("workflow_dispatch", ("development", "regression", "blind"))

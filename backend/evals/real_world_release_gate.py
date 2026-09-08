@@ -135,13 +135,15 @@ def validate_candidate_review_coverage(
     evidence: VerifiedEvaluationEvidence,
     *,
     split: EvaluationSplit,
+    label: str = "候选",
 ) -> int:
-    review_count = sum(result.human_review_count for result in evidence.results)
-    if review_count < 1:
+    completed = [result for result in evidence.results if result.generation_succeeded]
+    invalid = [result for result in completed if result.human_review_count != 1]
+    if not completed or invalid:
         raise EvaluationInputError(
-            f"split={split} 候选可信证据缺少 execution_review 覆盖"
+            f"split={split} {label}可信证据必须为每个成功运行绑定一份 execution_review"
         )
-    return review_count
+    return len(completed)
 
 
 def _resolve_config_path(root: Path, value: Any, field: str) -> Path:
@@ -366,6 +368,11 @@ def _verify_split(
         candidate,
         split=split,
     )
+    baseline_execution_review_count = validate_candidate_review_coverage(
+        baseline,
+        split=split,
+        label="基线",
+    )
     if candidate.evidence_digest == baseline.evidence_digest:
         raise EvaluationInputError(f"split={split} 候选不得重放基线证据")
     candidate_report = build_evaluation_report(
@@ -385,6 +392,7 @@ def _verify_split(
         "eligible_case_count": len(dataset.eligible_cases(split)),
         "origin_counts": candidate_report["dataset"]["origin_counts"],
         "execution_review_count": execution_review_count,
+        "baseline_execution_review_count": baseline_execution_review_count,
         "candidate_versions": asdict(candidate.versions),
         "baseline_versions": asdict(baseline.versions),
         "candidate_evidence_digest": candidate.evidence_digest,

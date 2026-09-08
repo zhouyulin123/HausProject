@@ -382,6 +382,7 @@ def mutate_plan(db: Session, *, task, payload: PlanMutationRequest):
             target_sku=product.sku if product else None,
         ),
         commit=False,
+        mutation_verified=True,
     )
     db.flush()
     return revision, deepcopy(target_plan.plan_json), new_scene, new_version, feedback

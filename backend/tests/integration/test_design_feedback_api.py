@@ -123,7 +123,7 @@ def feedback_api_context():
 
 
 @pytest.mark.integration
-def test_feedback_event_is_task_owned_structured_and_idempotent(feedback_api_context):
+def test_direct_mutation_feedback_requires_verified_mutation_path(feedback_api_context):
     client, factory, context = feedback_api_context
     body = {
         "client_event_id": "feedback-replace-001",
@@ -136,19 +136,12 @@ def test_feedback_event_is_task_owned_structured_and_idempotent(feedback_api_con
     url = f"/api/design/tasks/{context['task_id']}/feedback-events"
     headers = {"X-Session-ID": context["owner_id"]}
 
-    first = client.post(url, headers=headers, json=body)
-    second = client.post(url, headers=headers, json=body)
+    response = client.post(url, headers=headers, json=body)
 
-    assert first.status_code == second.status_code == 200
-    assert second.json() == first.json()
-    assert first.json()["action_type"] == "replace"
-    assert first.json()["source_sku"] == "SOFA-OLD"
-    assert first.json()["target_sku"] == "SOFA-NEW"
-    assert "message" not in first.json()
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "verified_mutation_required"
     with factory() as db:
-        events = db.scalars(select(DesignFeedbackEvent)).all()
-        assert len(events) == 1
-        assert events[0].task_id == context["task_id"]
+        assert db.scalar(select(DesignFeedbackEvent.id)) is None
 
 
 @pytest.mark.integration
@@ -159,17 +152,16 @@ def test_feedback_event_rejects_idempotency_conflict_and_foreign_resources(
     url = f"/api/design/tasks/{context['task_id']}/feedback-events"
     owner_headers = {"X-Session-ID": context["owner_id"]}
     base = {
-        "client_event_id": "feedback-adopt-001",
-        "action_type": "adopt",
+        "client_event_id": "feedback-final-001",
+        "action_type": "final_select",
         "plan_version_id": context["plan_version_id"],
-        "target_sku": "SOFA-NEW",
     }
     assert client.post(url, headers=owner_headers, json=base).status_code == 200
 
     conflict = client.post(
         url,
         headers=owner_headers,
-        json={**base, "target_sku": "SOFA-OLD"},
+        json={**base, "satisfaction_score": 5},
     )
     assert conflict.status_code == 409
 
