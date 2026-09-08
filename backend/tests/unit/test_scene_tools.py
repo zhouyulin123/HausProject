@@ -349,6 +349,75 @@ def test_expired_historical_sku_remains_readable_but_cannot_be_reintroduced_or_d
     assert delivery_error.value.code == "catalog_product_ineligible"
     assert delivery_error.value.reason_codes == ("price_expired",)
 
+
+@pytest.mark.unit
+def test_scene_agent_can_move_and_remove_custom_draft_without_catalog_lookup(scene_db):
+    document = _scene()
+    custom = SceneDocument.model_validate(
+        {
+            **document.model_dump(by_alias=True, mode="json"),
+            "items": [
+                *document.model_dump(by_alias=True, mode="json")["items"],
+                {
+                    "instanceId": "custom-0123456789abcdef",
+                    "sku": "CUSTOM-0123456789ABCDEF",
+                    "category": "定制桌",
+                    "dimensions": {"x": 1.5, "y": 0.76, "z": 0.7},
+                    "transform": {
+                        "position": {"x": 0, "y": 0.38, "z": 0},
+                    },
+                    "assetMode": "parametric",
+                    "sourceType": "custom_furniture_draft",
+                    "customFurnitureRef": {
+                        "taskId": 1,
+                        "planVersionId": 1,
+                        "introducedSceneVersion": 2,
+                        "draftClientMutationId": "draft-scene-001",
+                        "draftStateVersion": 1,
+                        "specDigest": "sha256:" + "0" * 64,
+                    },
+                },
+            ],
+        }
+    )
+    move = SceneOperationBatch.model_validate(
+        {
+            "message": "移动定制桌",
+            "operations": [
+                {
+                    "type": "move",
+                    "instanceId": "custom-0123456789abcdef",
+                    "position": {"x": 1, "z": 1},
+                }
+            ],
+        }
+    )
+    moved = apply_scene_operations(scene_db, custom, move.operations)
+    moved_item = next(
+        item for item in moved.items if item.instance_id.startswith("custom-")
+    )
+    assert moved_item.transform.position.x == 1
+    assert moved_item.transform.position.y == 0.38
+    context = build_scene_agent_context(scene_db, moved)
+    assert context["customFurnitureItems"] == [
+        {
+            "instanceId": moved_item.instance_id,
+            "name": "定制桌",
+            "dimensions": {"x": 1.5, "y": 0.76, "z": 0.7},
+        }
+    ]
+
+    remove = SceneOperationBatch.model_validate(
+        {
+            "message": "删除定制桌",
+            "operations": [
+                {"type": "remove", "instanceId": moved_item.instance_id}
+            ],
+        }
+    )
+    removed = apply_scene_operations(scene_db, moved, remove.operations)
+    assert moved_item.instance_id not in {item.instance_id for item in removed.items}
+
 @pytest.mark.unit
 def test_scene_validation_reports_full_footprint_outside_room(scene_db):
     scene = _scene()

@@ -27,6 +27,7 @@ from app.schemas.blender_render import (
     BlenderRenderRequest,
 )
 from app.schemas.scenes import (
+    CustomFurnitureSceneItemRequest,
     SceneCreateRequest,
     SceneDocument,
     SceneResponse,
@@ -334,6 +335,65 @@ def get_scene(
     return _scene_response(scene, version)
 
 
+@router.post(
+    "/scenes/{scene_id}/custom-furniture-items",
+    response_model=SceneResponse,
+)
+def add_custom_furniture_item(
+    scene_id: int,
+    payload: CustomFurnitureSceneItemRequest,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_active_session(db, x_session_id)
+    try:
+        locked = aggregate_lock_service.lock_owned_scene(
+            db,
+            session_id=x_session_id,
+            scene_id=scene_id,
+        )
+        if locked is None:
+            raise _not_found("3D 场景")
+        _, scene = locked
+        version, created = scene_service.add_custom_furniture_draft_to_scene(
+            db,
+            scene=scene,
+            payload=payload,
+        )
+        if created:
+            task_id = scene_service.get_scene_task_id(db, scene.id)
+            if task_id is None:
+                raise RuntimeError("场景缺少所属任务")
+            design_agent_service.record_scene_reference(
+                db,
+                task_id=task_id,
+                scene_id=scene.id,
+                version=version.version,
+            )
+        db.commit()
+        db.refresh(scene)
+        db.refresh(version)
+        return _scene_response(scene, version)
+    except scene_service.CustomSceneBindingError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
+    except scene_service.SceneConflictError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except scene_service.SceneValidationError as error:
+        db.rollback()
+        raise _validation_error(error) from error
+    except aggregate_lock_service.AggregateLockBusy as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "aggregate_busy", "message": str(error)},
+        ) from error
+
+
 @router.put("/scenes/{scene_id}", response_model=SceneResponse)
 def update_scene(
     scene_id: int,
@@ -408,6 +468,12 @@ def update_scene(
     except scene_tools.SceneCatalogEligibilityError as error:
         db.rollback()
         raise _catalog_error(error) from error
+    except scene_service.CustomSceneBindingError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except scene_service.SceneConflictError as error:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error

@@ -182,6 +182,19 @@ AssetFallbackReason = Literal[
 ]
 
 
+class CustomFurnitureSceneRef(SceneModel):
+    task_id: int = Field(ge=1)
+    plan_version_id: int = Field(ge=1)
+    introduced_scene_version: int = Field(ge=1)
+    draft_client_mutation_id: str = Field(
+        min_length=8,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    draft_state_version: int = Field(ge=1)
+    spec_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class SceneItem(SceneModel):
     instance_id: str = Field(
         min_length=1,
@@ -198,6 +211,8 @@ class SceneItem(SceneModel):
     )
     asset_mode: AssetMode = "parametric"
     fallback_reason: AssetFallbackReason | None = None
+    source_type: Literal["catalog", "custom_furniture_draft"] = "catalog"
+    custom_furniture_ref: CustomFurnitureSceneRef | None = None
 
     @model_validator(mode="after")
     def validate_asset_contract(self) -> "SceneItem":
@@ -208,6 +223,13 @@ class SceneItem(SceneModel):
             and self.fallback_reason is not None
         ):
             raise ValueError("approved_glb 不得携带 fallbackReason")
+        if self.source_type == "catalog" and self.custom_furniture_ref is not None:
+            raise ValueError("目录商品不得携带 customFurnitureRef")
+        if self.source_type == "custom_furniture_draft":
+            if self.custom_furniture_ref is None:
+                raise ValueError("定制家具必须携带 customFurnitureRef")
+            if self.asset_mode != "parametric" or self.fallback_reason is not None:
+                raise ValueError("定制家具草稿只能使用参数化预览资产")
         return self
 
 
@@ -302,6 +324,22 @@ class SceneUpdateRequest(BaseModel):
         if missing:
             raise ValueError(f"moved_instance_ids 不存在于场景：{', '.join(missing)}")
         return self
+
+
+class CustomFurnitureSceneItemRequest(SceneModel):
+    base_version: int = Field(ge=1)
+    client_mutation_id: str = Field(
+        min_length=8,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    draft_client_mutation_id: str = Field(
+        min_length=8,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    position: Vector2XZ
+    rotation_y: float = Field(default=0, ge=-6.2831853072, le=6.2831853072)
 
 
 class SceneResponse(BaseModel):

@@ -637,16 +637,49 @@ def test_custom_draft_enters_scene_with_server_dimensions_and_survives_history(
     assert custom["customFurnitureRef"]["planVersionId"] == plan_version_id
     assert custom["customFurnitureRef"]["introducedSceneVersion"] == 2
 
-    moved_scene = added.json()["scene"]
+    forged_dimensions = added.json()["scene"]
+    forged_item = next(
+        item for item in forged_dimensions["items"]
+        if item["instanceId"] == custom["instanceId"]
+    )
+    forged_item["dimensions"]["x"] = 9.9
+    rejected = client.put(
+        f"/api/design/scenes/{scene_id}",
+        headers=headers,
+        json={"base_version": 2, "scene": forged_dimensions},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"]["code"] == "custom_scene_binding_invalid"
+
+    second_placement = client.post(
+        f"/api/design/scenes/{scene_id}/custom-furniture-items",
+        headers=headers,
+        json={
+            **request,
+            "baseVersion": 2,
+            "clientMutationId": "custom-scene-add-002",
+            "position": {"x": 2.8, "z": 0.6},
+        },
+    )
+    assert second_placement.status_code == 200
+    custom_ids = {
+        item["instanceId"]
+        for item in second_placement.json()["scene"]["items"]
+        if item["sourceType"] == "custom_furniture_draft"
+    }
+    assert len(custom_ids) == 2
+    assert custom["instanceId"] in custom_ids
+
+    moved_scene = second_placement.json()["scene"]
     next(item for item in moved_scene["items"] if item["instanceId"] == custom["instanceId"])[
         "transform"
     ]["position"]["x"] = 1.2
     moved = client.put(
         f"/api/design/scenes/{scene_id}",
         headers=headers,
-        json={"baseVersion": 2, "scene": moved_scene},
+        json={"base_version": 3, "scene": moved_scene},
     )
-    assert moved.status_code == 200
+    assert moved.status_code == 200, moved.text
 
     deleted_scene = moved.json()["scene"]
     deleted_scene["items"] = [
@@ -656,7 +689,7 @@ def test_custom_draft_enters_scene_with_server_dimensions_and_survives_history(
     deleted = client.put(
         f"/api/design/scenes/{scene_id}",
         headers=headers,
-        json={"baseVersion": 3, "scene": deleted_scene},
+        json={"base_version": 4, "scene": deleted_scene},
     )
     assert deleted.status_code == 200
     history = client.get(
@@ -668,6 +701,15 @@ def test_custom_draft_enters_scene_with_server_dimensions_and_survives_history(
     )
     assert custom["instanceId"] in {
         item["instanceId"] for item in version_two["scene"]["items"]
+    }
+    restored = client.put(
+        f"/api/design/scenes/{scene_id}",
+        headers=headers,
+        json={"base_version": 5, "scene": version_two["scene"]},
+    )
+    assert restored.status_code == 200
+    assert custom["instanceId"] in {
+        item["instanceId"] for item in restored.json()["scene"]["items"]
     }
 
 
@@ -684,6 +726,8 @@ def test_manual_scene_update_cannot_disguise_catalog_sku_as_custom_draft(
     )
     payload = created.json()["scene"]
     payload["items"][0]["sourceType"] = "custom_furniture_draft"
+    payload["items"][0]["assetMode"] = "parametric"
+    payload["items"][0]["fallbackReason"] = None
     payload["items"][0]["customFurnitureRef"] = {
         "taskId": 1,
         "planVersionId": plan_version_id,
@@ -695,7 +739,7 @@ def test_manual_scene_update_cannot_disguise_catalog_sku_as_custom_draft(
     response = client.put(
         f"/api/design/scenes/{created.json()['id']}",
         headers=headers,
-        json={"baseVersion": 1, "scene": payload},
+        json={"base_version": 1, "scene": payload},
     )
-    assert response.status_code == 422
+    assert response.status_code == 422, response.text
     assert response.json()["detail"]["code"] == "custom_scene_binding_invalid"

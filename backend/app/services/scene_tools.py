@@ -186,17 +186,20 @@ def apply_scene_operations(
             item.transform.position.x = operation.position.x
             item.transform.position.z = operation.position.z
             if item.dimensions is not None:
-                product = _find_product(db, item.sku)
                 scaled_dimensions = PositiveVector3(
                     x=item.dimensions.x * item.transform.scale.x,
                     y=item.dimensions.y * item.transform.scale.y,
                     z=item.dimensions.z * item.transform.scale.z,
                 )
-                item.transform.position.y = _vertical_center(
-                    document,
-                    product,
-                    scaled_dimensions,
-                )
+                if item.source_type == "custom_furniture_draft":
+                    item.transform.position.y = scaled_dimensions.y / 2
+                else:
+                    product = _find_product(db, item.sku)
+                    item.transform.position.y = _vertical_center(
+                        document,
+                        product,
+                        scaled_dimensions,
+                    )
         elif isinstance(operation, RotateSceneItem):
             item = _find_item(document, operation.instance_id)
             item.transform.rotation.y = _normalize_rotation(
@@ -282,5 +285,16 @@ def build_scene_agent_context(
                 at=checked_at,
                 region=region,
             ).eligible
+        ],
+        "customFurnitureItems": [
+            {
+                "instanceId": item.instance_id,
+                "name": item.category,
+                "dimensions": item.dimensions.model_dump(mode="json")
+                if item.dimensions
+                else None,
+            }
+            for item in document.items
+            if item.source_type == "custom_furniture_draft"
         ],
     }
