@@ -1,9 +1,13 @@
 import hashlib
+import json
 import logging
 import re
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
@@ -27,10 +31,31 @@ from app.services.upload_validation import UploadValidationError, validate_image
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,100}$")
 
 
 def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w.一-鿿-]", "_", name or "upload")
+
+
+def _upload_response(image: UploadedImage) -> dict:
+    analysis = image.analysis_json or {}
+    room_model = analysis.get("room_model")
+    return {
+        "image_id": image.id,
+        "task_id": image.task_id,
+        "image_url": image.file_url,
+        "file_name": image.file_name,
+        "file_size": image.file_size,
+        "analysis": {
+            "findings": analysis.get("findings", []),
+            "suggestions": analysis.get("suggestions", []),
+            "space_type": analysis.get("space_type", ""),
+            "room_count": analysis.get("room_count", ""),
+            "source": analysis.get("source", "placeholder"),
+            "room_model": room_model,
+        },
+    }
 
 
 @router.post("/image")
@@ -39,6 +64,10 @@ async def upload_image(
     file: UploadFile = File(...),
     task_id: int | None = Form(default=None),
     db: Session = Depends(get_db),
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key"),
+    ] = None,
 ):
     require_active_session(db, x_session_id)
     if task_id is not None:
@@ -59,16 +88,74 @@ async def upload_image(
     except UploadValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    normalized_key = (idempotency_key or "").strip() or None
+    if normalized_key is not None and not _IDEMPOTENCY_KEY_PATTERN.fullmatch(
+        normalized_key
+    ):
+        raise HTTPException(status_code=422, detail="Idempotency-Key 格式无效")
+    content_digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+    request_digest = "sha256:" + hashlib.sha256(
+        json.dumps(
+            {
+                "content_digest": content_digest,
+                "content_type": file.content_type or "",
+                "file_name": file.filename or "",
+                "task_id": task_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    operation_key = (
+        "sha256:"
+        + hashlib.sha256(
+            f"{x_session_id}:{task_id}:{normalized_key}".encode("utf-8")
+        ).hexdigest()
+        if normalized_key is not None
+        else None
+    )
+    if operation_key is not None:
+        existing = db.scalar(
+            select(UploadedImage).where(
+                UploadedImage.upload_operation_key == operation_key
+            )
+        )
+        if existing is not None:
+            if existing.upload_request_digest != request_digest:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency-Key 已用于不同的图片上传输入",
+                )
+            return _upload_response(existing)
+
     image = UploadedImage(
         task_id=task_id,
         image_type="floor_plan" if "户型" in (file.filename or "") else "room_photo",
         file_name=file.filename,
         file_size=len(content),
-        content_digest=f"sha256:{hashlib.sha256(content).hexdigest()}",
+        content_digest=content_digest,
+        upload_operation_key=operation_key,
+        upload_request_digest=request_digest,
     )
     db.add(image)
-    db.commit()
-    db.refresh(image)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        if operation_key is None:
+            raise
+        existing = db.scalar(
+            select(UploadedImage).where(
+                UploadedImage.upload_operation_key == operation_key
+            )
+        )
+        if existing is None or existing.upload_request_digest != request_digest:
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency-Key 已用于不同的图片上传输入",
+            ) from exc
+        return _upload_response(existing)
 
     # 保存到本地 uploads 目录，通过 /uploads 静态路由访问
     upload_dir = Path(settings.upload_dir)
@@ -131,21 +218,7 @@ async def upload_image(
     db.commit()
     anonymous_session_service.attach_image(db, x_session_id, image.id)
 
-    return {
-        "image_id": image.id,
-        "task_id": image.task_id,
-        "image_url": image.file_url,
-        "file_name": image.file_name,
-        "file_size": image.file_size,
-        "analysis": {
-            "findings": analysis.get("findings", []),
-            "suggestions": analysis.get("suggestions", []),
-            "space_type": analysis.get("space_type", ""),
-            "room_count": analysis.get("room_count", ""),
-            "source": source,
-            "room_model": room_model,
-        },
-    }
+    return _upload_response(image)
 
 
 @router.put("/images/{image_id}/room-model")

@@ -43,7 +43,9 @@ describe("项目级房间上传", () => {
     await analyzeRoomImage(new File(["image"], "客厅.png", { type: "image/png" }), 42);
 
     const body = fetchMock.mock.calls[1]?.[1]?.body;
+    const headers = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
     expect(body).toBeInstanceOf(FormData);
     expect((body as FormData).get("task_id")).toBe("42");
+    expect(headers.get("Idempotency-Key")).toMatch(/^upload-42-[a-f0-9]{64}$/);
   });
 });

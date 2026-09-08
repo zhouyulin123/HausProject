@@ -118,6 +118,10 @@ class UploadedImage(Base):
         String(20), nullable=False, default="not_billable"
     )
     analysis_cost_cny = Column(Float, nullable=True)
+    upload_operation_key = Column(
+        String(71), nullable=True, unique=True, index=True
+    )
+    upload_request_digest = Column(String(71), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

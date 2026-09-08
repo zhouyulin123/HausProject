@@ -404,6 +404,8 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "analysis_model_call_attempted",
             "analysis_billing_status",
             "analysis_cost_cny",
+            "upload_operation_key",
+            "upload_request_digest",
         } <= uploaded_image_columns
         requirement_parse_columns = {
             column["name"]

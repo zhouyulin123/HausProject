@@ -336,6 +336,15 @@ async function waitForGeneration(
 
 // ---------------------------------------------------------------- 图片上传
 
+async function uploadIdempotencyKey(file: File, taskId?: number): Promise<string> {
+  const bytes = await file.arrayBuffer();
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  const hex = Array.from(new Uint8Array(digest), (value) =>
+    value.toString(16).padStart(2, "0"),
+  ).join("");
+  return `upload-${taskId ?? "unbound"}-${hex}`;
+}
+
 export async function analyzeRoomImage(
   file: File,
   taskId?: number,
@@ -348,6 +357,7 @@ export async function analyzeRoomImage(
     const form = new FormData();
     form.append("file", file);
     if (taskId) form.append("task_id", String(taskId));
+    const idempotencyKey = await uploadIdempotencyKey(file, taskId);
     const data = await request<{
       image_id: number;
       analysis: {
@@ -358,7 +368,11 @@ export async function analyzeRoomImage(
         source?: string;
         room_model?: RoomModel | null;
       };
-    }>("/api/upload/image", { method: "POST", body: form });
+    }>("/api/upload/image", {
+      method: "POST",
+      body: form,
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
     uploadedImageIds.push(data.image_id);
     if (browserStorage) writeImageIds(browserStorage, uploadedImageIds);
     return {
