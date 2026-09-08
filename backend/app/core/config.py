@@ -57,6 +57,8 @@ class Settings(BaseSettings):
         default="Qwen/Qwen3-VL-32B-Thinking",
         validation_alias=AliasChoices("VL_REASONING_MODEL", "VL_MODEL2"),
     )
+    vl_input_price_per_mtok: float | None = Field(default=None, gt=0, le=1_000_000)
+    vl_output_price_per_mtok: float | None = Field(default=None, gt=0, le=1_000_000)
 
     # 本地效果图生成（SD1.5 + ControlNet MLSD，跑在本机 GPU）
     sd_enabled: bool = True
@@ -193,6 +195,12 @@ class Settings(BaseSettings):
             or self.llm_output_price_per_mtok is None
         ):
             raise ValueError("生产环境启用 LLM 时必须配置输入与输出 token 单价")
+
+        if self.vl_api_key and (
+            self.vl_input_price_per_mtok is None
+            or self.vl_output_price_per_mtok is None
+        ):
+            raise ValueError("生产环境启用 VL 时必须配置输入与输出 token 单价")
 
         weak_jwt_values = {
             "dev-secret-change-me-in-production",

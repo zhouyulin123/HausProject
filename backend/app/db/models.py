@@ -113,6 +113,11 @@ class UploadedImage(Base):
     original_prediction_source = Column(String(30), nullable=True)
     original_prediction_model = Column(String(100), nullable=True)
     original_prediction_digest = Column(String(71), nullable=True)
+    analysis_model_call_attempted = Column(Boolean, nullable=False, default=False)
+    analysis_billing_status = Column(
+        String(20), nullable=False, default="not_billable"
+    )
+    analysis_cost_cny = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -158,6 +163,9 @@ class RequirementParseResult(Base):
     follow_up_questions = Column(JSON, nullable=True)
     parser = Column(String(20), default="rule")  # llm / rule
     parser_model = Column(String(100), nullable=True)
+    model_call_attempted = Column(Boolean, nullable=False, default=False)
+    billing_status = Column(String(20), nullable=False, default="not_billable")
+    cost_cny = Column(Float, nullable=True)
     confirmed = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

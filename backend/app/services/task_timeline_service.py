@@ -10,7 +10,14 @@ from sqlalchemy.orm import Session
 from app.db.models import TaskExecutionEvent
 
 
-TimelineSource = Literal["agent", "generation", "effect", "blender"]
+TimelineSource = Literal[
+    "agent",
+    "requirement",
+    "vision",
+    "generation",
+    "effect",
+    "blender",
+]
 BillingStatus = Literal["metered", "not_billable", "unknown"]
 
 EVENT_SUMMARIES = {
@@ -19,6 +26,10 @@ EVENT_SUMMARIES = {
     "agent.turn.waiting_user": "智能体等待用户确认",
     "agent.turn.recovered": "智能体执行已恢复",
     "agent.turn.conflict": "智能体状态提交冲突",
+    "requirement.completed": "AI 需求解析已完成",
+    "requirement.fallback": "需求解析已降级为确定性规则",
+    "vision.completed": "AI 空间识别已完成",
+    "vision.fallback": "空间识别已降级为占位结果",
     "generation.queued": "方案生成已排队",
     "generation.claimed": "方案生成已由 Worker 接管",
     "generation.retry_scheduled": "方案生成已安排重试",
@@ -112,6 +123,49 @@ def append_event(
     db.add(event)
     db.flush()
     return event
+
+
+def billing_for_model_call(
+    *,
+    attempted: bool,
+    usage: dict[str, int] | None,
+    input_price_per_mtok: float | None,
+    output_price_per_mtok: float | None,
+) -> tuple[BillingStatus, float | None]:
+    if not attempted:
+        return "not_billable", None
+    from app.services.llm_service import estimate_cost_cny
+
+    cost = estimate_cost_cny(
+        usage,
+        input_price_per_mtok,
+        output_price_per_mtok,
+    )
+    if cost is None:
+        return "unknown", None
+    return "metered", cost
+
+
+def project_visual_analysis(
+    db: Session,
+    *,
+    task_id: int,
+    image: object,
+) -> TaskExecutionEvent:
+    source = getattr(image, "original_prediction_source", None)
+    event_code = "vision.completed" if source == "vl" else "vision.fallback"
+    return append_event(
+        db,
+        task_id=task_id,
+        source_type="vision",
+        source_id=int(getattr(image, "id")),
+        attempt=1 if getattr(image, "analysis_model_call_attempted", False) else None,
+        event_code=event_code,
+        billing_status=getattr(image, "analysis_billing_status", "not_billable"),
+        cost_cny=getattr(image, "analysis_cost_cny", None),
+        event_key=f"vision:{int(getattr(image, 'id'))}:analysis",
+        occurred_at=getattr(image, "created_at", None),
+    )
 
 
 def record_lifecycle_event(

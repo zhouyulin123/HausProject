@@ -20,6 +20,7 @@ from app.services import (
     llm_service,
     prediction_evidence_service,
     room_model_service,
+    task_timeline_service,
 )
 from app.services.llm_service import LLMUnavailable
 from app.services.upload_validation import UploadValidationError, validate_image_upload
@@ -79,11 +80,19 @@ async def upload_image(
     # Qwen3-VL 输出统一空间事实模型 RoomModel；不可用或结构无效时降级占位
     source = "vl"
     room_model = None
-    try:
-        room_model = llm_service.analyze_room_model(content, file.filename or "")
-    except LLMUnavailable as exc:
-        logger.warning("图片分析降级到占位: %s", exc)
-        source = "placeholder"
+    with llm_service.capture_model_call() as model_call:
+        try:
+            room_model = llm_service.analyze_room_model(content, file.filename or "")
+        except LLMUnavailable as exc:
+            logger.warning("图片分析降级到占位: %s", exc)
+            source = "placeholder"
+
+    billing_status, cost_cny = task_timeline_service.billing_for_model_call(
+        attempted=model_call.attempted,
+        usage=model_call.usage,
+        input_price_per_mtok=settings.vl_input_price_per_mtok,
+        output_price_per_mtok=settings.vl_output_price_per_mtok,
+    )
 
     if room_model:
         # RoomModel 为 camelCase，转成 analysis_json 的 snake_case 兼容结构
@@ -104,12 +113,21 @@ async def upload_image(
         image.image_type = analysis["image_kind"]
     image.file_url = f"/uploads/{stored_name}"
     image.analysis_json = {**analysis, "source": source}
+    image.analysis_model_call_attempted = model_call.attempted
+    image.analysis_billing_status = billing_status
+    image.analysis_cost_cny = cost_cny
     prediction_evidence_service.capture_uploaded_prediction(
         image,
         raw_room_model=room_model,
         source=source,
         model=settings.vl_model if source == "vl" else None,
     )
+    if task_id is not None:
+        task_timeline_service.project_visual_analysis(
+            db,
+            task_id=task_id,
+            image=image,
+        )
     db.commit()
     anonymous_session_service.attach_image(db, x_session_id, image.id)
 

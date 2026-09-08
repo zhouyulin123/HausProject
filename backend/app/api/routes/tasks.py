@@ -252,10 +252,16 @@ def create_task(
 
     # 关联已上传的图片
     if task_data.image_ids:
-        for image in db.scalars(
+        images = list(db.scalars(
             select(UploadedImage).where(UploadedImage.id.in_(task_data.image_ids))
-        ):
+        ))
+        for image in images:
             image.task_id = task.id
+            task_timeline_service.project_visual_analysis(
+                db,
+                task_id=task.id,
+                image=image,
+            )
         db.commit()
 
     return TaskResponse(task_id=task.id, status=task.status)
@@ -276,35 +282,58 @@ def get_requirement(
 
     parser = "llm"
     parser_model = None
-    try:
-        parsed = llm_service.parse_requirement(raw_input)
-        parser_model = settings.llm_model
-        missing_fields = parsed.pop("missing_fields", [])
-        follow_up_questions = parsed.pop("follow_up_questions", [])
-    except LLMUnavailable:
-        parser = "rule"
-        parsed = task_service.parse_requirement(raw_input)
-        missing_fields = []
-        if parsed["budget"]["max_budget"] == "未指定":
-            missing_fields.append("budget")
-        if parsed.get("area") is None:
-            missing_fields.append("area")
-        follow_up_questions = []
-        if "area" in missing_fields:
-            follow_up_questions.append("您的房间面积大概是多少？")
-        if "budget" in missing_fields:
-            follow_up_questions.append("您的预算范围大概是多少？")
+    with llm_service.capture_model_call() as model_call:
+        try:
+            parsed = llm_service.parse_requirement(raw_input)
+            parser_model = settings.llm_model
+            missing_fields = parsed.pop("missing_fields", [])
+            follow_up_questions = parsed.pop("follow_up_questions", [])
+        except LLMUnavailable:
+            parser = "rule"
+            parsed = task_service.parse_requirement(raw_input)
+            missing_fields = []
+            if parsed["budget"]["max_budget"] == "未指定":
+                missing_fields.append("budget")
+            if parsed.get("area") is None:
+                missing_fields.append("area")
+            follow_up_questions = []
+            if "area" in missing_fields:
+                follow_up_questions.append("您的房间面积大概是多少？")
+            if "budget" in missing_fields:
+                follow_up_questions.append("您的预算范围大概是多少？")
 
-    db.add(
-        RequirementParseResult(
-            task_id=task.id,
-            raw_input=raw_input,
-            parsed_json=parsed,
-            missing_fields=missing_fields,
-            follow_up_questions=follow_up_questions,
-            parser=parser,
-            parser_model=parser_model,
-        )
+    billing_status, cost_cny = task_timeline_service.billing_for_model_call(
+        attempted=model_call.attempted,
+        usage=model_call.usage,
+        input_price_per_mtok=settings.llm_input_price_per_mtok,
+        output_price_per_mtok=settings.llm_output_price_per_mtok,
+    )
+    parse_result = RequirementParseResult(
+        task_id=task.id,
+        raw_input=raw_input,
+        parsed_json=parsed,
+        missing_fields=missing_fields,
+        follow_up_questions=follow_up_questions,
+        parser=parser,
+        parser_model=parser_model,
+        model_call_attempted=model_call.attempted,
+        billing_status=billing_status,
+        cost_cny=cost_cny,
+    )
+    db.add(parse_result)
+    db.flush()
+    task_timeline_service.append_event(
+        db,
+        task_id=task.id,
+        source_type="requirement",
+        source_id=parse_result.id,
+        attempt=1 if model_call.attempted else None,
+        event_code=(
+            "requirement.completed" if parser == "llm" else "requirement.fallback"
+        ),
+        billing_status=billing_status,
+        cost_cny=cost_cny,
+        event_key=f"requirement:{parse_result.id}:completed",
     )
     task.status = "waiting_confirm"
     task.progress = 40

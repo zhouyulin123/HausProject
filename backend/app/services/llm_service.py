@@ -8,7 +8,7 @@ import base64
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 import math
@@ -65,6 +65,47 @@ _provider_call_hooks: ContextVar[ProviderCallHooks | None] = ContextVar(
     "provider_call_hooks",
     default=None,
 )
+
+
+@dataclass
+class ModelCallCapture:
+    """仅捕获计费元数据，不保存 Prompt、图片或用户输入。"""
+
+    attempted: bool = False
+    usage: dict[str, int] = field(default_factory=dict)
+
+
+_model_call_capture: ContextVar[ModelCallCapture | None] = ContextVar(
+    "model_call_capture",
+    default=None,
+)
+
+
+@contextmanager
+def capture_model_call() -> Iterator[ModelCallCapture]:
+    capture = ModelCallCapture()
+    token = _model_call_capture.set(capture)
+    try:
+        yield capture
+    finally:
+        _model_call_capture.reset(token)
+
+
+def _mark_model_call_attempted() -> None:
+    capture = _model_call_capture.get()
+    if capture is not None:
+        capture.attempted = True
+
+
+def _capture_model_usage(usage: Any) -> None:
+    capture = _model_call_capture.get()
+    if capture is None or usage is None:
+        return
+    capture.usage = {
+        "prompt_tokens": int(usage.prompt_tokens),
+        "completion_tokens": int(usage.completion_tokens),
+        "total_tokens": int(usage.total_tokens),
+    }
 
 def last_generation_meta() -> Optional[Dict[str, Any]]:
     """返回最近一次方案生成的元数据；无则为 None。"""
@@ -202,6 +243,7 @@ def _chat_json(
             provider_hooks.release_call(provider_permit)
         raise
     try:
+        _mark_model_call_attempted()
         resp = client.chat.completions.create(
             model=settings.llm_model,
             messages=[
@@ -227,6 +269,7 @@ def _chat_json(
 
     if provider_hooks is not None and provider_permit is not None:
         provider_hooks.record_success(provider_permit)
+    _capture_model_usage(getattr(resp, "usage", None))
     try:
         if usage_out is not None and resp.usage is not None:
             usage_out.update(
@@ -296,6 +339,7 @@ def chat_reply(
     messages.append({"role": "user", "content": message})
 
     try:
+        _mark_model_call_attempted()
         resp = get_client().chat.completions.create(
             model=settings.llm_model,
             messages=messages,
@@ -303,6 +347,7 @@ def chat_reply(
             temperature=0.8,
             **_provider_request_kwargs(),
         )
+        _capture_model_usage(getattr(resp, "usage", None))
         return resp.choices[0].message.content.strip()
     except LLMUnavailable:
         raise
@@ -672,7 +717,9 @@ def analyze_image(image_bytes: bytes, file_name: str) -> Dict[str, Any]:
     data_url = f"data:{mime};base64,{b64}"
 
     try:
-        resp = get_vl_client().chat.completions.create(
+        client = get_vl_client()
+        _mark_model_call_attempted()
+        resp = client.chat.completions.create(
             model=settings.vl_model,
             messages=[
                 {"role": "system", "content": _VL_FLOORPLAN_SYSTEM},
@@ -689,6 +736,7 @@ def analyze_image(image_bytes: bytes, file_name: str) -> Dict[str, Any]:
             temperature=0.4,
             **_provider_request_kwargs(),
         )
+        _capture_model_usage(getattr(resp, "usage", None))
         data = json.loads(resp.choices[0].message.content)
         if not data.get("findings"):
             raise LLMUnavailable("VL 返回结果缺少 findings")
@@ -771,7 +819,9 @@ def analyze_room_model(image_bytes: bytes, file_name: str) -> Dict[str, Any] | N
     data_url = f"data:{mime};base64,{b64}"
 
     try:
-        resp = get_vl_client().chat.completions.create(
+        client = get_vl_client()
+        _mark_model_call_attempted()
+        resp = client.chat.completions.create(
             model=settings.vl_model,
             messages=[
                 {"role": "system", "content": _VL_ROOM_MODEL_SYSTEM},
@@ -788,6 +838,7 @@ def analyze_room_model(image_bytes: bytes, file_name: str) -> Dict[str, Any] | N
             temperature=0.3,
             **_provider_request_kwargs(),
         )
+        _capture_model_usage(getattr(resp, "usage", None))
         data = json.loads(resp.choices[0].message.content)
     except LLMUnavailable:
         raise

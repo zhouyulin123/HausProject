@@ -396,6 +396,26 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "event_key",
             "occurred_at",
         } <= timeline_columns
+        uploaded_image_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("uploaded_images")
+        }
+        assert {
+            "analysis_model_call_attempted",
+            "analysis_billing_status",
+            "analysis_cost_cny",
+        } <= uploaded_image_columns
+        requirement_parse_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "requirement_parse_results"
+            )
+        }
+        assert {
+            "model_call_attempted",
+            "billing_status",
+            "cost_cny",
+        } <= requirement_parse_columns
         effect_render_job_foreign_keys = {
             tuple(foreign_key["constrained_columns"]): foreign_key["referred_table"]
             for foreign_key in inspect(inspection_engine).get_foreign_keys(
