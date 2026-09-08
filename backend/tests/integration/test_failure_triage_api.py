@@ -116,10 +116,11 @@ def test_failure_triage_api_is_admin_only_strict_and_private(monkeypatch):
                 cluster_url,
                 json={"status": "verified", "verified_version": "eval-2"},
             )
-            assert verified.status_code == 200
-            assert verified.json()["status"] == "verified"
-            assert verified.json()["fixed_version"] == "rules-2"
-            assert verified.json()["verified_version"] == "eval-2"
+            assert verified.status_code == 409
+            assert "签名复测证据" in verified.json()["detail"]
+            unchanged = client.get("/api/admin/quality/failure-clusters").json()
+            assert unchanged["items"][0]["status"] == "resolved"
+            assert unchanged["items"][0]["verified_version"] is None
             serialized = str(body).lower()
             assert "case_id" not in serialized
             assert "private-case" not in serialized

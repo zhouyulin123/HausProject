@@ -39,7 +39,6 @@ _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 _NEXT_STATUS = {
     "open": "in_progress",
     "in_progress": "resolved",
-    "resolved": "verified",
 }
 
 
@@ -265,6 +264,15 @@ def update_failure_cluster(
     cluster: FailureCluster,
     update: FailureClusterUpdate,
 ) -> FailureCluster:
+    # v2 分诊报告只列出现存失败，没有完整覆盖声明；“未列出”不能证明已修复。
+    # verified 必须留给未来校验 manifest/evidence/output 摘要与覆盖范围的专用流程。
+    if cluster.status == "verified":
+        raise FailureTriageConflict("已验证失败簇不能通过管理员 PATCH 修改")
+    if update.status == "verified" or "verified_version" in update.model_fields_set:
+        raise FailureTriageConflict(
+            "verified 状态只能由签名复测证据流程写入，管理员最多标记 resolved"
+        )
+
     target_status = update.status or cluster.status
     if update.status is not None and update.status != cluster.status:
         expected = _NEXT_STATUS.get(cluster.status)
@@ -279,11 +287,7 @@ def update_failure_cluster(
         if "fixed_version" in update.model_fields_set
         else cluster.fixed_version
     )
-    verified_version = (
-        update.verified_version
-        if "verified_version" in update.model_fields_set
-        else cluster.verified_version
-    )
+    verified_version = cluster.verified_version
     if target_status == "in_progress" and not owner:
         raise FailureTriageConflict("认领失败簇必须指定负责人")
     if "fixed_version" in update.model_fields_set and target_status not in {
@@ -291,12 +295,8 @@ def update_failure_cluster(
         "verified",
     }:
         raise FailureTriageConflict("修复版本只能在标记修复后写入")
-    if "verified_version" in update.model_fields_set and target_status != "verified":
-        raise FailureTriageConflict("复测版本只能在验证关闭时写入")
-    if target_status in {"resolved", "verified"} and not fixed_version:
+    if target_status == "resolved" and not fixed_version:
         raise FailureTriageConflict("标记修复必须指定修复版本")
-    if target_status == "verified" and not verified_version:
-        raise FailureTriageConflict("验证关闭必须指定复测版本")
 
     cluster.status = target_status
     cluster.owner = owner

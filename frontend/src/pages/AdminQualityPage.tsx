@@ -232,7 +232,6 @@ function FailureClusterRow({
 }) {
   const [owner, setOwner] = useState(cluster.owner ?? "");
   const [fixedVersion, setFixedVersion] = useState(cluster.fixed_version ?? "");
-  const [verifiedVersion, setVerifiedVersion] = useState(cluster.verified_version ?? "");
   return (
     <article className="border border-cream-200 bg-white p-4">
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
@@ -301,26 +300,10 @@ function FailureClusterRow({
           </div>
         )}
         {cluster.status === "resolved" && (
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <input
-              aria-label={`${cluster.code} 复测版本`}
-              value={verifiedVersion}
-              maxLength={100}
-              onChange={(event) => setVerifiedVersion(event.target.value)}
-              placeholder="回归复测版本"
-              className="min-h-9 min-w-0 flex-1 border border-cream-300 px-3 text-xs outline-none focus:border-sage-500"
-            />
-            <Button
-              size="sm"
-              disabled={busy || !verifiedVersion.trim()}
-              onClick={() => onUpdate(cluster.id, {
-                status: "verified",
-                verified_version: verifiedVersion.trim(),
-              })}
-            >
-              <ShieldCheck className="h-4 w-4" /> 验证关闭
-            </Button>
-          </div>
+          <p className="flex items-center gap-2 text-xs text-stone-500">
+            <ShieldCheck className="h-4 w-4" />
+            等待受控回归证据验证，管理员不能手工关闭
+          </p>
         )}
         {cluster.status === "verified" && (
           <p className="flex items-center gap-2 text-xs text-sage-700">

@@ -212,7 +212,9 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("待认领");
     expect(html).toContain("认领并开始修复");
     expect(html).toContain("标记修复");
-    expect(html).toContain("验证关闭");
+    expect(html).toContain("等待受控回归证据验证");
+    expect(html).not.toContain("回归复测版本");
+    expect(html).not.toContain(">验证关闭<");
     expect(html).not.toContain("case_id");
   });
 

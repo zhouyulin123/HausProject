@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -93,11 +91,10 @@ def test_report_sync_is_idempotent_and_verified_recurrence_reopens(db):
         cluster,
         FailureClusterUpdate(status="resolved", fixed_version="rules-2"),
     )
-    update_failure_cluster(
-        db,
-        cluster,
-        FailureClusterUpdate(status="verified", verified_version="eval-2"),
-    )
+    # 模拟未来由专用验签复测流程写入的 verified 记录，验证失败复发仍会重开。
+    cluster.status = "verified"
+    cluster.verified_version = "eval-2"
+    db.commit()
 
     sync_verified_report(
         db,
@@ -154,12 +151,41 @@ def test_status_machine_rejects_skips_and_requires_versions(db):
         cluster,
         FailureClusterUpdate(status="resolved", fixed_version="rules-2"),
     )
-    with pytest.raises(FailureTriageConflict, match="复测版本"):
+    with pytest.raises(FailureTriageConflict, match="签名复测证据"):
         update_failure_cluster(
             db,
             cluster,
-            FailureClusterUpdate(status="verified"),
+            FailureClusterUpdate(status="verified", verified_version="eval-2"),
         )
+    with pytest.raises(FailureTriageConflict, match="签名复测证据"):
+        update_failure_cluster(
+            db,
+            cluster,
+            FailureClusterUpdate(verified_version="operator-claim"),
+        )
+    db.refresh(cluster)
+    assert cluster.status == "resolved"
+    assert cluster.verified_version is None
+
+
+def test_admin_update_cannot_mutate_verified_cluster(db):
+    sync_verified_report(db, _report("report-001"), signing_key=_SIGNING_KEY)
+    cluster = db.scalar(select(FailureCluster))
+    assert cluster is not None
+    cluster.status = "verified"
+    cluster.fixed_version = "rules-2"
+    cluster.verified_version = "signed-eval-2"
+    db.commit()
+
+    with pytest.raises(FailureTriageConflict, match="管理员 PATCH"):
+        update_failure_cluster(
+            db,
+            cluster,
+            FailureClusterUpdate(owner="another-operator"),
+        )
+    db.refresh(cluster)
+    assert cluster.owner is None
+    assert cluster.verified_version == "signed-eval-2"
 
 
 def test_report_schema_rejects_case_ids_and_invalid_signatures(db):
