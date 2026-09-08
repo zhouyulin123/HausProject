@@ -11,6 +11,7 @@ from app.api.routes import scenes
 from app.schemas.scene_agent import SceneOperationBatch
 from app.db.database import Base, get_db
 from app.db.models import BlenderRenderJob, DesignTask, Product
+from app.db.models import CustomFurnitureDraftMutation, DesignPlanVersion
 from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
@@ -555,3 +556,146 @@ def test_historical_scene_stays_readable_but_expired_product_blocks_final_render
         "sku": "SOFA-001",
         "reason_codes": ["price_expired"],
     }
+
+
+@pytest.mark.integration
+def test_custom_draft_enters_scene_with_server_dimensions_and_survives_history(
+    scene_api_context,
+):
+    client, owner_id, _, plan_version_id = scene_api_context
+    headers = {"X-Session-ID": owner_id}
+    created = client.post(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+        json={"scene": _scene_payload()},
+    )
+    scene_id = created.json()["id"]
+    spec = {
+        "family": "table",
+        "name": "定制书桌",
+        "purpose": "desk",
+        "material": "实木（橡木）",
+        "dimensions": {
+            "width_mm": 1500,
+            "height_mm": 760,
+            "depth_mm": 700,
+        },
+        "structure": {
+            "top_shape": "rectangle",
+            "base_style": "four_leg",
+            "support_count": 4,
+            "seat_count": 2,
+            "top_thickness_mm": 30,
+            "edge_radius_mm": 6,
+        },
+    }
+    with client.app.state.scene_db_factory() as db:
+        plan = db.get(DesignPlanVersion, plan_version_id)
+        task_id = plan.revision.task_id
+        db.add(
+            CustomFurnitureDraftMutation(
+                task_id=task_id,
+                client_mutation_id="draft-scene-001",
+                request_json={"custom_furniture_spec": spec},
+                response_json={
+                    "task_id": task_id,
+                    "state_version": 1,
+                    "custom_furniture_spec": spec,
+                },
+            )
+        )
+        db.commit()
+
+    request = {
+        "baseVersion": 1,
+        "clientMutationId": "custom-scene-add-001",
+        "draftClientMutationId": "draft-scene-001",
+        "position": {"x": 0.8, "z": 0.6},
+    }
+    added = client.post(
+        f"/api/design/scenes/{scene_id}/custom-furniture-items",
+        headers=headers,
+        json=request,
+    )
+    replayed = client.post(
+        f"/api/design/scenes/{scene_id}/custom-furniture-items",
+        headers=headers,
+        json=request,
+    )
+
+    assert added.status_code == 200
+    assert replayed.status_code == 200
+    assert replayed.json()["current_version"] == added.json()["current_version"]
+    custom = next(
+        item for item in added.json()["scene"]["items"]
+        if item["sourceType"] == "custom_furniture_draft"
+    )
+    assert custom["instanceId"].startswith("custom-")
+    assert custom["sku"].startswith("CUSTOM-")
+    assert custom["dimensions"] == {"x": 1.5, "y": 0.76, "z": 0.7}
+    assert custom["customFurnitureRef"]["taskId"] == task_id
+    assert custom["customFurnitureRef"]["planVersionId"] == plan_version_id
+    assert custom["customFurnitureRef"]["introducedSceneVersion"] == 2
+
+    moved_scene = added.json()["scene"]
+    next(item for item in moved_scene["items"] if item["instanceId"] == custom["instanceId"])[
+        "transform"
+    ]["position"]["x"] = 1.2
+    moved = client.put(
+        f"/api/design/scenes/{scene_id}",
+        headers=headers,
+        json={"baseVersion": 2, "scene": moved_scene},
+    )
+    assert moved.status_code == 200
+
+    deleted_scene = moved.json()["scene"]
+    deleted_scene["items"] = [
+        item for item in deleted_scene["items"]
+        if item["instanceId"] != custom["instanceId"]
+    ]
+    deleted = client.put(
+        f"/api/design/scenes/{scene_id}",
+        headers=headers,
+        json={"baseVersion": 3, "scene": deleted_scene},
+    )
+    assert deleted.status_code == 200
+    history = client.get(
+        f"/api/design/scenes/{scene_id}/versions",
+        headers=headers,
+    )
+    version_two = next(
+        item for item in history.json()["versions"] if item["version"] == 2
+    )
+    assert custom["instanceId"] in {
+        item["instanceId"] for item in version_two["scene"]["items"]
+    }
+
+
+@pytest.mark.integration
+def test_manual_scene_update_cannot_disguise_catalog_sku_as_custom_draft(
+    scene_api_context,
+):
+    client, owner_id, _, plan_version_id = scene_api_context
+    headers = {"X-Session-ID": owner_id}
+    created = client.post(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+        json={"scene": _scene_payload()},
+    )
+    payload = created.json()["scene"]
+    payload["items"][0]["sourceType"] = "custom_furniture_draft"
+    payload["items"][0]["customFurnitureRef"] = {
+        "taskId": 1,
+        "planVersionId": plan_version_id,
+        "introducedSceneVersion": 2,
+        "draftClientMutationId": "fake-draft",
+        "draftStateVersion": 1,
+        "specDigest": "sha256:" + "0" * 64,
+    }
+    response = client.put(
+        f"/api/design/scenes/{created.json()['id']}",
+        headers=headers,
+        json={"baseVersion": 1, "scene": payload},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "custom_scene_binding_invalid"
