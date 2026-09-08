@@ -98,6 +98,9 @@ export interface FailureCluster {
   detected_version: string;
   fixed_version: string | null;
   verified_version: string | null;
+  verification_report_id: string | null;
+  report_digest: string | null;
+  coverage_digest: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -143,5 +146,36 @@ export interface FailureTriageReport {
 export interface FailureTriageSyncResponse {
   imported: boolean;
   cluster_count: number;
+  clusters: FailureCluster[];
+}
+
+export interface FailureVerificationReport {
+  schema_version: "1.0";
+  report_type: "failure_verification";
+  report_id: string;
+  taxonomy_version: string;
+  data_version: string;
+  candidate_version: string;
+  release_gate_report_digest: string;
+  manifest_digests: [string, string, string];
+  evidence_digests: [string, string, string];
+  baseline_evidence_digests: [string, string, string];
+  output_digests: string[];
+  covered_splits: ["blind", "development", "regression"];
+  verified_clusters: Array<{
+    fingerprint: string;
+    fixed_version: string;
+  }>;
+  signature_algorithm: "hmac-sha256";
+  signature_key_id: string;
+  generated_at: string;
+  signature: string;
+}
+
+export interface FailureVerificationSyncResponse {
+  imported: boolean;
+  cluster_count: number;
+  report_digest: string;
+  coverage_digest: string;
   clusters: FailureCluster[];
 }

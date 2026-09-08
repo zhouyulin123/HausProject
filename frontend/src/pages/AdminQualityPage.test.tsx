@@ -2,10 +2,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   FailureTriageImportControl,
+  FailureVerificationImportControl,
   FailureTriageContent,
   QualitySummaryContent,
   RealWorldReadinessContent,
   failureTriageImportErrorMessage,
+  failureVerificationImportErrorMessage,
 } from "./AdminQualityPage";
 import { AdminApiError, type RealWorldReadiness } from "@/api/adminApi";
 import type { FailureClusterListResponse } from "@/types/quality";
@@ -150,6 +152,9 @@ describe("运营质量看板内容", () => {
           detected_version: "candidate-1",
           fixed_version: null,
           verified_version: null,
+          verification_report_id: null,
+          report_digest: null,
+          coverage_digest: null,
           created_at: "2026-09-02T08:00:00Z",
           updated_at: "2026-09-02T08:00:00Z",
         },
@@ -170,6 +175,9 @@ describe("运营质量看板内容", () => {
           detected_version: "candidate-1",
           fixed_version: null,
           verified_version: null,
+          verification_report_id: null,
+          report_digest: null,
+          coverage_digest: null,
           created_at: "2026-09-02T08:00:00Z",
           updated_at: "2026-09-02T08:00:00Z",
         },
@@ -190,6 +198,9 @@ describe("运营质量看板内容", () => {
           detected_version: "candidate-1",
           fixed_version: "prompt-2",
           verified_version: null,
+          verification_report_id: null,
+          report_digest: null,
+          coverage_digest: null,
           created_at: "2026-09-02T08:00:00Z",
           updated_at: "2026-09-02T08:00:00Z",
         },
@@ -320,5 +331,34 @@ describe("运营质量看板内容", () => {
       "report_id 已用于不同报告",
       409,
     ))).toBe("报告与已导入记录冲突，请核对报告版本和签名");
+  });
+
+  it("复测区提供仅接受 JSON 的导入命令且不显示证明内容", () => {
+    const html = renderToStaticMarkup(
+      <FailureVerificationImportControl
+        importing={false}
+        error=""
+        success=""
+        onFile={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("导入签名复测证明");
+    expect(html).toContain('accept="application/json,.json"');
+    expect(html).not.toContain("verification-001");
+    expect(html).not.toContain("case_id");
+    expect(html).not.toContain("fingerprint");
+    expect(html).not.toContain("signature");
+  });
+
+  it("复测导入区区分解析、验签、冲突与服务未配置", () => {
+    expect(failureVerificationImportErrorMessage(new Error("复测证明 JSON 解析失败")))
+      .toBe("复测证明 JSON 解析失败，请选择有效的 JSON 文件");
+    expect(failureVerificationImportErrorMessage(new AdminApiError("签名无效", 422)))
+      .toBe("复测证明验签失败，未更新任何失败簇");
+    expect(failureVerificationImportErrorMessage(new AdminApiError("内容冲突", 409)))
+      .toBe("复测证明与已导入记录冲突，请核对证明版本");
+    expect(failureVerificationImportErrorMessage(new AdminApiError("未配置", 503)))
+      .toBe("服务端复测证明验签尚未配置，未更新失败簇");
   });
 });

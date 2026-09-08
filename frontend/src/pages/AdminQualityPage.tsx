@@ -19,6 +19,7 @@ import {
   fetchQualitySummary,
   fetchRealWorldReadiness,
   importFailureTriageReportFile,
+  importFailureVerificationReportFile,
   updateFailureCluster,
 } from "@/api/adminApi";
 import type { RealWorldReadiness, RealWorldSplit } from "@/api/adminApi";
@@ -118,6 +119,62 @@ export function FailureTriageImportControl({
         <label className={`inline-flex min-h-9 items-center justify-center gap-2 border border-stone-300 bg-white/70 px-3 text-sm font-medium text-stone-700 transition-colors hover:border-sage-500 hover:text-sage-700 ${importing ? "pointer-events-none opacity-50" : "cursor-pointer"}`}>
           {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
           {importing ? "正在导入" : "导入签名报告"}
+          <input
+            type="file"
+            accept="application/json,.json"
+            className="sr-only"
+            disabled={importing}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              if (file) onFile(file);
+            }}
+          />
+        </label>
+      </div>
+      {error && <p role="alert" className="mt-3 border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">{error}</p>}
+      {success && <p role="status" className="mt-3 border border-sage-200 bg-sage-50 px-4 py-3 text-xs text-sage-700">{success}</p>}
+    </section>
+  );
+}
+
+export function failureVerificationImportErrorMessage(error: unknown): string {
+  if (error instanceof AdminApiError && error.status === 409) {
+    return "复测证明与已导入记录冲突，请核对证明版本";
+  }
+  if (error instanceof AdminApiError && error.status === 422) {
+    return "复测证明验签失败，未更新任何失败簇";
+  }
+  if (error instanceof AdminApiError && error.status === 503) {
+    return "服务端复测证明验签尚未配置，未更新失败簇";
+  }
+  if (error instanceof Error && error.message === "复测证明 JSON 解析失败") {
+    return "复测证明 JSON 解析失败，请选择有效的 JSON 文件";
+  }
+  return error instanceof Error ? error.message : "签名复测证明导入失败";
+}
+
+export function FailureVerificationImportControl({
+  importing,
+  error,
+  success,
+  onFile,
+}: {
+  importing: boolean;
+  error: string;
+  success: string;
+  onFile: (file: File) => void;
+}) {
+  return (
+    <section className="mt-6 border-t border-cream-200 pt-6" aria-label="导入签名复测证明">
+      <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+        <div>
+          <h2 className="text-sm font-semibold text-stone-700">签名复测证明</h2>
+          <p className="mt-1 text-xs text-stone-400">导入受控回归流程生成的 JSON 证明</p>
+        </div>
+        <label className={`inline-flex min-h-9 items-center justify-center gap-2 border border-stone-300 bg-white/70 px-3 text-sm font-medium text-stone-700 transition-colors hover:border-sage-500 hover:text-sage-700 ${importing ? "pointer-events-none opacity-50" : "cursor-pointer"}`}>
+          {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+          {importing ? "正在验证" : "导入签名复测证明"}
           <input
             type="file"
             accept="application/json,.json"
@@ -662,6 +719,9 @@ export default function AdminQualityPage() {
   const [failureImporting, setFailureImporting] = useState(false);
   const [failureImportError, setFailureImportError] = useState("");
   const [failureImportSuccess, setFailureImportSuccess] = useState("");
+  const [verificationImporting, setVerificationImporting] = useState(false);
+  const [verificationImportError, setVerificationImportError] = useState("");
+  const [verificationImportSuccess, setVerificationImportSuccess] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -763,6 +823,25 @@ export default function AdminQualityPage() {
     }
   }, [loadFailureClusters]);
 
+  const handleFailureVerificationFile = useCallback(async (file: File) => {
+    setVerificationImporting(true);
+    setVerificationImportError("");
+    setVerificationImportSuccess("");
+    try {
+      const result = await importFailureVerificationReportFile(file);
+      setVerificationImportSuccess(
+        result.imported
+          ? `已验证关闭 ${result.cluster_count} 个失败簇`
+          : "该签名复测证明已导入，失败簇已刷新",
+      );
+      await loadFailureClusters();
+    } catch (reason) {
+      setVerificationImportError(failureVerificationImportErrorMessage(reason));
+    } finally {
+      setVerificationImporting(false);
+    }
+  }, [loadFailureClusters]);
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10">
       <div className="flex flex-col gap-5 border-b border-cream-300 pb-6 sm:flex-row sm:items-end sm:justify-between">
@@ -825,6 +904,12 @@ export default function AdminQualityPage() {
         error={failureImportError}
         success={failureImportSuccess}
         onFile={(file) => void handleFailureReportFile(file)}
+      />
+      <FailureVerificationImportControl
+        importing={verificationImporting}
+        error={verificationImportError}
+        success={verificationImportSuccess}
+        onFile={(file) => void handleFailureVerificationFile(file)}
       />
       <FailureTriageContent
         data={failureClusters}

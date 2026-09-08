@@ -29,6 +29,29 @@ const validFailureReport = {
   }],
 };
 
+const validFailureVerificationReport = {
+  schema_version: "1.0" as const,
+  report_type: "failure_verification" as const,
+  report_id: "verification-001",
+  taxonomy_version: "taxonomy-1",
+  data_version: "data-1",
+  candidate_version: "candidate-2",
+  release_gate_report_digest: `sha256:${"0".repeat(64)}`,
+  manifest_digests: [1, 2, 3].map((value) => `sha256:${String(value).repeat(64)}`),
+  evidence_digests: [4, 5, 6].map((value) => `sha256:${String(value).repeat(64)}`),
+  baseline_evidence_digests: [7, 8, 9].map((value) => `sha256:${String(value).repeat(64)}`),
+  output_digests: [`sha256:${"a".repeat(64)}`],
+  covered_splits: ["blind", "development", "regression"] as const,
+  verified_clusters: [{
+    fingerprint: "b".repeat(64),
+    fixed_version: "candidate-2",
+  }],
+  signature_algorithm: "hmac-sha256" as const,
+  signature_key_id: "eval-report-v1",
+  generated_at: "2026-09-08T12:00:00Z",
+  signature: "c".repeat(64),
+};
+
 describe("运营质量汇总 API", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -196,5 +219,74 @@ describe("运营质量汇总 API", () => {
       expect.objectContaining({ status: 422, message: "失败分诊报告签名无效" }),
     );
     await expect(syncFailureTriageReport(validFailureReport)).rejects.toBeInstanceOf(AdminApiError);
+  });
+
+  it("只解析复测证明并调用管理员 verify 端点", async () => {
+    const response = {
+      imported: true,
+      cluster_count: 1,
+      report_digest: `sha256:${"d".repeat(64)}`,
+      coverage_digest: `sha256:${"e".repeat(64)}`,
+      clusters: [],
+    };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(response));
+    vi.stubGlobal("fetch", fetchMock);
+    const { importFailureVerificationReportFile } = await import("./adminApi");
+
+    await expect(importFailureVerificationReportFile(new File(
+      [JSON.stringify(validFailureVerificationReport)],
+      "verification.json",
+      { type: "application/json" },
+    ))).resolves.toEqual(response);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/admin/quality/failure-clusters/verify",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)))
+      .toEqual(validFailureVerificationReport);
+  });
+
+  it.each([
+    ["split 摘要不足", { manifest_digests: validFailureVerificationReport.manifest_digests.slice(0, 2) }],
+    ["split 顺序错误", { covered_splits: ["development", "regression", "blind"] }],
+    ["摘要未排序去重", { evidence_digests: [
+      validFailureVerificationReport.evidence_digests[1],
+      validFailureVerificationReport.evidence_digests[0],
+      validFailureVerificationReport.evidence_digests[1],
+    ] }],
+    ["失败簇为空", { verified_clusters: [] }],
+    ["失败簇指纹重复", { verified_clusters: [
+      validFailureVerificationReport.verified_clusters[0],
+      validFailureVerificationReport.verified_clusters[0],
+    ] }],
+    ["包含额外隐私字段", { case_id: "private-case" }],
+  ])("本地拒绝%s的复测证明且不请求服务端", async (_label, override) => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+    const { importFailureVerificationReportFile } = await import("./adminApi");
+    const report = { ...validFailureVerificationReport, ...override };
+
+    await expect(importFailureVerificationReportFile(new File(
+      [JSON.stringify(report)], "verification.json", { type: "application/json" },
+    ))).rejects.toThrow("复测证明格式无效或缺少签名字段");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("限制复测证明为 JSON 且不超过 1 MB", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+    const { importFailureVerificationReportFile } = await import("./adminApi");
+
+    await expect(importFailureVerificationReportFile(
+      new File(["{bad"], "verification.json", { type: "application/json" }),
+    )).rejects.toThrow("复测证明 JSON 解析失败");
+    await expect(importFailureVerificationReportFile(
+      new File(["{}"], "verification.txt"),
+    )).rejects.toThrow("仅支持 JSON 格式的签名复测证明");
+    await expect(importFailureVerificationReportFile(
+      new File(["x".repeat(1024 * 1024 + 1)], "verification.json"),
+    )).rejects.toThrow("签名复测证明不能超过 1 MB");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

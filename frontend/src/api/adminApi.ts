@@ -11,6 +11,8 @@ import type {
   FailureClusterUpdate,
   FailureTriageReport,
   FailureTriageSyncResponse,
+  FailureVerificationReport,
+  FailureVerificationSyncResponse,
   QualitySummary,
   QualityWindowDays,
 } from "@/types/quality";
@@ -120,6 +122,15 @@ export async function syncFailureTriageReport(
   );
 }
 
+export async function verifyFailureClusters(
+  report: FailureVerificationReport,
+): Promise<FailureVerificationSyncResponse> {
+  return adminRequest<FailureVerificationSyncResponse>(
+    "/api/admin/quality/failure-clusters/verify",
+    { method: "POST", body: JSON.stringify(report) },
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -152,6 +163,49 @@ const failureKeys = new Set([
   "occurrence_count",
   "affected_count",
 ]);
+const verificationReportKeys = new Set([
+  "schema_version",
+  "report_type",
+  "report_id",
+  "taxonomy_version",
+  "data_version",
+  "candidate_version",
+  "release_gate_report_digest",
+  "manifest_digests",
+  "evidence_digests",
+  "baseline_evidence_digests",
+  "output_digests",
+  "covered_splits",
+  "verified_clusters",
+  "signature_algorithm",
+  "signature_key_id",
+  "generated_at",
+  "signature",
+]);
+const verifiedClusterKeys = new Set(["fingerprint", "fixed_version"]);
+const identifierPattern = /^[A-Za-z0-9._:-]{1,100}$/;
+
+function hasExactKeys(value: Record<string, unknown>, keys: Set<string>): boolean {
+  return Object.keys(value).length === keys.size
+    && Object.keys(value).every((key) => keys.has(key));
+}
+
+function isBoundedTrimmedString(value: unknown, maxLength = 100): value is string {
+  return typeof value === "string"
+    && value.length >= 1
+    && value.length <= maxLength
+    && value.trim() === value;
+}
+
+function isSortedUniqueDigestList(
+  value: unknown,
+  exactLength?: number,
+): value is string[] {
+  return Array.isArray(value)
+    && (exactLength === undefined ? value.length >= 1 && value.length <= 500 : value.length === exactLength)
+    && value.every((item) => typeof item === "string" && digestPattern.test(item))
+    && value.join("\n") === [...new Set(value)].sort().join("\n");
+}
 
 export function parseFailureTriageReportJson(text: string): FailureTriageReport {
   let parsed: unknown;
@@ -220,6 +274,82 @@ export async function importFailureTriageReportFile(
   }
   const report = parseFailureTriageReportJson(await file.text());
   return syncFailureTriageReport(report);
+}
+
+export function parseFailureVerificationReportJson(
+  text: string,
+): FailureVerificationReport {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("复测证明 JSON 解析失败");
+  }
+  if (!isRecord(parsed)) throw new Error("复测证明格式无效或缺少签名字段");
+  const clusters = parsed.verified_clusters;
+  const fingerprints = Array.isArray(clusters)
+    ? clusters.map((cluster) => isRecord(cluster) ? cluster.fingerprint : null)
+    : [];
+  const validClusters = Array.isArray(clusters)
+    && clusters.length >= 1
+    && clusters.length <= 500
+    && clusters.every((cluster) =>
+      isRecord(cluster)
+      && hasExactKeys(cluster, verifiedClusterKeys)
+      && typeof cluster.fingerprint === "string"
+      && /^[0-9a-f]{64}$/.test(cluster.fingerprint)
+      && isBoundedTrimmedString(cluster.fixed_version)
+    )
+    && fingerprints.length === new Set(fingerprints).size;
+  const coveredSplits = parsed.covered_splits;
+  const requiredStrings = [
+    parsed.taxonomy_version,
+    parsed.data_version,
+    parsed.candidate_version,
+  ];
+  if (
+    !hasExactKeys(parsed, verificationReportKeys)
+    || parsed.schema_version !== "1.0"
+    || parsed.report_type !== "failure_verification"
+    || parsed.signature_algorithm !== "hmac-sha256"
+    || typeof parsed.report_id !== "string"
+    || !identifierPattern.test(parsed.report_id)
+    || typeof parsed.signature_key_id !== "string"
+    || !identifierPattern.test(parsed.signature_key_id)
+    || requiredStrings.some((value) => !isBoundedTrimmedString(value))
+    || typeof parsed.release_gate_report_digest !== "string"
+    || !digestPattern.test(parsed.release_gate_report_digest)
+    || !isSortedUniqueDigestList(parsed.manifest_digests, 3)
+    || !isSortedUniqueDigestList(parsed.evidence_digests, 3)
+    || !isSortedUniqueDigestList(parsed.baseline_evidence_digests, 3)
+    || !isSortedUniqueDigestList(parsed.output_digests)
+    || !Array.isArray(coveredSplits)
+    || coveredSplits.join("\n") !== "blind\ndevelopment\nregression"
+    || !validClusters
+    || typeof parsed.signature !== "string"
+    || !/^[0-9a-f]{64}$/.test(parsed.signature)
+    || typeof parsed.generated_at !== "string"
+    || !/(?:Z|[+-]\d{2}:\d{2})$/.test(parsed.generated_at)
+    || Number.isNaN(Date.parse(parsed.generated_at))
+  ) {
+    throw new Error("复测证明格式无效或缺少签名字段");
+  }
+  return parsed as unknown as FailureVerificationReport;
+}
+
+const MAX_FAILURE_VERIFICATION_REPORT_BYTES = 1024 * 1024;
+
+export async function importFailureVerificationReportFile(
+  file: File,
+): Promise<FailureVerificationSyncResponse> {
+  if (!file.name.toLowerCase().endsWith(".json")) {
+    throw new Error("仅支持 JSON 格式的签名复测证明");
+  }
+  if (file.size > MAX_FAILURE_VERIFICATION_REPORT_BYTES) {
+    throw new Error("签名复测证明不能超过 1 MB");
+  }
+  const report = parseFailureVerificationReportJson(await file.text());
+  return verifyFailureClusters(report);
 }
 
 export async function updateFailureCluster(
