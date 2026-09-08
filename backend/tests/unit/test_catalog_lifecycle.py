@@ -423,7 +423,21 @@ def test_enrichment_normalizes_invalid_quantity_before_stock_gate(
     verify_and_enrich_plans(db, plans, at=NOW, region="CN-SH")
 
     assert plans[0]["catalogValidation"]["hardErrors"] == []
-    assert plans[0]["furnitureSuggestions"][0]["quantity"] == 1
+    suggestion = plans[0]["furnitureSuggestions"][0]
+    assert suggestion["quantity"] == 1
+    assert suggestion["catalogEligibility"]["schemaVersion"] == "1.0"
+    assert suggestion["catalogEligibility"]["checkedAt"] == NOW.isoformat()
+    assert suggestion["catalogEligibility"]["sku"] == "SOFA-ONE"
+    assert suggestion["catalogEligibility"]["quantity"] == 1
+    assert suggestion["catalogEligibility"]["eligible"] is True
+    assert suggestion["catalogEligibility"]["reasonCodes"] == []
+    assert suggestion["catalogEligibility"]["facts"]["stockQuantity"] == 1
+    assert suggestion["catalogEligibility"]["policy"] == {
+        "region": "CN-SH",
+        "allowDraft": False,
+        "maxUnitPrice": None,
+        "maxDimensionsMm": {},
+    }
     assert plans[0]["shopQuote"]["lineItems"][0]["quantity"] == 1
 
 

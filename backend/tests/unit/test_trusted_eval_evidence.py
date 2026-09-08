@@ -178,6 +178,52 @@ def _completed_system_run(
         case_id=case_id,
         task=task,
     )
+    catalog_snapshot = {
+        "schemaVersion": "1.0",
+        "checkedAt": "2026-09-01T00:00:00+00:00",
+        "sku": "SOFA-001",
+        "quantity": 1,
+        "unitPrice": 5000,
+        "dataVersion": "catalog-data-v1",
+        "recordVersion": 1,
+        "policy": {
+            "region": None,
+            "allowDraft": False,
+            "maxUnitPrice": 20000,
+            "maxDimensionsMm": {},
+        },
+        "facts": {
+            "isActive": True,
+            "dataOrigin": "merchant_verified",
+            "verificationStatus": "verified",
+            "availabilityStatus": "in_stock",
+            "stockQuantity": 10,
+            "leadTimeDaysMin": None,
+            "leadTimeDaysMax": None,
+            "priceValidFrom": "2026-01-01T00:00:00+00:00",
+            "priceValidTo": "2027-01-01T00:00:00+00:00",
+            "regionCodes": [],
+            "dimensionsMm": {"width": 1000, "depth": 800, "height": 900},
+        },
+        "eligible": True,
+        "reasonCodes": [],
+    }
+    suggestion = {
+        "id": "SOFA-001",
+        "sku": "SOFA-001",
+        "quantity": 1,
+        "unitPrice": 5000,
+        "dataVersion": "catalog-data-v1",
+        "recordVersion": 1,
+        "catalogEligibility": catalog_snapshot,
+    }
+    quote_line = {
+        "sku": "SOFA-001",
+        "unitPrice": 5000,
+        "quantity": 1,
+        "dataVersion": "catalog-data-v1",
+        "recordVersion": 1,
+    }
     revision = design_version_service.persist_generation(
         db,
         task=task,
@@ -189,15 +235,16 @@ def _completed_system_run(
                 "style": "现代",
                 "private_output": "do not serialize",
                 "furnitureSuggestions": [
-                    {"id": "SOFA-001"},
-                    {"id": "SOFA-001"},
+                    suggestion,
+                    suggestion,
                 ],
                 "shopQuote": {
                     "furnitureTotal": 10000,
                     "customTotal": 0,
                     "total": 10000,
                     "lineItems": [
-                        {"sku": "SOFA-001", "unitPrice": 5000, "quantity": 2}
+                        quote_line,
+                        quote_line,
                     ],
                     "customLineItems": [],
                 },
@@ -287,7 +334,7 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
 
     serialized = json.dumps(bundle, ensure_ascii=False)
     execution = bundle["executions"][0]
-    assert bundle["schema_version"] == "5.0"
+    assert bundle["schema_version"] == "6.0"
     assert bundle["dataset_fingerprint"] == dataset_fingerprint(
         dataset,
         split="regression",
@@ -308,6 +355,32 @@ def test_collector_binds_real_run_versions_and_redacts_private_payload(db, tmp_p
     assert "private prompt content" not in serialized
     assert "private_requirement" not in serialized
     assert "private_output" not in serialized
+
+
+def test_loader_rejects_legacy_v5_sku_metric_semantics(db, tmp_path):
+    dataset = _dataset(tmp_path)
+    run = _completed_system_run(
+        db,
+        dataset=dataset,
+        case_id="private-case-alias",
+    )
+    bundle = collect_trusted_evidence(
+        db,
+        dataset=dataset,
+        split="regression",
+        bindings=(RunBinding("private-case-alias", run.task_id, run.id),),
+        signing_key=SIGNING_KEY,
+        key_id="quality-ci-1",
+    )
+    bundle["schema_version"] = "5.0"
+
+    with pytest.raises(EvaluationInputError, match="5.0.*商品有效性.*商品匹配"):
+        verify_trusted_evidence(
+            bundle,
+            dataset=dataset,
+            split="regression",
+            verification_keys={"quality-ci-1": SIGNING_KEY},
+        )
 
 
 def test_execution_ref_is_stable_per_deployment_key_and_domain_isolated(

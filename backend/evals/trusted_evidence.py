@@ -34,6 +34,12 @@ from app.services.generation_provenance import (
     build_generation_provenance,
     canonical_digest,
 )
+from app.services.product_eligibility import (
+    ProductDimensions,
+    ProductEligibilityFacts,
+    ProductEligibilityPolicy,
+    evaluate_product_eligibility,
+)
 from evals.annotations import (
     AnnotationValidationError,
     ExecutionReview,
@@ -53,7 +59,7 @@ from evals.real_world import (
 from evals.security_access_attestation import verify_security_access_attestation
 
 
-EVIDENCE_SCHEMA_VERSION = "5.0"
+EVIDENCE_SCHEMA_VERSION = "6.0"
 EVIDENCE_TYPE = "system_execution"
 ATTESTATION_ALGORITHM = "HMAC-SHA256"
 TRUSTED_GENERATOR = "llm"
@@ -755,6 +761,241 @@ def _retry_boundary_metrics(run: GenerationRun) -> tuple[int, bool]:
     return 1, attempt_count > max_attempts
 
 
+def _catalog_time(
+    value: Any,
+    *,
+    run_id: int,
+    field: str,
+    optional: bool = False,
+) -> datetime | None:
+    if value is None and optional:
+        return None
+    if not isinstance(value, str):
+        raise EvaluationInputError(
+            f"系统运行 {run_id} 的冻结商品资格缺少 {field}"
+        )
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise EvaluationInputError(
+            f"系统运行 {run_id} 的冻结商品资格 {field} 不合法"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise EvaluationInputError(
+            f"系统运行 {run_id} 的冻结商品资格 {field} 缺少时区"
+        )
+    return parsed.astimezone(timezone.utc)
+
+
+def _frozen_catalog_reasons(snapshot: dict[str, Any], *, run_id: int) -> tuple[str, ...]:
+    policy = snapshot.get("policy")
+    facts = snapshot.get("facts")
+    expected_policy = {"region", "allowDraft", "maxUnitPrice", "maxDimensionsMm"}
+    expected_facts = {
+        "isActive",
+        "dataOrigin",
+        "verificationStatus",
+        "availabilityStatus",
+        "stockQuantity",
+        "leadTimeDaysMin",
+        "leadTimeDaysMax",
+        "priceValidFrom",
+        "priceValidTo",
+        "regionCodes",
+        "dimensionsMm",
+    }
+    if not isinstance(policy, dict) or set(policy) != expected_policy:
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格策略不完整")
+    if not isinstance(facts, dict) or set(facts) != expected_facts:
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格事实不完整")
+
+    quantity = snapshot.get("quantity")
+    unit_price = snapshot.get("unitPrice")
+    record_version = snapshot.get("recordVersion")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < minimum
+        for value, minimum in (
+            (quantity, 1),
+            (unit_price, 0),
+            (record_version, 1),
+        )
+    ):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格版本或数值不合法")
+    if any(
+        not isinstance(snapshot.get(field), str) or not snapshot[field].strip()
+        for field in ("sku", "dataVersion")
+    ):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格标识不完整")
+
+    checked_at = _catalog_time(snapshot.get("checkedAt"), run_id=run_id, field="checkedAt")
+    if checked_at is None:
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格缺少 checkedAt")
+    allow_draft = policy.get("allowDraft")
+    region = policy.get("region")
+    max_unit_price = policy.get("maxUnitPrice")
+    max_dimensions = policy.get("maxDimensionsMm")
+    if not isinstance(allow_draft, bool):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格 allowDraft 不合法")
+    if region is not None and (
+        not isinstance(region, str) or not region or region != region.strip().upper()
+    ):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格 region 不合法")
+    if max_unit_price is not None and (
+        isinstance(max_unit_price, bool)
+        or not isinstance(max_unit_price, int)
+        or max_unit_price < 0
+    ):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格预算不合法")
+    if not isinstance(max_dimensions, dict) or any(
+        key not in {"width", "depth", "height"}
+        or isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        for key, value in max_dimensions.items()
+    ):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格尺寸策略不合法")
+
+    if not isinstance(facts.get("isActive"), bool):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品启用状态不合法")
+    for field in ("dataOrigin", "verificationStatus", "availabilityStatus"):
+        value = facts.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise EvaluationInputError(
+                f"系统运行 {run_id} 的冻结商品资格 {field} 不合法"
+            )
+    stock = facts.get("stockQuantity")
+    if stock is not None and (
+        isinstance(stock, bool) or not isinstance(stock, int) or stock < 0
+    ):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品库存不合法")
+    for field in ("leadTimeDaysMin", "leadTimeDaysMax"):
+        value = facts.get(field)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            raise EvaluationInputError(
+                f"系统运行 {run_id} 的冻结商品资格 {field} 不合法"
+            )
+
+    valid_from = _catalog_time(
+        facts.get("priceValidFrom"),
+        run_id=run_id,
+        field="priceValidFrom",
+        optional=True,
+    )
+    valid_to = _catalog_time(
+        facts.get("priceValidTo"),
+        run_id=run_id,
+        field="priceValidTo",
+        optional=True,
+    )
+
+    region_codes = facts.get("regionCodes")
+    if (
+        not isinstance(region_codes, list)
+        or region_codes != sorted(set(region_codes))
+        or any(
+            not isinstance(code, str) or not code or code != code.strip().upper()
+            for code in region_codes
+        )
+    ):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品地区事实不合法")
+
+    dimensions = facts.get("dimensionsMm")
+    if not isinstance(dimensions, dict) or set(dimensions) != {"width", "depth", "height"}:
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品尺寸事实不完整")
+    if any(
+        value is not None and (isinstance(value, bool) or not isinstance(value, int))
+        for value in dimensions.values()
+    ):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品尺寸事实不合法")
+
+    frozen_facts = ProductEligibilityFacts(
+        is_active=facts["isActive"],
+        data_origin=facts["dataOrigin"],
+        verification_status=facts["verificationStatus"],
+        availability_status=facts["availabilityStatus"],
+        stock_quantity=stock,
+        lead_time_days_min=facts["leadTimeDaysMin"],
+        lead_time_days_max=facts["leadTimeDaysMax"],
+        price_valid_from=valid_from,
+        price_valid_to=valid_to,
+        region_codes=tuple(region_codes),
+        dimensions_mm=ProductDimensions(**dimensions),
+        unit_price=unit_price,
+    )
+    frozen_policy = ProductEligibilityPolicy(
+        checked_at=checked_at,
+        region=region,
+        allow_draft=allow_draft,
+        max_unit_price=max_unit_price,
+        max_dimensions_mm=(
+            ProductDimensions(
+                width=max_dimensions.get("width"),
+                depth=max_dimensions.get("depth"),
+                height=max_dimensions.get("height"),
+            )
+            if max_dimensions
+            else None
+        ),
+        required_quantity=quantity,
+    )
+    return evaluate_product_eligibility(frozen_facts, frozen_policy).reason_codes
+
+
+def _consume_valid_frozen_catalog_line(
+    suggestion: dict[str, Any],
+    *,
+    quote_lines: list[Any],
+    run_id: int,
+) -> None:
+    snapshot = suggestion.get("catalogEligibility")
+    expected_fields = {
+        "schemaVersion",
+        "checkedAt",
+        "sku",
+        "quantity",
+        "unitPrice",
+        "dataVersion",
+        "recordVersion",
+        "policy",
+        "facts",
+        "eligible",
+        "reasonCodes",
+    }
+    if not isinstance(snapshot, dict) or set(snapshot) != expected_fields:
+        raise EvaluationInputError(f"系统运行 {run_id} 缺少完整冻结商品资格证据")
+    if snapshot.get("schemaVersion") != "1.0":
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格版本不受支持")
+    reasons = _frozen_catalog_reasons(snapshot, run_id=run_id)
+    if snapshot.get("reasonCodes") != list(reasons) or snapshot.get("eligible") != (not reasons):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格结论无法复算")
+    if reasons:
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格未通过")
+
+    expected = {
+        "sku": snapshot["sku"],
+        "quantity": snapshot["quantity"],
+        "unitPrice": snapshot["unitPrice"],
+        "dataVersion": snapshot["dataVersion"],
+        "recordVersion": snapshot["recordVersion"],
+    }
+    if any(suggestion.get(field) != value for field, value in expected.items()):
+        raise EvaluationInputError(f"系统运行 {run_id} 的商品建议与冻结资格不一致")
+    matching_index = next(
+        (
+            index
+            for index, line in enumerate(quote_lines)
+            if isinstance(line, dict)
+            and all(line.get(field) == value for field, value in expected.items())
+        ),
+        None,
+    )
+    if matching_index is None:
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格与报价行不一致")
+    quote_lines.pop(matching_index)
+
+
 def _runtime_result(
     case: RealWorldCase,
     run: GenerationRun,
@@ -793,6 +1034,7 @@ def _runtime_result(
 
     recommended_skus = 0
     valid_skus = 0
+    product_match_accepted = 0
     quote_consistent = 0
     budget_within_limit = 0
     layout_passes = 0
@@ -807,14 +1049,31 @@ def _runtime_result(
         suggestions = plan.get("furnitureSuggestions")
         if not isinstance(suggestions, list):
             suggestions = []
+        raw_quote = record.get("quote")
+        frozen_quote = raw_quote.get("quote") if isinstance(raw_quote, dict) else None
+        quote_lines = (
+            list(frozen_quote.get("lineItems") or [])
+            if isinstance(frozen_quote, dict)
+            else []
+        )
         recommended_skus += len(suggestions)
         for suggestion in suggestions:
             sku = None
             if isinstance(suggestion, dict):
                 sku = suggestion.get("sku") or suggestion.get("id")
-            if isinstance(sku, str) and sku in allowed_skus:
-                valid_skus += 1
-        quote = record.get("quote")
+            if not isinstance(suggestion, dict) or not isinstance(sku, str):
+                raise EvaluationInputError(
+                    f"系统运行 {run.id} 的商品建议缺少冻结商品资格标识"
+                )
+            _consume_valid_frozen_catalog_line(
+                suggestion,
+                quote_lines=quote_lines,
+                run_id=run.id,
+            )
+            valid_skus += 1
+            if sku in allowed_skus:
+                product_match_accepted += 1
+        quote = raw_quote
         if isinstance(quote, dict):
             if _quote_is_consistent(quote):
                 quote_consistent += 1
@@ -872,7 +1131,7 @@ def _runtime_result(
         recommended_skus=recommended_skus,
         valid_skus=valid_skus,
         product_match_checks=recommended_skus,
-        product_match_accepted=valid_skus,
+        product_match_accepted=product_match_accepted,
         quote_checks=len(plans),
         quote_consistent=quote_consistent,
         budget_checks=len(plans),
@@ -1132,6 +1391,10 @@ def verify_trusted_evidence(
             raise EvaluationInputError("结果 schema 3.0 未绑定不可变方案输出")
         if payload.get("schema_version") == "4.0":
             raise EvaluationInputError("结果 schema 4.0 未绑定真实模型预测证据")
+        if payload.get("schema_version") == "5.0":
+            raise EvaluationInputError(
+                "结果 schema 5.0 未分离冻结商品有效性与人工商品匹配语义"
+            )
         raise EvaluationInputError(
             f"不支持的结果 schema_version：{payload.get('schema_version')}"
         )

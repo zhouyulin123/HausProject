@@ -27,7 +27,11 @@ from app.services import (
 from app.services.generation_provenance import canonical_digest
 from evals.real_world import load_case_manifest
 from evals.trusted_evidence import RunBinding, bind_evaluation_run, collect_trusted_evidence
-from tests.real_world_fixtures import write_v2_manifest
+from tests.real_world_fixtures import (
+    frozen_catalog_quote_line,
+    frozen_catalog_suggestion,
+    write_v2_manifest,
+)
 
 
 SIGNING_KEY = "prediction-evidence-test-key-at-least-32-bytes"
@@ -156,19 +160,18 @@ def _task_with_predictions(
 
 
 def _plan():
+    suggestion = frozen_catalog_suggestion()
     return {
         "id": "plan-a",
         "name": "预测证据方案",
         "style": "现代",
-        "furnitureSuggestions": [
-            {"id": "SOFA-001", "sku": "SOFA-001", "quantity": 1}
-        ],
+        "furnitureSuggestions": [suggestion],
         "shopQuote": {
             "currency": "CNY",
             "furnitureTotal": 10000,
             "customTotal": 0,
             "total": 10000,
-            "lineItems": [{"sku": "SOFA-001", "quantity": 1, "unitPrice": 10000}],
+            "lineItems": [frozen_catalog_quote_line(suggestion)],
             "customLineItems": [],
             "catalogVersion": "catalog-v1",
             "priceVersion": "price-v1",

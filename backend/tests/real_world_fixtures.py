@@ -6,6 +6,61 @@ from pathlib import Path
 from typing import Any
 
 
+def frozen_catalog_suggestion(
+    sku: str = "SOFA-001",
+    *,
+    unit_price: int = 10000,
+    quantity: int = 1,
+) -> dict[str, Any]:
+    data_version = "catalog-data-v1"
+    record_version = 1
+    return {
+        "id": sku,
+        "sku": sku,
+        "quantity": quantity,
+        "unitPrice": unit_price,
+        "dataVersion": data_version,
+        "recordVersion": record_version,
+        "catalogEligibility": {
+            "schemaVersion": "1.0",
+            "checkedAt": "2026-09-01T00:00:00+00:00",
+            "sku": sku,
+            "quantity": quantity,
+            "unitPrice": unit_price,
+            "dataVersion": data_version,
+            "recordVersion": record_version,
+            "policy": {
+                "region": None,
+                "allowDraft": False,
+                "maxUnitPrice": 20000,
+                "maxDimensionsMm": {},
+            },
+            "facts": {
+                "isActive": True,
+                "dataOrigin": "merchant_verified",
+                "verificationStatus": "verified",
+                "availabilityStatus": "in_stock",
+                "stockQuantity": max(10, quantity),
+                "leadTimeDaysMin": None,
+                "leadTimeDaysMax": None,
+                "priceValidFrom": "2026-01-01T00:00:00+00:00",
+                "priceValidTo": "2027-01-01T00:00:00+00:00",
+                "regionCodes": [],
+                "dimensionsMm": {"width": 1000, "depth": 800, "height": 900},
+            },
+            "eligible": True,
+            "reasonCodes": [],
+        },
+    }
+
+
+def frozen_catalog_quote_line(suggestion: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: suggestion[field]
+        for field in ("sku", "quantity", "unitPrice", "dataVersion", "recordVersion")
+    }
+
+
 def write_v2_manifest(
     root: Path,
     *,

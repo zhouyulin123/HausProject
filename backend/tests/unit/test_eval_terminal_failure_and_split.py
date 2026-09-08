@@ -19,7 +19,11 @@ from evals.trusted_evidence import (
     dataset_fingerprint,
     verify_trusted_evidence,
 )
-from tests.real_world_fixtures import write_v2_manifest
+from tests.real_world_fixtures import (
+    frozen_catalog_quote_line,
+    frozen_catalog_suggestion,
+    write_v2_manifest,
+)
 from tests.scene_fixtures import attach_scene_versions
 
 
@@ -105,6 +109,7 @@ def _finish_success(db: Session, run, task: DesignTask) -> None:
         "plan_count": 1,
         "plans": [{"furniture_count": 2}],
     }
+    suggestion = frozen_catalog_suggestion()
     revision = design_version_service.persist_generation(
         db,
         task=task,
@@ -114,13 +119,13 @@ def _finish_success(db: Session, run, task: DesignTask) -> None:
                 "id": "plan-eval",
                 "name": "匿名方案",
                 "style": "现代",
-                "furnitureSuggestions": [{"id": "SOFA-001"}],
+                "furnitureSuggestions": [suggestion],
                 "shopQuote": {
                     "furnitureTotal": 10000,
                     "customTotal": 0,
                     "total": 10000,
                     "lineItems": [
-                        {"sku": "SOFA-001", "unitPrice": 10000, "quantity": 1}
+                        frozen_catalog_quote_line(suggestion)
                     ],
                     "customLineItems": [],
                 },

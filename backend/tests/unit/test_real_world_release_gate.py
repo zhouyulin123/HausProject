@@ -169,7 +169,7 @@ def test_release_cohort_requires_twenty_unique_private_real_cases(tmp_path):
 
 def test_candidate_requires_nonzero_execution_review_coverage():
     evidence = VerifiedEvaluationEvidence(
-        schema_version="5.0",
+        schema_version="6.0",
         versions=EvaluationVersions("model", "prompt", "rules", "data"),
         dataset_fingerprint="sha256:" + "1" * 64,
         evidence_digest="sha256:" + "2" * 64,
@@ -208,9 +208,9 @@ def test_only_controlled_manual_workflow_can_issue_release_proof():
         validate_release_event("pull_request", ("blind",))
 
 
-def test_release_evidence_requires_5_0_and_independent_security_build_binding():
+def test_release_evidence_requires_6_0_and_independent_security_build_binding():
     evidence = VerifiedEvaluationEvidence(
-        schema_version="5.0",
+        schema_version="6.0",
         versions=EvaluationVersions("model", "prompt", "rules", "data"),
         dataset_fingerprint="sha256:" + "1" * 64,
         evidence_digest="sha256:" + "2" * 64,

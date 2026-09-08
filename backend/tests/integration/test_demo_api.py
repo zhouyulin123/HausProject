@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -66,6 +68,13 @@ def demo_api_context():
             style="原木风",
             price=460,
             is_active=True,
+            data_origin="merchant",
+            verification_status="verified",
+            availability_status="in_stock",
+            stock_quantity=10,
+            price_valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            price_valid_to=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            region_codes=["*"],
             model_width_mm=460,
             model_height_mm=810,
             model_depth_mm=535,
@@ -80,6 +89,13 @@ def demo_api_context():
             style="奶油风",
             price=4999,
             is_active=True,
+            data_origin="merchant",
+            verification_status="verified",
+            availability_status="in_stock",
+            stock_quantity=10,
+            price_valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            price_valid_to=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            region_codes=["*"],
             model_width_mm=2380,
             model_height_mm=760,
             model_depth_mm=980,
@@ -94,6 +110,13 @@ def demo_api_context():
             style="日式风",
             price=460,
             is_active=True,
+            data_origin="merchant",
+            verification_status="verified",
+            availability_status="in_stock",
+            stock_quantity=10,
+            price_valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            price_valid_to=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            region_codes=["*"],
             model_width_mm=300,
             model_height_mm=250,
             model_depth_mm=300,

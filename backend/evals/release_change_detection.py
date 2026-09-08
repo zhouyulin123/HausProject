@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 
+from app.services.generation_rule_artifacts import GENERATION_RULE_ARTIFACT_IDS
+
 
 _SAFE_GIT_REF_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@{}^~:+-]*")
 
@@ -25,18 +27,7 @@ SENSITIVE_PATHS: Mapping[str, tuple[str, ...]] = {
         "backend/app/services/llm_service.py",
         "backend/app/services/plan_refine_service.py",
     ),
-    "rules": (
-        "backend/app/agents/design_workflow.py",
-        "backend/app/services/generation_provenance.py",
-        "backend/app/services/generation_scene_service.py",
-        "backend/app/services/layout_service.py",
-        "backend/app/services/layout_generator.py",
-        "backend/app/services/layout_evaluator.py",
-        "backend/app/services/layout_repair.py",
-        "backend/app/services/scene_geometry.py",
-        "backend/app/services/furniture_family_rules.py",
-        "backend/app/services/furniture_model_rules.py",
-    ),
+    "rules": tuple(f"backend/{path}" for path in GENERATION_RULE_ARTIFACT_IDS),
     "data": (
         "backend/data/",
         "backend/compile_active_catalog.py",

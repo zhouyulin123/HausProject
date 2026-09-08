@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from app.services import generation_provenance
 from app.services.generation_provenance import (
     GENERATION_PROVENANCE_SCHEMA_VERSION,
@@ -8,11 +12,17 @@ from app.services.generation_provenance import (
 EXPECTED_RULE_ARTIFACT_IDS = [
     "app/agents/design_workflow.py",
     "app/services/catalog_service.py",
+    "app/services/custom_furniture_service.py",
+    "app/services/furniture_family_rules.py",
+    "app/services/furniture_model_rules.py",
+    "app/services/generation_provenance.py",
+    "app/services/generation_rule_artifacts.py",
     "app/services/generation_scene_service.py",
     "app/services/layout_service.py",
     "app/services/layout_generator.py",
     "app/services/layout_evaluator.py",
     "app/services/layout_repair.py",
+    "app/services/product_eligibility.py",
     "app/services/scene_geometry.py",
 ]
 
@@ -67,13 +77,41 @@ def test_selected_plan_quote_versions_cannot_change_frozen_provenance():
 def test_rule_artifact_snapshot_covers_the_actual_generation_and_layout_chain():
     snapshot = generation_provenance.generation_rule_artifact_snapshot()
 
-    assert GENERATION_PROVENANCE_SCHEMA_VERSION == 3
+    assert GENERATION_PROVENANCE_SCHEMA_VERSION == 4
     assert [item["artifact_id"] for item in snapshot] == EXPECTED_RULE_ARTIFACT_IDS
     assert all(
         set(item) == {"artifact_id", "content_digest"}
         and item["content_digest"].startswith("sha256:")
         for item in snapshot
     )
+
+    from evals.release_change_detection import SENSITIVE_PATHS
+
+    assert SENSITIVE_PATHS["rules"] == tuple(
+        f"backend/{path}" for path in EXPECTED_RULE_ARTIFACT_IDS
+    )
+
+
+@pytest.mark.parametrize("changed_artifact_id", EXPECTED_RULE_ARTIFACT_IDS)
+def test_each_rule_artifact_changes_the_rules_digest(
+    tmp_path,
+    monkeypatch,
+    changed_artifact_id,
+):
+    artifacts = []
+    for index, artifact_id in enumerate(EXPECTED_RULE_ARTIFACT_IDS):
+        path = tmp_path / Path(artifact_id).name
+        path.write_text(f"RULE = {index}\n", encoding="utf-8")
+        artifacts.append((artifact_id, path))
+    monkeypatch.setattr(generation_provenance, "_RULE_ARTIFACTS", tuple(artifacts))
+    before = generation_provenance.current_generation_rules_digest()
+
+    changed_path = next(
+        path for artifact_id, path in artifacts if artifact_id == changed_artifact_id
+    )
+    changed_path.write_text("RULE = 'changed'\n", encoding="utf-8")
+
+    assert generation_provenance.current_generation_rules_digest() != before
 
 
 def test_rules_digest_is_path_independent_and_changes_with_layout_rule_content(

@@ -79,7 +79,7 @@ def _trusted_bundle(dataset, *, failing: bool = True) -> dict:
         "data": "sha256:" + "3" * 64,
     }
     unsigned = {
-        "schema_version": "5.0",
+        "schema_version": "6.0",
         "evidence_type": "system_execution",
         "issued_at": datetime.now(timezone.utc).isoformat(),
         "dataset_fingerprint": manifest_digest,

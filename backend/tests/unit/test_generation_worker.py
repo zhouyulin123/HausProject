@@ -38,6 +38,16 @@ def _persist_worker_output(db, task, *, generator: str):
                 style="现代",
                 price=1000,
                 is_active=True,
+                data_origin="merchant",
+                verification_status="verified",
+                availability_status="in_stock",
+                stock_quantity=10,
+                price_valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                price_valid_to=datetime(2030, 1, 1, tzinfo=timezone.utc),
+                region_codes=["*"],
+                model_width_mm=2200,
+                model_height_mm=850,
+                model_depth_mm=950,
             )
         )
         db.flush()
@@ -429,6 +439,16 @@ def test_worker_budget_replan_success_completes_same_run_and_checkpoint(monkeypa
                 style="现代",
                 price=9_000,
                 is_active=True,
+                data_origin="merchant",
+                verification_status="verified",
+                availability_status="in_stock",
+                stock_quantity=10,
+                price_valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                price_valid_to=datetime(2030, 1, 1, tzinfo=timezone.utc),
+                region_codes=["*"],
+                model_width_mm=2200,
+                model_height_mm=850,
+                model_depth_mm=950,
             )
         )
         db.commit()

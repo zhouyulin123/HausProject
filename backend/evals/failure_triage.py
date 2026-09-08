@@ -270,7 +270,7 @@ def derive_failure_triage_evidence(
     if not evidence.signature_verified:
         raise FailureTriageInputError("失败分诊只接受已验签可信评测证据")
     if evidence.schema_version != EVIDENCE_SCHEMA_VERSION:
-        raise FailureTriageInputError("失败分诊只接受 trusted evidence v5")
+        raise FailureTriageInputError("失败分诊只接受 trusted evidence v6")
     if len(evidence.results) != len(evidence.executions):
         raise FailureTriageInputError("可信评测结果与执行来源数量不一致")
     eligible_ids = {case.id for case in dataset.eligible_cases(evidence.split)}
@@ -469,7 +469,7 @@ def build_failure_triage_report(
     if evidence.data_version != dataset.dataset_version:
         raise FailureTriageInputError("失败证据与案例清单的数据版本不一致")
     if evidence.schema_version != EVIDENCE_SCHEMA_VERSION:
-        raise FailureTriageInputError("失败分诊只接受 trusted evidence v5")
+        raise FailureTriageInputError("失败分诊只接受 trusted evidence v6")
     if evidence.taxonomy_version != FAILURE_TAXONOMY_VERSION:
         raise FailureTriageInputError("失败分诊 taxonomy_version 不受支持")
     if not isinstance(anonymization_salt, str) or len(anonymization_salt) < 16:

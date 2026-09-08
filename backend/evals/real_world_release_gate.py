@@ -244,7 +244,9 @@ def validate_release_evidence(
     label: str,
 ) -> None:
     if evidence.schema_version != EVIDENCE_SCHEMA_VERSION:
-        raise EvaluationInputError(f"{label}不是 trusted evidence 5.0")
+        raise EvaluationInputError(
+            f"{label}不是 trusted evidence {EVIDENCE_SCHEMA_VERSION}"
+        )
     if evidence.signature_verified is not True:
         raise EvaluationInputError(f"{label}评测证据未通过签名验证")
     if (

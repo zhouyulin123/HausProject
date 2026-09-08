@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 import hashlib
@@ -18,28 +17,18 @@ from app.services.product_asset_service import (
     approved_product_asset_url,
     product_asset_contract,
 )
+from app.services.product_eligibility import (
+    AVAILABILITY_STATUSES,
+    VERIFICATION_STATUSES,
+    ProductDimensions,
+    ProductEligibility,
+    ProductEligibilityFacts,
+    ProductEligibilityPolicy,
+    evaluate_product_eligibility,
+)
 
 
 logger = logging.getLogger(__name__)
-VERIFICATION_STATUSES = {"draft", "verified", "rejected", "expired"}
-AVAILABILITY_STATUSES = {
-    "in_stock",
-    "low_stock",
-    "out_of_stock",
-    "preorder",
-    "unknown",
-}
-
-
-@dataclass(frozen=True)
-class ProductEligibility:
-    eligible: bool
-    reason_codes: tuple[str, ...]
-
-    def __bool__(self) -> bool:
-        return self.eligible
-
-
 def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -58,81 +47,149 @@ def is_product_eligible(
     max_dimensions_mm: Mapping[str, int] | None = None,
     required_quantity: int | None = None,
 ) -> ProductEligibility:
-    """集中执行商用商品硬过滤，并返回可审计的原因代码。"""
-    current = _as_utc(at) or datetime.now(timezone.utc)
-    reasons: list[str] = []
-    if not product.is_active:
-        reasons.append("inactive")
-    if product.data_origin == "public_reference":
-        reasons.append("public_reference")
+    """把 ORM 商品适配为纯资格事实后执行统一规则。"""
+    facts, policy = _product_eligibility_inputs(
+        product,
+        at=_as_utc(at) or datetime.now(timezone.utc),
+        region=region,
+        allow_draft=allow_draft,
+        max_unit_price=max_unit_price,
+        max_dimensions_mm=max_dimensions_mm,
+        required_quantity=required_quantity,
+    )
+    return evaluate_product_eligibility(facts, policy)
 
-    verification = product.verification_status or "draft"
-    if verification == "draft" and not allow_draft:
-        reasons.append("verification_required")
-    elif verification == "rejected":
-        reasons.append("verification_rejected")
-    elif verification == "expired":
-        reasons.append("verification_expired")
-    elif verification not in VERIFICATION_STATUSES:
-        reasons.append("verification_invalid")
 
-    availability = product.availability_status or "unknown"
-    if availability == "out_of_stock":
-        reasons.append("out_of_stock")
-    elif availability == "unknown":
-        reasons.append("availability_unknown")
-    elif availability in {"in_stock", "low_stock"} and (
-        product.stock_quantity is None or product.stock_quantity <= 0
-    ):
-        reasons.append("out_of_stock")
-    elif availability == "preorder" and (
-        product.lead_time_days_min is None
-        or product.lead_time_days_max is None
-        or product.lead_time_days_min > product.lead_time_days_max
-    ):
-        reasons.append("lead_time_unknown")
-    elif availability not in AVAILABILITY_STATUSES:
-        reasons.append("availability_invalid")
-    if required_quantity is not None and (
-        product.stock_quantity is None
-        or product.stock_quantity < required_quantity
-    ):
-        reasons.append("insufficient_stock")
+def _dimensions(values: Mapping[str, int] | None) -> ProductDimensions | None:
+    if not values:
+        return None
+    return ProductDimensions(
+        width=values.get("width"),
+        depth=values.get("depth"),
+        height=values.get("height"),
+    )
 
-    valid_from = _as_utc(product.price_valid_from)
-    valid_to = _as_utc(product.price_valid_to)
-    if valid_from is None or valid_to is None:
-        reasons.append("price_validity_unknown")
-    else:
-        if current < valid_from:
-            reasons.append("price_not_started")
-        if current > valid_to:
-            reasons.append("price_expired")
 
-    regions = [str(code).strip().upper() for code in (product.region_codes or []) if code]
-    normalized_region = region.strip().upper() if region else None
-    if regions and "*" not in regions and normalized_region is None:
-        reasons.append("region_required")
-    elif normalized_region and regions and normalized_region not in regions and "*" not in regions:
-        reasons.append("region_unavailable")
+def _product_eligibility_inputs(
+    product: Product,
+    *,
+    at: datetime,
+    region: str | None,
+    allow_draft: bool,
+    max_unit_price: int | None,
+    max_dimensions_mm: Mapping[str, int] | None,
+    required_quantity: int | None,
+) -> tuple[ProductEligibilityFacts, ProductEligibilityPolicy]:
+    facts = ProductEligibilityFacts(
+        is_active=bool(product.is_active),
+        data_origin=product.data_origin,
+        verification_status=product.verification_status,
+        availability_status=product.availability_status,
+        stock_quantity=product.stock_quantity,
+        lead_time_days_min=product.lead_time_days_min,
+        lead_time_days_max=product.lead_time_days_max,
+        price_valid_from=_as_utc(product.price_valid_from),
+        price_valid_to=_as_utc(product.price_valid_to),
+        region_codes=tuple(
+            str(code).strip().upper()
+            for code in (product.region_codes or [])
+            if str(code).strip()
+        ),
+        dimensions_mm=ProductDimensions(
+            width=product.model_width_mm,
+            depth=product.model_depth_mm,
+            height=product.model_height_mm,
+        ),
+        unit_price=product.price,
+    )
+    policy = ProductEligibilityPolicy(
+        checked_at=at,
+        region=region.strip().upper() if region else None,
+        allow_draft=allow_draft,
+        max_unit_price=max_unit_price,
+        max_dimensions_mm=_dimensions(max_dimensions_mm),
+        required_quantity=required_quantity,
+    )
+    return facts, policy
 
-    dimensions = {
-        "width": product.model_width_mm,
-        "depth": product.model_depth_mm,
-        "height": product.model_height_mm,
+
+def _eligibility_snapshot(
+    product: Product,
+    *,
+    checked_at: datetime,
+    region: str | None,
+    allow_draft: bool,
+    max_unit_price: int | None,
+    max_dimensions_mm: Mapping[str, int] | None,
+    required_quantity: int,
+) -> dict[str, Any]:
+    """冻结资格判断的完整输入，供离线证据独立复算。"""
+    facts, policy = _product_eligibility_inputs(
+        product,
+        at=checked_at,
+        region=region,
+        allow_draft=allow_draft,
+        max_unit_price=max_unit_price,
+        max_dimensions_mm=max_dimensions_mm,
+        required_quantity=required_quantity,
+    )
+    decision = evaluate_product_eligibility(facts, policy)
+    maximums = policy.max_dimensions_mm
+    normalized_dimensions = (
+        {
+            key: value
+            for key, value in {
+                "width": maximums.width,
+                "depth": maximums.depth,
+                "height": maximums.height,
+            }.items()
+            if value is not None
+        }
+        if maximums is not None
+        else {}
+    )
+    return {
+        "schemaVersion": "1.0",
+        "checkedAt": policy.checked_at.isoformat(),
+        "sku": product.sku,
+        "quantity": required_quantity,
+        "unitPrice": facts.unit_price,
+        "dataVersion": product.data_version,
+        "recordVersion": product.record_version,
+        "policy": {
+            "region": policy.region,
+            "allowDraft": policy.allow_draft,
+            "maxUnitPrice": policy.max_unit_price,
+            "maxDimensionsMm": normalized_dimensions,
+        },
+        "facts": {
+            "isActive": facts.is_active,
+            "dataOrigin": facts.data_origin,
+            "verificationStatus": facts.verification_status,
+            "availabilityStatus": facts.availability_status,
+            "stockQuantity": facts.stock_quantity,
+            "leadTimeDaysMin": facts.lead_time_days_min,
+            "leadTimeDaysMax": facts.lead_time_days_max,
+            "priceValidFrom": (
+                facts.price_valid_from.isoformat()
+                if facts.price_valid_from is not None
+                else None
+            ),
+            "priceValidTo": (
+                facts.price_valid_to.isoformat()
+                if facts.price_valid_to is not None
+                else None
+            ),
+            "regionCodes": sorted(set(facts.region_codes)),
+            "dimensionsMm": {
+                "width": facts.dimensions_mm.width,
+                "depth": facts.dimensions_mm.depth,
+                "height": facts.dimensions_mm.height,
+            },
+        },
+        "eligible": decision.eligible,
+        "reasonCodes": list(decision.reason_codes),
     }
-    if any(not isinstance(value, int) or value <= 0 for value in dimensions.values()):
-        reasons.append("dimensions_missing")
-    elif max_dimensions_mm and any(
-        dimensions[name] > int(limit)
-        for name, limit in max_dimensions_mm.items()
-        if name in dimensions and limit is not None
-    ):
-        reasons.append("dimensions_exceeded")
-
-    if max_unit_price is not None and product.price > max_unit_price:
-        reasons.append("budget_exceeded")
-    return ProductEligibility(not reasons, tuple(dict.fromkeys(reasons)))
 
 
 def eligible_products(
@@ -686,6 +743,15 @@ def verify_and_enrich_plans(
                 "subtotal": subtotal,
                 "dataVersion": product.data_version,
                 "recordVersion": product.record_version,
+                "catalogEligibility": _eligibility_snapshot(
+                    product,
+                    checked_at=current,
+                    region=region,
+                    allow_draft=allow_draft,
+                    max_unit_price=budget_max,
+                    max_dimensions_mm=max_dimensions_mm,
+                    required_quantity=quantity,
+                ),
             }
             if replaced_sku:
                 enriched_item["replacedSku"] = replaced_sku

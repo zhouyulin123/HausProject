@@ -7,34 +7,15 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.services.generation_rule_artifacts import GENERATION_RULE_ARTIFACT_IDS
+
 
 _APP_ROOT = Path(__file__).resolve().parents[1]
-_RULE_ARTIFACTS: tuple[tuple[str, Path], ...] = (
-    ("app/agents/design_workflow.py", _APP_ROOT / "agents" / "design_workflow.py"),
-    ("app/services/catalog_service.py", _APP_ROOT / "services" / "catalog_service.py"),
-    (
-        "app/services/generation_scene_service.py",
-        _APP_ROOT / "services" / "generation_scene_service.py",
-    ),
-    ("app/services/layout_service.py", _APP_ROOT / "services" / "layout_service.py"),
-    (
-        "app/services/layout_generator.py",
-        _APP_ROOT / "services" / "layout_generator.py",
-    ),
-    (
-        "app/services/layout_evaluator.py",
-        _APP_ROOT / "services" / "layout_evaluator.py",
-    ),
-    (
-        "app/services/layout_repair.py",
-        _APP_ROOT / "services" / "layout_repair.py",
-    ),
-    (
-        "app/services/scene_geometry.py",
-        _APP_ROOT / "services" / "scene_geometry.py",
-    ),
+_RULE_ARTIFACTS: tuple[tuple[str, Path], ...] = tuple(
+    (artifact_id, _APP_ROOT / Path(artifact_id).relative_to("app"))
+    for artifact_id in GENERATION_RULE_ARTIFACT_IDS
 )
-GENERATION_PROVENANCE_SCHEMA_VERSION = 3
+GENERATION_PROVENANCE_SCHEMA_VERSION = 4
 
 
 def canonical_digest(value: Any) -> str:

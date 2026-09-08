@@ -101,15 +101,74 @@ def _dataset(tmp_path: Path, *, constraint_type: str = "inside_room"):
     return load_case_manifest(manifest)
 
 
-def _plan(*, model_reports_passed: bool = True) -> dict:
+def _eligibility_snapshot(sku: str, *, quantity: int, unit_price: int) -> dict:
+    return {
+        "schemaVersion": "1.0",
+        "eligible": True,
+        "reasonCodes": [],
+        "checkedAt": "2026-09-01T00:00:00+00:00",
+        "sku": sku,
+        "quantity": quantity,
+        "unitPrice": unit_price,
+        "dataVersion": "catalog-data-v1",
+        "recordVersion": 1,
+        "policy": {
+            "region": None,
+            "allowDraft": False,
+            "maxUnitPrice": 20000,
+            "maxDimensionsMm": {},
+        },
+        "facts": {
+            "isActive": True,
+            "dataOrigin": "merchant_verified",
+            "verificationStatus": "verified",
+            "availabilityStatus": "in_stock",
+            "stockQuantity": 10,
+            "leadTimeDaysMin": None,
+            "leadTimeDaysMax": None,
+            "priceValidFrom": "2026-01-01T00:00:00+00:00",
+            "priceValidTo": "2027-01-01T00:00:00+00:00",
+            "regionCodes": [],
+            "dimensionsMm": {"width": 1000, "depth": 800, "height": 900},
+        },
+    }
+
+
+def _plan(
+    *,
+    model_reports_passed: bool = True,
+    include_catalog_evidence: bool = True,
+) -> dict:
+    suggestions = [
+        {
+            "id": "SOFA-001",
+            "sku": "SOFA-001",
+            "quantity": 1,
+            "unitPrice": 9000,
+            "dataVersion": "catalog-data-v1",
+            "recordVersion": 1,
+        },
+        {
+            "id": "LAMP-OUTSIDE",
+            "sku": "LAMP-OUTSIDE",
+            "quantity": 1,
+            "unitPrice": 1000,
+            "dataVersion": "catalog-data-v1",
+            "recordVersion": 1,
+        },
+    ]
+    if include_catalog_evidence:
+        suggestions[0]["catalogEligibility"] = _eligibility_snapshot(
+            "SOFA-001", quantity=1, unit_price=9000
+        )
+        suggestions[1]["catalogEligibility"] = _eligibility_snapshot(
+            "LAMP-OUTSIDE", quantity=1, unit_price=1000
+        )
     return {
         "id": "plan-a",
         "name": "真实输出方案",
         "style": "现代",
-        "furnitureSuggestions": [
-            {"id": "SOFA-001", "sku": "SOFA-001", "quantity": 1},
-            {"id": "LAMP-OUTSIDE", "sku": "LAMP-OUTSIDE", "quantity": 1},
-        ],
+        "furnitureSuggestions": suggestions,
         "layoutConstraintResults": [
             {"constraintId": "inside-room", "passed": model_reports_passed}
         ],
@@ -119,8 +178,20 @@ def _plan(*, model_reports_passed: bool = True) -> dict:
             "customTotal": 0,
             "total": 10000,
             "lineItems": [
-                {"sku": "SOFA-001", "quantity": 1, "unitPrice": 9000},
-                {"sku": "LAMP-OUTSIDE", "quantity": 1, "unitPrice": 1000},
+                {
+                    "sku": "SOFA-001",
+                    "quantity": 1,
+                    "unitPrice": 9000,
+                    "dataVersion": "catalog-data-v1",
+                    "recordVersion": 1,
+                },
+                {
+                    "sku": "LAMP-OUTSIDE",
+                    "quantity": 1,
+                    "unitPrice": 1000,
+                    "dataVersion": "catalog-data-v1",
+                    "recordVersion": 1,
+                },
             ],
             "customLineItems": [],
             "catalogVersion": "catalog-v1",
@@ -283,7 +354,7 @@ def test_collector_recomputes_metrics_from_revision_and_annotation(db, tmp_path)
 
     execution = bundle["executions"][0]
     result = execution["result"]
-    assert bundle["schema_version"] == "5.0"
+    assert bundle["schema_version"] == "6.0"
     assert execution["output_digest"] == run.output_digest
     assert result["requirement_correct"] == 0
     assert result["requirement_total"] == 1
@@ -292,7 +363,7 @@ def test_collector_recomputes_metrics_from_revision_and_annotation(db, tmp_path)
     assert result["low_confidence_confirmed"] == 0
     assert result["low_confidence_facts"] == 0
     assert result["recommended_skus"] == 2
-    assert result["valid_skus"] == 1
+    assert result["valid_skus"] == 2
     assert result["product_match_checks"] == 2
     assert result["product_match_accepted"] == 1
     assert result["quote_checks"] == 1
@@ -307,6 +378,104 @@ def test_collector_recomputes_metrics_from_revision_and_annotation(db, tmp_path)
     assert result["human_rating_count"] == 0
     assert result["human_review_count"] == 0
     assert result["human_edit_count"] == 0
+
+
+def test_catalog_validity_and_human_product_match_are_independent(db, tmp_path):
+    dataset = _dataset(tmp_path)
+    run, _ = _completed_run(db, dataset)
+
+    result = _collect(db, dataset, run)["executions"][0]["result"]
+
+    assert result["recommended_skus"] == 2
+    assert result["valid_skus"] == 2
+    assert result["product_match_checks"] == 2
+    assert result["product_match_accepted"] == 1
+
+
+def test_catalog_validity_fails_closed_without_frozen_eligibility_evidence(
+    db,
+    tmp_path,
+):
+    dataset = _dataset(tmp_path)
+    case = dataset.cases[0]
+    task = DesignTask(
+        status="confirmed",
+        progress=50,
+        raw_user_input="需要现代客厅",
+        confirmed_requirement_json={"space_type": "客厅", "style": "现代"},
+        space_type="客厅",
+        style="现代",
+        budget_min=10000,
+        budget_max=20000,
+    )
+    db.add(task)
+    db.flush()
+    db.add(
+        UploadedImage(
+            task_id=task.id,
+            file_url="/uploads/eval-room.png",
+            content_digest=f"sha256:{case.asset_sha256}",
+        )
+    )
+    db.commit()
+    run = bind_evaluation_run(
+        db,
+        dataset=dataset,
+        split="regression",
+        case_id=case.id,
+        task=task,
+    )
+    revision = design_version_service.persist_generation(
+        db,
+        task=task,
+        plans=[_plan(include_catalog_evidence=False)],
+        generator="llm",
+        workflow_trace=[{"node": "validate_quality", "status": "completed"}],
+    )
+    plan = revision.plans[0]
+    scene = DesignScene(plan_version_id=plan.id, current_version=1)
+    db.add(scene)
+    db.flush()
+    db.add(
+        DesignSceneVersion(
+            scene_id=scene.id,
+            version=1,
+            scene_json=_scene_document(x=3),
+            validation_json={"valid": True, "errors": [], "warnings": []},
+            source="auto_layout",
+        )
+    )
+    db.flush()
+    now = datetime.now(timezone.utc)
+    run.attempt_count = 1
+    run.started_at = now
+    for index, node in enumerate(
+        ("prepare_context", "generate_plans", "calculate_quote", "validate_quality"),
+        start=1,
+    ):
+        db.add(
+            GenerationRunEvent(
+                run_id=run.id,
+                node=node,
+                status="completed",
+                progress=index * 20,
+                source={
+                    "generate_plans": "llm",
+                    "calculate_quote": "deterministic",
+                    "validate_quality": "deterministic",
+                }.get(node),
+            )
+        )
+    assert generation_run_service.mark_completed(
+        db,
+        run=run,
+        generator="llm",
+        result_revision_id=revision.id,
+    )
+    db.refresh(run)
+
+    with pytest.raises(EvaluationInputError, match="冻结商品资格"):
+        _collect(db, dataset, run)
 
 
 def test_collector_uses_frozen_geometry_not_model_reported_layout_result(

@@ -46,7 +46,7 @@ def _dataset() -> RealWorldDataset:
 def _verified_evidence(*, signature_verified: bool = True):
     output_digest = "sha256:" + "a" * 64
     return VerifiedEvaluationEvidence(
-        schema_version="5.0",
+        schema_version="6.0",
         versions=EvaluationVersions(
             model="model-v1",
             prompt="sha256:" + "1" * 64,
@@ -115,7 +115,7 @@ def test_triage_is_derived_from_verified_metrics_and_binds_source_digests():
         item for item in report["clusters"] if item["code"] == "invalid_sku"
     )["failure_count"] == 2
     assert report["input"] == {
-        "schema_version": "5.0",
+        "schema_version": "6.0",
         "taxonomy_version": "2.0",
         "data_version": "dataset-v2",
         "manifest_digest": "sha256:" + "4" * 64,
