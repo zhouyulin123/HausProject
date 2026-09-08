@@ -13,6 +13,7 @@ from app.db.models import (
 )
 from app.services import effect_render_job_service
 from app.workers import effect_render_worker
+from app.schemas.scenes import SceneDocument
 
 
 def _queued_job(factory):
@@ -143,8 +144,12 @@ def _queued_scene_job(factory, *, bad_digest: bool = False):
         )
         db.add_all([version_one, version_two])
         db.commit()
+        normalized_scene = SceneDocument.model_validate(version_one_json).model_dump(
+            by_alias=True,
+            mode="json",
+        )
         canonical = json.dumps(
-            version_one_json,
+            normalized_scene,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -157,8 +162,10 @@ def _queued_scene_job(factory, *, bad_digest: bool = False):
             task_id=task.id,
             plan_version_id=plan.id,
             scene_id=scene.id,
+            scene_version_id=version_one.id,
             scene_version=1,
             scene_digest=scene_digest,
+            scene_snapshot_json=normalized_scene,
             idempotency_key="worker-scene-render-1",
             request_digest="sha256:request",
             prompt_snapshot="a living room",
@@ -196,7 +203,9 @@ def test_worker_publishes_png_and_binds_rendered_image(monkeypatch, tmp_path):
     engine.dispose()
 
 
-def test_worker_records_disabled_provider_without_creating_output(monkeypatch, tmp_path):
+def test_worker_records_disabled_provider_without_creating_output(
+    monkeypatch, tmp_path
+):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -258,7 +267,9 @@ def test_worker_conditions_prompt_from_bound_scene_version_not_current_scene(
         captured["source_image"] = source_image
         return b"\x89PNG\r\n\x1a\ncontent", "text2img"
 
-    monkeypatch.setattr(effect_render_worker.sd_service, "render_effect_image", fake_render)
+    monkeypatch.setattr(
+        effect_render_worker.sd_service, "render_effect_image", fake_render
+    )
 
     assert effect_render_worker.process_one_job(worker_id="scene-worker") is True
 
@@ -270,7 +281,10 @@ def test_worker_conditions_prompt_from_bound_scene_version_not_current_scene(
     assert '"dimensions":{"x":2.2,"y":0.85,"z":0.95}' in prompt
     assert captured["source_image"] is None
     with factory() as db:
-        assert db.get(EffectRenderJob, job_id).status == "completed"
+        job = db.get(EffectRenderJob, job_id)
+        rendered = db.get(RenderedImage, job.rendered_image_id)
+        assert job.status == "completed"
+        assert rendered.scene_version_id == job.scene_version_id
     engine.dispose()
 
 

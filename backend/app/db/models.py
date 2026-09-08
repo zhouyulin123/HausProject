@@ -695,6 +695,12 @@ class RenderedImage(Base):
         nullable=True,
         index=True,
     )
+    scene_version_id = Column(
+        Integer,
+        ForeignKey("design_scene_versions.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     plan_id = Column(String(20), index=True)  # plan-a / plan-b / plan-c
     prompt = Column(Text)
     image_url = Column(String(255))
@@ -727,6 +733,21 @@ class EffectRenderJob(Base):
         nullable=False,
         index=True,
     )
+    scene_id = Column(
+        Integer,
+        ForeignKey("design_scenes.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    scene_version_id = Column(
+        Integer,
+        ForeignKey("design_scene_versions.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    scene_version = Column(Integer, nullable=True)
+    scene_snapshot_json = Column(JSON, nullable=True)
+    scene_digest = Column(String(71), nullable=True)
     source_image_id = Column(
         Integer,
         ForeignKey("uploaded_images.id", ondelete="RESTRICT"),

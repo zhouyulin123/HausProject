@@ -15,8 +15,9 @@ from app.api.dependencies import SessionIdHeader, require_owned_design_task
 from app.core.config import settings
 from app.core.request_context import normalize_request_id
 from app.db.database import get_db
-from app.db.models import DesignTask, EffectRenderJob, UploadedImage
+from app.db.models import DesignSceneVersion, DesignTask, EffectRenderJob, UploadedImage
 from app.schemas.effect_render import EffectRenderJobResponse, EffectRenderRequest
+from app.schemas.scenes import SceneDocument
 from app.services import effect_render_job_service, scene_service
 
 
@@ -100,6 +101,10 @@ def _response(job: EffectRenderJob) -> EffectRenderJobResponse:
         job_id=job.id,
         task_id=job.task_id,
         plan_version_id=job.plan_version_id,
+        scene_id=job.scene_id,
+        scene_version_id=job.scene_version_id,
+        scene_version=job.scene_version,
+        scene_digest=job.scene_digest,
         status=job.status,
         progress=job.progress,
         attempt_count=job.attempt_count,
@@ -156,24 +161,63 @@ def queue_effect_render(
     if plan_version is None or plan_version.revision.task_id != payload.task_id:
         raise HTTPException(status_code=404, detail="方案版本不存在")
 
+    scene = scene_service.get_owned_scene(
+        db,
+        session_id=x_session_id,
+        scene_id=payload.scene_id,
+    )
+    scene_version = db.scalar(
+        select(DesignSceneVersion).where(
+            DesignSceneVersion.scene_id == payload.scene_id,
+            DesignSceneVersion.version == payload.scene_version,
+        )
+    )
+    if (
+        scene is None
+        or scene.plan_version_id != plan_version.id
+        or scene_version is None
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "scene_snapshot_not_found",
+                "message": "指定场景版本不存在或不属于当前方案",
+            },
+        )
+    try:
+        scene_snapshot = SceneDocument.model_validate(
+            scene_version.scene_json
+        ).model_dump(by_alias=True, mode="json")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "scene_snapshot_invalid",
+                "message": "指定场景版本不是有效的 SceneDocument",
+            },
+        ) from exc
+    scene_digest = _digest_json(scene_snapshot)
+
     plan = plan_version.plan_json or {}
     prompt = build_effect_prompt(
         str(plan.get("style") or plan_version.style or ""),
         _room_type_from_task(task),
     )
-    source_image_id, source_image_digest = _source_image_snapshot(
-        db, task_id=task.id
-    )
+    source_image_id, source_image_digest = _source_image_snapshot(db, task_id=task.id)
     prompt_digest = _digest_json({"prompt": prompt, "version": 1})
     request_digest = _digest_json(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "task_id": task.id,
             "plan_version_id": plan_version.id,
             "plan_snapshot": plan_version.plan_json,
             "prompt_digest": prompt_digest,
             "source_image_id": source_image_id,
             "source_image_digest": source_image_digest,
+            "scene_id": scene.id,
+            "scene_version_id": scene_version.id,
+            "scene_version": scene_version.version,
+            "scene_digest": scene_digest,
         }
     )
     try:
@@ -187,6 +231,11 @@ def queue_effect_render(
             prompt_digest=prompt_digest,
             source_image_id=source_image_id,
             source_image_digest=source_image_digest,
+            scene_id=scene.id,
+            scene_version_id=scene_version.id,
+            scene_version=scene_version.version,
+            scene_snapshot_json=scene_snapshot,
+            scene_digest=scene_digest,
             max_attempts=settings.effect_render_worker_max_attempts,
             execution_timeout_seconds=(
                 settings.effect_render_worker_execution_timeout_seconds
@@ -206,6 +255,8 @@ def queue_effect_render(
 @router.get("", response_model=EffectRenderJobResponse)
 def get_latest_effect_render(
     plan_version_id: Annotated[int, Query(ge=1)],
+    scene_id: Annotated[int, Query(ge=1)],
+    scene_version: Annotated[int, Query(ge=1)],
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
@@ -214,17 +265,26 @@ def get_latest_effect_render(
     )
     if plan is None:
         raise HTTPException(status_code=404, detail="方案版本不存在")
+    scene = scene_service.get_owned_scene(
+        db,
+        session_id=x_session_id,
+        scene_id=scene_id,
+    )
+    if scene is None or scene.plan_version_id != plan.id:
+        raise HTTPException(status_code=404, detail="场景不存在")
     job = effect_render_job_service.latest_job_for_plan(
-        db, task_id=plan.revision.task_id, plan_version_id=plan.id
+        db,
+        task_id=plan.revision.task_id,
+        plan_version_id=plan.id,
+        scene_id=scene_id,
+        scene_version=scene_version,
     )
     if job is None:
         raise HTTPException(status_code=404, detail="效果图任务不存在")
     return _response(job)
 
 
-def _owned_job(
-    db: Session, *, session_id: str, job_id: int
-) -> EffectRenderJob:
+def _owned_job(db: Session, *, session_id: str, job_id: int) -> EffectRenderJob:
     job = db.get(EffectRenderJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="效果图任务不存在")

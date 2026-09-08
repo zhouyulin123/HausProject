@@ -15,6 +15,7 @@ from app.db.models import (
 from app.services import design_version_service
 from app.services import sd_service
 from app.services.anonymous_session_service import attach_task, create_anonymous_session
+from app.schemas.scenes import SceneDocument
 
 
 def _scene_payload(*, sku: str | None = None) -> dict:
@@ -99,11 +100,21 @@ def _context(monkeypatch):
             yield db
 
     app.dependency_overrides[get_db] = override_db
-    return engine, factory, TestClient(app), owner_id, task_id, plan_version_id, scene_id
+    return (
+        engine,
+        factory,
+        TestClient(app),
+        owner_id,
+        task_id,
+        plan_version_id,
+        scene_id,
+    )
 
 
 def test_render_api_requires_key_is_idempotent_and_supports_restore(monkeypatch):
-    engine, factory, client, owner_id, task_id, plan_version_id, scene_id = _context(monkeypatch)
+    engine, factory, client, owner_id, task_id, plan_version_id, scene_id = _context(
+        monkeypatch
+    )
     try:
         body = {
             "task_id": task_id,
@@ -149,19 +160,33 @@ def test_render_api_requires_key_is_idempotent_and_supports_restore(monkeypatch)
         engine.dispose()
 
 
-def test_render_api_same_key_changed_plan_conflicts_and_cancel_is_idempotent(monkeypatch):
-    engine, _, client, owner_id, task_id, plan_version_id, scene_id = _context(monkeypatch)
+def test_render_api_same_key_changed_plan_conflicts_and_cancel_is_idempotent(
+    monkeypatch,
+):
+    engine, _, client, owner_id, task_id, plan_version_id, scene_id = _context(
+        monkeypatch
+    )
     try:
         headers = {"X-Session-ID": owner_id, "Idempotency-Key": "effect-2"}
         first = client.post(
             "/api/design/render",
             headers=headers,
-            json={"task_id": task_id, "plan_version_id": plan_version_id, "scene_id": scene_id, "scene_version": 1},
+            json={
+                "task_id": task_id,
+                "plan_version_id": plan_version_id,
+                "scene_id": scene_id,
+                "scene_version": 1,
+            },
         )
         conflict = client.post(
             "/api/design/render",
             headers=headers,
-            json={"task_id": task_id, "plan_version_id": plan_version_id + 99, "scene_id": scene_id, "scene_version": 1},
+            json={
+                "task_id": task_id,
+                "plan_version_id": plan_version_id + 99,
+                "scene_id": scene_id,
+                "scene_version": 1,
+            },
         )
         job_id = first.json()["job_id"]
         cancelled = client.post(
@@ -185,7 +210,9 @@ def test_render_api_same_key_changed_plan_conflicts_and_cancel_is_idempotent(mon
 def test_render_api_binds_exact_scene_snapshot_and_rejects_changed_scene_for_same_key(
     monkeypatch,
 ):
-    engine, factory, client, owner_id, task_id, plan_version_id, scene_id = _context(monkeypatch)
+    engine, factory, client, owner_id, task_id, plan_version_id, scene_id = _context(
+        monkeypatch
+    )
     try:
         with factory() as db:
             scene = db.get(DesignScene, scene_id)
@@ -250,7 +277,9 @@ def test_render_api_binds_exact_scene_snapshot_and_rejects_changed_scene_for_sam
             assert job.scene_id == scene_id
             assert job.scene_version == 1
             assert job.scene_version_id == first.json()["scene_version_id"]
-            assert job.scene_snapshot_json == _scene_payload(sku="SOFA-001")
+            assert job.scene_snapshot_json == SceneDocument.model_validate(
+                _scene_payload(sku="SOFA-001")
+            ).model_dump(by_alias=True, mode="json")
             assert job.scene_digest == first.json()["scene_digest"]
     finally:
         client.close()
@@ -258,7 +287,9 @@ def test_render_api_binds_exact_scene_snapshot_and_rejects_changed_scene_for_sam
 
 
 def test_render_api_rejects_scene_from_a_different_plan(monkeypatch):
-    engine, factory, client, owner_id, task_id, plan_version_id, _ = _context(monkeypatch)
+    engine, factory, client, owner_id, task_id, plan_version_id, _ = _context(
+        monkeypatch
+    )
     try:
         with factory() as db:
             task = db.get(DesignTask, task_id)

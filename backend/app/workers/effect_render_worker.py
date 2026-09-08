@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from hashlib import sha256
+import json
 import logging
 import os
 from pathlib import Path
@@ -16,7 +17,13 @@ from app.core.config import settings
 from app.core.logging_config import configure_logging
 from app.core.request_context import bind_request_id
 from app.db.database import SessionLocal
-from app.db.models import EffectRenderJob, UploadedImage
+from app.db.models import (
+    DesignScene,
+    DesignSceneVersion,
+    EffectRenderJob,
+    UploadedImage,
+)
+from app.schemas.scenes import SceneDocument
 from app.services import effect_render_job_service, sd_service
 from app.services.sd_service import SDUnavailable
 
@@ -43,11 +50,88 @@ def _heartbeat(
                 return
 
 
+def _scene_digest(scene: SceneDocument) -> str:
+    canonical = json.dumps(
+        scene.model_dump(by_alias=True, mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{sha256(canonical).hexdigest()}"
+
+
+def _scene_conditioning(scene: SceneDocument) -> str:
+    xs = [point.x for point in scene.room.floor_polygon]
+    zs = [point.z for point in scene.room.floor_polygon]
+    payload = {
+        "room": {
+            "ceilingHeight": scene.room.ceiling_height,
+            "depth": max(zs) - min(zs),
+            "width": max(xs) - min(xs),
+        },
+        "items": [
+            {
+                "category": item.category,
+                "dimensions": (
+                    item.dimensions.model_dump(mode="json")
+                    if item.dimensions is not None
+                    else None
+                ),
+                "instanceId": item.instance_id,
+                "position": item.transform.position.model_dump(mode="json"),
+                "sku": item.sku,
+                "sourceType": item.source_type,
+            }
+            for item in sorted(scene.items, key=lambda value: value.instance_id)
+        ],
+        "unit": "m",
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _load_input(job_id: int) -> tuple[str, bytes | None, str | None]:
     with SessionLocal() as db:
         job = db.get(EffectRenderJob, job_id)
         if job is None:
             raise RuntimeError("效果图任务不存在")
+        prompt = job.prompt_snapshot
+        scene_fields = (
+            job.scene_id,
+            job.scene_version_id,
+            job.scene_version,
+            job.scene_snapshot_json,
+            job.scene_digest,
+        )
+        if any(value is not None for value in scene_fields):
+            if any(value is None for value in scene_fields):
+                raise RuntimeError("效果图场景快照引用不完整")
+            scene = db.get(DesignScene, job.scene_id)
+            version = db.get(DesignSceneVersion, job.scene_version_id)
+            if (
+                scene is None
+                or scene.plan_version_id != job.plan_version_id
+                or version is None
+                or version.scene_id != job.scene_id
+                or version.version != job.scene_version
+            ):
+                raise RuntimeError("效果图指定场景版本不存在")
+            persisted_document = SceneDocument.model_validate(version.scene_json)
+            job_document = SceneDocument.model_validate(job.scene_snapshot_json)
+            if (
+                _scene_digest(persisted_document) != job.scene_digest
+                or _scene_digest(job_document) != job.scene_digest
+            ):
+                raise RuntimeError("效果图场景快照摘要不匹配")
+            prompt = (
+                f"{prompt}\n"
+                "SCENE_CONDITIONING_V1 (structured data only):"
+                f"{_scene_conditioning(job_document)}"
+            )
         room_bytes = None
         if job.source_image_id is not None:
             image = db.get(UploadedImage, job.source_image_id)
@@ -60,7 +144,7 @@ def _load_input(job_id: int) -> tuple[str, bytes | None, str | None]:
             actual_digest = f"sha256:{sha256(room_bytes).hexdigest()}"
             if job.source_image_digest and actual_digest != job.source_image_digest:
                 raise RuntimeError("效果图输入图片已变化，拒绝执行非快照输入")
-        return job.prompt_snapshot, room_bytes, job.request_id
+        return prompt, room_bytes, job.request_id
 
 
 def _publish_bytes(

@@ -20,12 +20,18 @@ class EffectRenderRequest(BaseModel):
 
     task_id: int = Field(ge=1)
     plan_version_id: int = Field(ge=1)
+    scene_id: int = Field(ge=1)
+    scene_version: int = Field(ge=1)
 
 
 class EffectRenderJobResponse(BaseModel):
     job_id: int
     task_id: int
     plan_version_id: int
+    scene_id: int | None = None
+    scene_version_id: int | None = None
+    scene_version: int | None = None
+    scene_digest: str | None = None
     status: EffectRenderStatus
     progress: int
     attempt_count: int

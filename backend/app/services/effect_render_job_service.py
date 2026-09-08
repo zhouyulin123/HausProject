@@ -62,10 +62,13 @@ def create_or_get_job(
     max_attempts: int,
     execution_timeout_seconds: int,
     request_id: str | None = None,
+    scene_id: int | None = None,
+    scene_version_id: int | None = None,
+    scene_version: int | None = None,
+    scene_snapshot_json: dict | None = None,
+    scene_digest: str | None = None,
 ) -> tuple[EffectRenderJob, bool]:
-    existing = get_job_for_key(
-        db, task_id=task_id, idempotency_key=idempotency_key
-    )
+    existing = get_job_for_key(db, task_id=task_id, idempotency_key=idempotency_key)
     if existing is not None:
         if existing.request_digest != request_digest:
             raise IdempotencyConflict("Idempotency-Key 已用于不同的效果图输入")
@@ -75,6 +78,11 @@ def create_or_get_job(
     job = EffectRenderJob(
         task_id=task_id,
         plan_version_id=plan_version_id,
+        scene_id=scene_id,
+        scene_version_id=scene_version_id,
+        scene_version=scene_version,
+        scene_snapshot_json=scene_snapshot_json,
+        scene_digest=scene_digest,
         source_image_id=source_image_id,
         source_image_digest=source_image_digest,
         prompt_snapshot=prompt_snapshot,
@@ -95,9 +103,7 @@ def create_or_get_job(
         return job, True
     except IntegrityError:
         db.rollback()
-        existing = get_job_for_key(
-            db, task_id=task_id, idempotency_key=idempotency_key
-        )
+        existing = get_job_for_key(db, task_id=task_id, idempotency_key=idempotency_key)
         if existing is None:
             raise
         if existing.request_digest != request_digest:
@@ -106,13 +112,20 @@ def create_or_get_job(
 
 
 def latest_job_for_plan(
-    db: Session, *, task_id: int, plan_version_id: int
+    db: Session,
+    *,
+    task_id: int,
+    plan_version_id: int,
+    scene_id: int,
+    scene_version: int,
 ) -> EffectRenderJob | None:
     return db.scalars(
         select(EffectRenderJob)
         .where(
             EffectRenderJob.task_id == task_id,
             EffectRenderJob.plan_version_id == plan_version_id,
+            EffectRenderJob.scene_id == scene_id,
+            EffectRenderJob.scene_version == scene_version,
         )
         .order_by(EffectRenderJob.created_at.desc(), EffectRenderJob.id.desc())
         .limit(1)
@@ -140,10 +153,9 @@ def recover_expired_jobs(
             job.status = "cancelled"
             job.progress = 100
             job.completed_at = current
-        elif (
-            job.attempt_count >= job.max_attempts
-            or _as_utc(job.execution_deadline_at) <= _as_utc(current)
-        ):
+        elif job.attempt_count >= job.max_attempts or _as_utc(
+            job.execution_deadline_at
+        ) <= _as_utc(current):
             job.status = "dead_letter"
             job.progress = 100
             job.error_message = "效果图任务租约或执行期限已耗尽"
@@ -165,9 +177,7 @@ def claim_next_job(
     now: datetime | None = None,
 ) -> EffectRenderJob | None:
     current = now or datetime.now(timezone.utc)
-    recover_expired_jobs(
-        db, now=current, retry_delay_seconds=retry_delay_seconds
-    )
+    recover_expired_jobs(db, now=current, retry_delay_seconds=retry_delay_seconds)
     job = db.scalars(
         select(EffectRenderJob)
         .where(
@@ -322,6 +332,7 @@ def complete_job(
     rendered = RenderedImage(
         task_id=job.task_id,
         plan_version_id=job.plan_version_id,
+        scene_version_id=job.scene_version_id,
         plan_id=plan.plan_key,
         prompt=job.prompt_snapshot,
         image_url=image_url,

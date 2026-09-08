@@ -46,23 +46,17 @@ def design_access_context(monkeypatch):
     monkeypatch.setattr(
         chat.llm_service,
         "chat_reply",
-        lambda **_: (_ for _ in ()).throw(
-            AssertionError("越权聊天不应调用模型")
-        ),
+        lambda **_: (_ for _ in ()).throw(AssertionError("越权聊天不应调用模型")),
     )
     monkeypatch.setattr(
         sd_service,
         "is_available",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("越权绘图不应检查或调用 SD")
-        ),
+        lambda: (_ for _ in ()).throw(AssertionError("越权绘图不应检查或调用 SD")),
     )
     monkeypatch.setattr(
         proposal.pdf_service,
         "build_proposal_pdf",
-        lambda *_: (_ for _ in ()).throw(
-            AssertionError("越权导出不应生成 PDF")
-        ),
+        lambda *_: (_ for _ in ()).throw(AssertionError("越权导出不应生成 PDF")),
     )
 
     app = FastAPI()
@@ -210,9 +204,7 @@ def test_proposal_uses_server_plan_snapshot(monkeypatch):
         captured["plan"] = plan
         return b"%PDF-1.4 test"
 
-    artifact_dir = (
-        Path(__file__).resolve().parents[2] / ".test_artifacts" / "proposal"
-    )
+    artifact_dir = Path(__file__).resolve().parents[2] / ".test_artifacts" / "proposal"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     files_before = set(artifact_dir.glob("*.pdf"))
     monkeypatch.setattr(proposal.pdf_service, "build_proposal_pdf", fake_build)
@@ -355,12 +347,12 @@ def test_render_and_proposal_require_exact_plan_version(monkeypatch):
                 "X-Session-ID": owner_id,
                 "Idempotency-Key": "delivery-render-1",
             },
-                json={
-                    "task_id": task_id,
-                    "plan_version_id": plan_version_id,
-                    "scene_id": scene_id,
-                    "scene_version": 1,
-                },
+            json={
+                "task_id": task_id,
+                "plan_version_id": plan_version_id,
+                "scene_id": scene_id,
+                "scene_version": 1,
+            },
         )
 
     assert missing_render.status_code == 422
