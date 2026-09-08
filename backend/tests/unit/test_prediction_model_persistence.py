@@ -18,6 +18,7 @@ from app.db.models import (
     RequirementParseResult,
     TaskExecutionEvent,
     UploadedImage,
+    User,
 )
 from app.services.llm_service import LLMUnavailable
 
@@ -153,6 +154,52 @@ def test_requirement_route_reuses_same_input_without_duplicate_model_call(
     assert second == first
     assert db.query(RequirementParseResult).filter_by(task_id=task.id).count() == 1
     assert db.query(TaskExecutionEvent).filter_by(task_id=task.id).count() == 1
+
+
+def test_confirm_requirement_profiles_once_and_records_model_cost(db, monkeypatch):
+    user = User(nickname="测试用户")
+    db.add(user)
+    db.flush()
+    task = DesignTask(status="waiting_confirm", user_id=user.id)
+    db.add(task)
+    db.commit()
+    monkeypatch.setattr(tasks, "require_owned_design_task", lambda *_args, **_kwargs: task)
+    calls = 0
+
+    def extract_once(_db, *, user_id, text, commit=True):
+        nonlocal calls
+        calls += 1
+        assert user_id == user.id
+        assert commit is False
+        return SimpleNamespace(id=9)
+
+    @contextmanager
+    def captured_call():
+        yield SimpleNamespace(
+            attempted=True,
+            attempt_count=1,
+            usage={"prompt_tokens": 80, "completion_tokens": 20},
+        )
+
+    monkeypatch.setattr(tasks.profile_service, "extract_and_merge", extract_once)
+    monkeypatch.setattr(tasks.llm_service, "capture_model_call", captured_call)
+    monkeypatch.setattr(tasks.settings, "llm_input_price_per_mtok", 2.0)
+    monkeypatch.setattr(tasks.settings, "llm_output_price_per_mtok", 8.0)
+    request = tasks.ConfirmRequirementRequest(
+        confirmed_requirement={"style": "现代", "budget_max": 100000}
+    )
+
+    first = tasks.confirm_requirement(task.id, request, "session-001", db)
+    second = tasks.confirm_requirement(task.id, request, "session-001", db)
+
+    assert first == second == {"status": "ok"}
+    assert calls == 1
+    event = db.query(TaskExecutionEvent).filter_by(task_id=task.id).one()
+    assert event.source_type == "profile"
+    assert event.event_code == "profile.completed"
+    assert event.attempt == 1
+    assert event.billing_status == "metered"
+    assert event.cost_cny == pytest.approx(0.00032)
 
 
 @pytest.mark.asyncio

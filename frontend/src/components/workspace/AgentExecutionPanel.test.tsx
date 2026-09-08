@@ -113,14 +113,17 @@ describe("Agent 执行状态区", () => {
       task_id: 42,
       events: [
         [1, "agent", "需求理解完成", "not_billable"],
-        [2, "generation", "方案生成排队", "unknown"],
-        [3, "generation", "方案生成完成", "metered"],
-        [4, "effect", "效果图开始渲染", "unknown"],
-        [5, "blender", "三维资产进入队列", "not_billable"],
-        [6, "effect", "效果图渲染完成", "metered"],
+        [2, "requirement", "需求模型解析完成", "metered"],
+        [3, "vision", "空间视觉识别完成", "unknown"],
+        [4, "profile", "长期画像更新完成", "metered"],
+        [5, "generation", "方案生成排队", "unknown"],
+        [6, "generation", "方案生成完成", "metered"],
+        [7, "effect", "效果图开始渲染", "unknown"],
+        [8, "blender", "三维资产进入队列", "not_billable"],
+        [9, "effect", "效果图渲染完成", "metered"],
       ].map(([id, source, summary, billing]) => ({
         event_id: id as number,
-        source_type: source as "agent" | "generation" | "effect" | "blender",
+        source_type: source as TaskTimelineResponse["events"][number]["source_type"],
         source_id: id as number,
         attempt: id === 3 ? 2 : null,
         event_code: `${source}.event`,
@@ -129,7 +132,7 @@ describe("Agent 执行状态区", () => {
         cost_cny: billing === "metered" ? 0.6 : null,
         occurred_at: `2026-09-08T09:0${id}:00Z`,
       })),
-      next_cursor: 6,
+      next_cursor: 9,
       next_before_id: 1,
       next_after_id: null,
       known_cost_cny: 1.2,
@@ -149,6 +152,9 @@ describe("Agent 执行状态区", () => {
 
     for (const event of timeline.events) expect(html).toContain(event.summary);
     expect(html).toContain("方案生成");
+    expect(html).toContain("需求解析");
+    expect(html).toContain("空间识别");
+    expect(html).toContain("用户画像");
     expect(html).toContain("效果图");
     expect(html).toContain("3D 渲染");
     expect(html).toContain("计费未知");
