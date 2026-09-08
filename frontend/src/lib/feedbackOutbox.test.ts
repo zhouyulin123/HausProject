@@ -44,6 +44,32 @@ async function settlePromises() {
 }
 
 describe("反馈 outbox", () => {
+  it("浏览器存储不可用时显式报告失败且不尝试无保障发送", async () => {
+    const send = vi.fn();
+    const onDeliveryAction = vi.fn();
+    const request = finalSelect("feedback-42-storage-disabled");
+    const outbox = createFeedbackOutbox({
+      taskId: 42,
+      storage: null,
+      send,
+      onDeliveryAction,
+    });
+
+    outbox.submit(request, "确认当前方案");
+    await settlePromises();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(onDeliveryAction).toHaveBeenCalledWith({
+      type: "queued",
+      request,
+      label: "确认当前方案",
+    });
+    expect(onDeliveryAction).toHaveBeenCalledWith({
+      type: "failed",
+      clientEventId: request.client_event_id,
+      message: "浏览器无法保存待同步反馈，请检查隐私或存储设置后重试",
+    });
+  });
   it("六类业务动作只以严格请求字段和固定短标签 round-trip", async () => {
     const requests: DesignFeedbackEventRequest[] = [
       {

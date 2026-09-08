@@ -314,6 +314,18 @@ export function createFeedbackOutbox(options: FeedbackOutboxOptions) {
 
   const handleOnline: EventListener = () => flush();
 
+  const reportPersistenceFailure = (request: DesignFeedbackEventRequest) => {
+    const parsedRequest = parseFeedbackRequest(request);
+    if (!parsedRequest) return;
+    const label = ACTION_LABELS[parsedRequest.action_type];
+    onDeliveryAction?.({ type: "queued", request: parsedRequest, label });
+    onDeliveryAction?.({
+      type: "failed",
+      clientEventId: parsedRequest.client_event_id,
+      message: "浏览器无法保存待同步反馈，请检查隐私或存储设置后重试",
+    });
+  };
+
   return {
     start() {
       if (started || !storage || !feedbackOutboxStorageKey(taskId)) return;
@@ -331,16 +343,28 @@ export function createFeedbackOutbox(options: FeedbackOutboxOptions) {
       onlineTarget?.removeEventListener("online", handleOnline);
     },
     submit(request: DesignFeedbackEventRequest, _label: string) {
-      if (!storage || !feedbackOutboxStorageKey(taskId)) return;
+      if (!feedbackOutboxStorageKey(taskId)) return;
+      if (!storage) {
+        reportPersistenceFailure(request);
+        return;
+      }
       const entry = enqueueFeedback(storage, taskId, request);
-      if (!entry) return;
+      if (!entry) {
+        reportPersistenceFailure(request);
+        return;
+      }
       onDeliveryAction?.({ type: "queued", request: entry.request, label: entry.label });
       void deliver(entry, false);
     },
     retry(request: DesignFeedbackEventRequest) {
-      if (!storage || !feedbackOutboxStorageKey(taskId)) return;
+      if (!feedbackOutboxStorageKey(taskId)) return;
+      if (!storage) {
+        reportPersistenceFailure(request);
+        return;
+      }
       const entry = enqueueFeedback(storage, taskId, request);
       if (entry) void deliver(entry, true);
+      else reportPersistenceFailure(request);
     },
     flush,
   };

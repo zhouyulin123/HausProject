@@ -44,8 +44,8 @@ import { useFeedbackDelivery } from "@/hooks/useFeedbackDelivery";
 import {
   buildFinalSelectFeedbackEvent,
   buildGlbLoadFailureFeedbackEvent,
-  createMoveFeedbackReporter,
   createFeedbackClientEventId,
+  createPlanMutationEventIdResolver,
 } from "@/lib/workspaceFeedback";
 import { buildWorkspacePlan, DESIGN_ENTRY_MODES } from "@/lib/designProject";
 import {
@@ -430,14 +430,9 @@ export default function DesignWorkspacePage() {
     : null;
   const planVersionId = plan?.planVersionId ?? null;
   const activeRoomId = project?.activeRoomId ?? project?.roomModel?.rooms[0]?.id ?? null;
-  const reportMovePersisted = useMemo(
-    () => createMoveFeedbackReporter({
-      taskId: projectId ?? 0,
-      planVersionId,
-      roomId: activeRoomId,
-      submit: feedback.submit,
-    }),
-    [activeRoomId, feedback.submit, planVersionId, projectId],
+  const planMutationEventIds = useMemo(
+    () => createPlanMutationEventIdResolver(projectId ?? 0),
+    [projectId],
   );
 
   const handleApprovalDecision = useCallback(async (
@@ -502,8 +497,20 @@ export default function DesignWorkspacePage() {
       }
       sourceInstanceId = matches[0].instanceId;
     }
+    const mutationSignature = JSON.stringify([
+      activePlan.revisionVersion,
+      activePlan.planVersionId,
+      mutation.action,
+      sourceInstanceId ?? null,
+      mutation.targetSku ?? null,
+      project.activeRoomId ?? null,
+    ]);
+    const clientMutationId = planMutationEventIds.resolve(
+      mutationSignature,
+      mutation.action,
+    );
     const response = await mutateWorkspacePlan(project.id, {
-      clientMutationId: createFeedbackClientEventId(project.id, mutation.action),
+      clientMutationId,
       baseRevisionVersion: activePlan.revisionVersion,
       planVersionId: activePlan.planVersionId,
       action: mutation.action,
@@ -511,12 +518,13 @@ export default function DesignWorkspacePage() {
       targetSku: mutation.targetSku,
       roomId: project.activeRoomId,
     });
+    planMutationEventIds.acknowledge(mutationSignature);
     setSceneReference(project.id, {
       scene_id: response.scene.id,
       version: response.scene.current_version,
     });
     await restoreServerPlans(project.id);
-  }, [activePlan, project, restoreServerPlans, setSceneReference]);
+  }, [activePlan, planMutationEventIds, project, restoreServerPlans, setSceneReference]);
 
   const confirmCurrentPlan = useCallback(() => {
     if (!projectId || !planVersionId) return;
@@ -750,7 +758,6 @@ export default function DesignWorkspacePage() {
                 plan={plan}
                 roomType={roomType}
                 roomModel={project.roomModel}
-                onMovePersisted={reportMovePersisted}
                 onGlbLoadFailed={reportGlbLoadFailure}
                 onSceneReferenceChange={handleSceneReferenceChange}
                 authoritativeScene={project.authoritativeScene}

@@ -63,7 +63,7 @@ describe("统一设计工作台", () => {
     testState.project.activePlanVersionId = 8;
   });
 
-  it("把 3D 持久化移动接入结构化反馈且重复回调只投递一次", () => {
+  it("移动反馈由场景保存事务原子生成，页面不再二次投递", () => {
     const html = renderToStaticMarkup(
       <MemoryRouter initialEntries={["/design/42/workspace"]}>
         <Routes>
@@ -73,19 +73,7 @@ describe("统一设计工作台", () => {
     );
 
     expect(html).toContain("ROOM VIEW");
-    expect(testState.moveHandler).toBeTypeOf("function");
-    testState.moveHandler?.({ sceneId: 3, sceneVersion: 7, instanceId: "sofa-1" });
-    testState.moveHandler?.({ sceneId: 3, sceneVersion: 7, instanceId: "sofa-1" });
-
-    expect(testState.submit).toHaveBeenCalledTimes(1);
-    expect(testState.submit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action_type: "move",
-        scene_id: 3,
-        scene_version: 7,
-        instance_id: "sofa-1",
-      }),
-      "家具位置调整",
-    );
+    expect(testState.moveHandler).toBeUndefined();
+    expect(testState.submit).not.toHaveBeenCalled();
   });
 });
