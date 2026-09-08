@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -80,6 +82,16 @@ def scene_api_context():
                     model_width_mm=1600,
                     model_height_mm=800,
                     model_depth_mm=800,
+                    data_origin="merchant",
+                    verification_status="verified",
+                    availability_status="in_stock",
+                    region_codes=["*"],
+                    stock_quantity=10,
+                    price_valid_from=datetime(2020, 1, 1, tzinfo=timezone.utc),
+                    price_valid_to=datetime(2100, 1, 1, tzinfo=timezone.utc),
+                    verified_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+                    verified_by="tester",
+                    data_version="catalog-test-v1",
                 ),
             ]
         )
@@ -105,6 +117,7 @@ def scene_api_context():
 
     app = FastAPI()
     app.include_router(scenes.router, prefix="/api/design")
+    app.state.scene_db_factory = factory
 
     def override_db():
         with factory() as db:
@@ -451,3 +464,42 @@ def test_blender_render_rejects_stale_scene_version(scene_api_context):
     )
 
     assert response.status_code == 409
+
+
+@pytest.mark.integration
+def test_historical_scene_stays_readable_but_expired_product_blocks_final_render(
+    scene_api_context,
+):
+    client, owner_id, _, plan_version_id = scene_api_context
+    headers = {"X-Session-ID": owner_id}
+    created = client.post(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+        json={"scene": _scene_payload()},
+    )
+    assert created.status_code == 201
+
+    with client.app.state.scene_db_factory() as db:
+        product = db.query(Product).filter(Product.sku == "SOFA-001").one()
+        product.price_valid_to = datetime(2020, 1, 2, tzinfo=timezone.utc)
+        db.commit()
+
+    restored = client.get(
+        f"/api/design/scenes/{created.json()['id']}",
+        headers=headers,
+    )
+    assert restored.status_code == 200
+    assert restored.json()["scene"]["items"][0]["sku"] == "SOFA-001"
+
+    render = client.post(
+        f"/api/design/scenes/{created.json()['id']}/render-jobs",
+        headers=headers,
+        json={"baseVersion": 1, "profile": "final"},
+    )
+    assert render.status_code == 422
+    assert render.json()["detail"] == {
+        "code": "catalog_product_ineligible",
+        "message": "商品 SOFA-001 当前不可用于场景新增或正式交付",
+        "sku": "SOFA-001",
+        "reason_codes": ["price_expired"],
+    }
