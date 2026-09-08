@@ -19,7 +19,11 @@ from app.db.models import (
     EvaluationRunBinding,
     LayoutRun,
 )
-from app.services import evaluation_binding_service, generation_output_service
+from app.services import (
+    evaluation_binding_service,
+    generation_output_service,
+    task_timeline_service,
+)
 from app.services.evaluation_binding_service import EvaluationBindingSpec
 
 ACTIVE_STATUSES = ("queued", "running")
@@ -305,6 +309,14 @@ def create_run(
     db.add(run)
     try:
         db.flush()
+        task_timeline_service.record_lifecycle_event(
+            db,
+            task_id=task.id,
+            source_type="generation",
+            source_id=run.id,
+            state="queued",
+            attempt=0,
+        )
         if evaluation_binding is not None:
             db.add(
                 EvaluationRunBinding(
@@ -377,10 +389,20 @@ def create_run(
 
 
 def mark_running(db: Session, *, run: GenerationRun) -> None:
+    current = datetime.now(timezone.utc)
     run.status = "running"
     run.current_node = "prepare_context"
-    run.started_at = datetime.now(timezone.utc)
+    run.started_at = current
     run.error_message = None
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=run.task_id,
+        source_type="generation",
+        source_id=run.id,
+        state="claimed",
+        attempt=run.attempt_count,
+        occurred_at=current,
+    )
     db.commit()
 
 
@@ -605,6 +627,16 @@ def _mark_dead_letter(
         progress=0,
         error_message=run.error_message,
     )
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=run.task_id,
+        source_type="generation",
+        source_id=run.id,
+        state="dead_letter",
+        attempt=run.attempt_count,
+        generation_cost_cny=run.cost_cny,
+        occurred_at=now,
+    )
 
 
 def recover_expired_runs(
@@ -646,6 +678,16 @@ def recover_expired_runs(
             run.completed_at = current
             run.next_retry_at = None
             _set_task_state(db, run=run, status="cancelled", progress=0)
+            task_timeline_service.record_lifecycle_event(
+                db,
+                task_id=run.task_id,
+                source_type="generation",
+                source_id=run.id,
+                state="cancelled",
+                attempt=run.attempt_count,
+                generation_cost_cny=run.cost_cny,
+                occurred_at=current,
+            )
             continue
         if _deadline_reached(run, now=current):
             _mark_dead_letter(
@@ -670,6 +712,15 @@ def recover_expired_runs(
             run.next_retry_at = retry_at
             run.error_message = "上次 Worker 租约过期，等待重试"
             _set_task_state(db, run=run, status="queued", progress=50)
+            task_timeline_service.record_lifecycle_event(
+                db,
+                task_id=run.task_id,
+                source_type="generation",
+                source_id=run.id,
+                state="retry_scheduled",
+                attempt=run.attempt_count,
+                occurred_at=current,
+            )
         else:
             message = (
                 "方案生成多次超时"
@@ -757,6 +808,16 @@ def claim_next_run(
                 progress=0,
                 error_message="评测执行绑定校验失败",
             )
+            task_timeline_service.record_lifecycle_event(
+                db,
+                task_id=run.task_id,
+                source_type="generation",
+                source_id=run.id,
+                state="dead_letter",
+                attempt=run.attempt_count,
+                generation_cost_cny=run.cost_cny,
+                occurred_at=current,
+            )
             db.commit()
             return None
     run.status = "running"
@@ -778,6 +839,15 @@ def claim_next_run(
     run.completed_at = None
     run.error_message = None
     _set_task_state(db, run=run, status="generating", progress=60)
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=run.task_id,
+        source_type="generation",
+        source_id=run.id,
+        state="claimed",
+        attempt=run.attempt_count,
+        occurred_at=current,
+    )
     db.commit()
     return run
 
@@ -1050,6 +1120,16 @@ def mark_completed(
     run.next_retry_at = None
     _clear_worker(run)
     _set_task_state(db, run=run, status="completed", progress=100)
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=run.task_id,
+        source_type="generation",
+        source_id=run.id,
+        state="completed",
+        attempt=run.attempt_count,
+        generation_cost_cny=run.cost_cny,
+        occurred_at=current,
+    )
     if commit:
         db.commit()
     else:
@@ -1177,6 +1257,16 @@ def mark_budget_replan_exhausted(
         progress=0,
         error_message=run.error_message,
     )
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=run.task_id,
+        source_type="generation",
+        source_id=run.id,
+        state="failed",
+        attempt=run.attempt_count,
+        generation_cost_cny=run.cost_cny,
+        occurred_at=current,
+    )
     db.commit()
     return True
 
@@ -1225,6 +1315,15 @@ def mark_failed(
         run.next_retry_at = retry_at
         run.completed_at = None
         _set_task_state(db, run=run, status="queued", progress=50)
+        task_timeline_service.record_lifecycle_event(
+            db,
+            task_id=run.task_id,
+            source_type="generation",
+            source_id=run.id,
+            state="retry_scheduled",
+            attempt=run.attempt_count,
+            occurred_at=current,
+        )
     elif retryable:
         _mark_dead_letter(
             db,
@@ -1245,6 +1344,16 @@ def mark_failed(
             status="failed",
             progress=0,
             error_message=run.error_message,
+        )
+        task_timeline_service.record_lifecycle_event(
+            db,
+            task_id=run.task_id,
+            source_type="generation",
+            source_id=run.id,
+            state="failed",
+            attempt=run.attempt_count,
+            generation_cost_cny=run.cost_cny,
+            occurred_at=current,
         )
     db.commit()
     return run.status
@@ -1299,6 +1408,16 @@ def mark_cost_guard_blocked(
         progress=0,
         error_message=run.error_message,
     )
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=run.task_id,
+        source_type="generation",
+        source_id=run.id,
+        state="failed",
+        attempt=run.attempt_count,
+        generation_cost_cny=run.cost_cny,
+        occurred_at=current,
+    )
     db.commit()
     return True
 
@@ -1351,6 +1470,16 @@ def mark_provider_guard_blocked(
         progress=0,
         error_message=run.error_message,
     )
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=run.task_id,
+        source_type="generation",
+        source_id=run.id,
+        state="failed",
+        attempt=run.attempt_count,
+        generation_cost_cny=run.cost_cny,
+        occurred_at=current,
+    )
     db.commit()
     return True
 
@@ -1391,6 +1520,16 @@ def request_cancel(
         _clear_worker(run)
         _clear_output(run)
         _set_task_state(db, run=run, status="cancelled", progress=0)
+        task_timeline_service.record_lifecycle_event(
+            db,
+            task_id=run.task_id,
+            source_type="generation",
+            source_id=run.id,
+            state="cancelled",
+            attempt=run.attempt_count,
+            generation_cost_cny=run.cost_cny,
+            occurred_at=current,
+        )
     db.commit()
     return run.status
 
@@ -1426,6 +1565,16 @@ def mark_cancelled_by_worker(
     _clear_worker(run)
     _clear_output(run)
     _set_task_state(db, run=run, status="cancelled", progress=0)
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=run.task_id,
+        source_type="generation",
+        source_id=run.id,
+        state="cancelled",
+        attempt=run.attempt_count,
+        generation_cost_cny=run.cost_cny,
+        occurred_at=current,
+    )
     db.commit()
     return True
 

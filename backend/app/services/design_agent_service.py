@@ -51,6 +51,7 @@ from app.services import (
     llm_service,
     scene_service,
     scene_tools,
+    task_timeline_service,
 )
 from app.services.llm_service import LLMUnavailable
 from app.services.langgraph_checkpoint_service import SqlAlchemyCheckpointSaver
@@ -866,6 +867,29 @@ def _event_payload(event: DesignAgentEvent) -> dict[str, Any]:
     }
 
 
+def _record_agent_timeline_event(
+    db: Session,
+    *,
+    event: DesignAgentEvent,
+    state: str | None = None,
+) -> None:
+    normalized_state = state
+    if normalized_state is None:
+        normalized_state = {
+            "waiting_user": "waiting_user",
+            "failed": "failed",
+            "conflict": "conflict",
+        }.get(event.status, "completed")
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=event.task_id,
+        source_type="agent",
+        source_id=event.turn_id,
+        state=f"turn.{normalized_state}",
+        occurred_at=event.created_at,
+    )
+
+
 _PUBLIC_EVENT_TYPES = {
     "state_changed",
     "question_created",
@@ -1136,6 +1160,7 @@ def _recover_stale_turn(
     )
     db.add(event)
     db.flush()
+    _record_agent_timeline_event(db, event=event, state="recovered")
     agent_approval_service.ensure_for_agent_handoff(
         db,
         task=task,
@@ -1302,22 +1327,23 @@ def _record_state_conflict(
     turn.status = "conflict"
     turn.response_json = conflict
     turn.completed_at = _utc_now()
-    db.add(
-        DesignAgentEvent(
-            task_id=task.id,
-            turn_id=turn.id,
-            sequence=1,
-            event_type="state_conflict",
-            node="checkpoint_commit",
-            status="conflict",
-            source="orchestrator",
-            summary=message,
-            details_json={
-                "code": "agent_state_conflict",
-                "state_version": task.agent_state_version or 0,
-            },
-        )
+    event = DesignAgentEvent(
+        task_id=task.id,
+        turn_id=turn.id,
+        sequence=1,
+        event_type="state_conflict",
+        node="checkpoint_commit",
+        status="conflict",
+        source="orchestrator",
+        summary=message,
+        details_json={
+            "code": "agent_state_conflict",
+            "state_version": task.agent_state_version or 0,
+        },
     )
+    db.add(event)
+    db.flush()
+    _record_agent_timeline_event(db, event=event, state="conflict")
     db.commit()
     return AgentStateVersionConflict(
         message,
@@ -1543,6 +1569,7 @@ def _run_turn(
     events = _events_from_state(task.id, turn.id, state)
     db.add_all(events)
     db.flush()
+    _record_agent_timeline_event(db, event=events[-1])
     agent_approval_service.ensure_for_agent_handoff(
         db,
         task=task,
@@ -1679,6 +1706,7 @@ def _persist_failed_turn(
     )
     db.add(event)
     db.flush()
+    _record_agent_timeline_event(db, event=event, state="failed")
     reply = "本轮执行失败，已安全停止。请稍后重试或由人工继续处理。"
     response = {
         "task_id": task.id,

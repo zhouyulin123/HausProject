@@ -406,6 +406,36 @@ class DesignAgentEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class TaskExecutionEvent(Base):
+    """跨 Agent 与异步作业的安全、追加式任务时间线投影。"""
+
+    __tablename__ = "task_execution_events"
+    __table_args__ = (
+        UniqueConstraint("event_key", name="uq_task_execution_events_event_key"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_type = Column(String(20), nullable=False, index=True)
+    source_id = Column(Integer, nullable=False)
+    attempt = Column(Integer, nullable=True)
+    event_code = Column(String(50), nullable=False, index=True)
+    billing_status = Column(String(20), nullable=False, index=True)
+    cost_cny = Column(Float, nullable=True)
+    event_key = Column(String(150), nullable=False)
+    occurred_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+
+
 class DesignFeedbackEvent(Base):
     """用户对方案与场景的结构化行为，用于真实质量反馈闭环。"""
 

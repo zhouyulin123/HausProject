@@ -3,7 +3,7 @@ import logging
 from copy import deepcopy
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -44,6 +44,7 @@ from app.schemas.tasks import (
     TaskResultResponse,
     TaskStatusResponse,
 )
+from app.schemas.task_timeline import TaskTimelineEventResponse, TaskTimelineResponse
 from app.services import (
     anonymous_session_service,
     aggregate_lock_service,
@@ -58,12 +59,56 @@ from app.services import (
     plan_mutation_service,
     profile_service,
     task_service,
+    task_timeline_service,
 )
 from app.services.llm_service import LLMUnavailable
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 MAX_BUDGET_REPLANS = 2
+
+
+@router.get("/{task_id}/timeline", response_model=TaskTimelineResponse)
+def get_task_timeline(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    after_id: Annotated[int | None, Query(ge=1)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    db: Session = Depends(get_db),
+):
+    require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
+    events, next_cursor = task_timeline_service.list_events(
+        db,
+        task_id=task_id,
+        after_id=after_id,
+        limit=limit,
+    )
+    cost = task_timeline_service.cost_summary(db, task_id=task_id)
+    return TaskTimelineResponse(
+        task_id=task_id,
+        events=[
+            TaskTimelineEventResponse(
+                event_id=event.id,
+                source_type=event.source_type,
+                source_id=event.source_id,
+                attempt=event.attempt,
+                event_code=event.event_code,
+                summary=task_timeline_service.safe_summary(event.event_code),
+                billing_status=event.billing_status,
+                cost_cny=event.cost_cny,
+                occurred_at=event.occurred_at,
+            )
+            for event in events
+        ],
+        next_cursor=next_cursor,
+        known_cost_cny=cost.known_cost_cny,
+        has_unknown_cost=cost.has_unknown_cost,
+        unknown_cost_event_count=cost.unknown_cost_event_count,
+    )
 
 
 @router.post(

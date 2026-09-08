@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import DesignPlanVersion, EffectRenderJob, RenderedImage
+from app.services import task_timeline_service
 
 
 ACTIVE_STATUSES = ("queued", "running")
@@ -98,6 +99,15 @@ def create_or_get_job(
     )
     db.add(job)
     try:
+        db.flush()
+        task_timeline_service.record_lifecycle_event(
+            db,
+            task_id=task_id,
+            source_type="effect",
+            source_id=job.id,
+            state="queued",
+            attempt=0,
+        )
         db.commit()
         db.refresh(job)
         return job, True
@@ -153,6 +163,7 @@ def recover_expired_jobs(
             job.status = "cancelled"
             job.progress = 100
             job.completed_at = current
+            lifecycle_state = "cancelled"
         elif job.attempt_count >= job.max_attempts or _as_utc(
             job.execution_deadline_at
         ) <= _as_utc(current):
@@ -161,11 +172,22 @@ def recover_expired_jobs(
             job.error_message = "效果图任务租约或执行期限已耗尽"
             job.dead_lettered_at = current
             job.completed_at = current
+            lifecycle_state = "dead_letter"
         else:
             job.status = "queued"
             job.progress = 0
             job.error_message = "上次 Worker 租约过期，等待重试"
             job.next_retry_at = current + timedelta(seconds=retry_delay_seconds)
+            lifecycle_state = "retry_scheduled"
+        task_timeline_service.record_lifecycle_event(
+            db,
+            task_id=job.task_id,
+            source_type="effect",
+            source_id=job.id,
+            state=lifecycle_state,
+            attempt=job.attempt_count,
+            occurred_at=current,
+        )
 
 
 def claim_next_job(
@@ -208,6 +230,15 @@ def claim_next_job(
             item.error_message = "效果图任务执行期限已耗尽"
             item.dead_lettered_at = current
             item.completed_at = current
+            task_timeline_service.record_lifecycle_event(
+                db,
+                task_id=item.task_id,
+                source_type="effect",
+                source_id=item.id,
+                state="dead_letter",
+                attempt=item.attempt_count,
+                occurred_at=current,
+            )
         db.commit()
         return None
     job.status = "running"
@@ -222,6 +253,15 @@ def claim_next_job(
     job.next_retry_at = None
     job.started_at = job.started_at or current
     job.error_message = None
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=job.task_id,
+        source_type="effect",
+        source_id=job.id,
+        state="claimed",
+        attempt=job.attempt_count,
+        occurred_at=current,
+    )
     db.commit()
     db.refresh(job)
     return job
@@ -347,6 +387,15 @@ def complete_job(
     job.progress = 100
     job.completed_at = current
     _clear_owner(job)
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=job.task_id,
+        source_type="effect",
+        source_id=job.id,
+        state="completed",
+        attempt=job.attempt_count,
+        occurred_at=current,
+    )
     db.commit()
     return True
 
@@ -398,6 +447,19 @@ def fail_job(
         job.status = terminal_status
         job.progress = 100
         job.completed_at = current
+    state = {
+        "queued": "retry_scheduled",
+        "provider_unavailable": "failed",
+    }.get(job.status, job.status)
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=job.task_id,
+        source_type="effect",
+        source_id=job.id,
+        state=state,
+        attempt=job.attempt_count,
+        occurred_at=current,
+    )
     db.commit()
     return True
 
@@ -411,6 +473,15 @@ def cancel_job(db: Session, *, job: EffectRenderJob) -> EffectRenderJob:
     job.progress = 100
     job.completed_at = current
     _clear_owner(job)
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=job.task_id,
+        source_type="effect",
+        source_id=job.id,
+        state="cancelled",
+        attempt=job.attempt_count,
+        occurred_at=current,
+    )
     db.commit()
     db.refresh(job)
     return job

@@ -14,6 +14,7 @@ from app.db.models import (
     DesignSceneVersion,
     RenderedImage,
 )
+from app.services import task_timeline_service
 
 
 ACTIVE_STATUSES = ("queued", "running")
@@ -30,6 +31,36 @@ def _clear_owner(job: BlenderRenderJob) -> None:
     job.worker_id = None
     job.lease_expires_at = None
     job.heartbeat_at = None
+
+
+def _task_id_for_job(db: Session, job: BlenderRenderJob) -> int | None:
+    return db.scalar(
+        select(DesignRevision.task_id)
+        .join(DesignPlanVersion, DesignPlanVersion.revision_id == DesignRevision.id)
+        .join(DesignScene, DesignScene.plan_version_id == DesignPlanVersion.id)
+        .where(DesignScene.id == job.scene_id)
+    )
+
+
+def _record_timeline(
+    db: Session,
+    *,
+    job: BlenderRenderJob,
+    state: str,
+    occurred_at: datetime,
+) -> None:
+    task_id = _task_id_for_job(db, job)
+    if task_id is None:
+        return
+    task_timeline_service.record_lifecycle_event(
+        db,
+        task_id=task_id,
+        source_type="blender",
+        source_id=job.id,
+        state=state,
+        attempt=job.attempt,
+        occurred_at=occurred_at,
+    )
 
 
 def _mark_dead_letter(
@@ -122,6 +153,8 @@ def create_or_get_job(
     )
     db.add(job)
     try:
+        db.flush()
+        _record_timeline(db, job=job, state="queued", occurred_at=now)
         db.commit()
         db.refresh(job)
         return job, True
@@ -154,6 +187,7 @@ def requeue_failed_job(
             now=current,
             message="Blender 渲染任务执行期限或重试次数已耗尽",
         )
+        _record_timeline(db, job=job, state="dead_letter", occurred_at=current)
         db.commit()
         db.refresh(job)
         return job
@@ -166,6 +200,7 @@ def requeue_failed_job(
     job.next_retry_at = current
     job.cancel_requested_at = None
     job.completed_at = None
+    _record_timeline(db, job=job, state="retry_scheduled", occurred_at=current)
     db.commit()
     db.refresh(job)
     return job
@@ -214,6 +249,7 @@ def recover_expired_jobs(
             job.status = "cancelled"
             job.progress = 100
             job.completed_at = current
+            lifecycle_state = "cancelled"
         elif job.attempt >= allowed_attempts or _as_utc(
             job.execution_deadline_at
         ) <= _as_utc(current):
@@ -222,11 +258,19 @@ def recover_expired_jobs(
                 now=current,
                 message="Blender 渲染任务租约或执行期限已耗尽",
             )
+            lifecycle_state = "dead_letter"
         else:
             job.status = "queued"
             job.progress = 0
             job.error_message = "上次 Worker 租约过期，等待重试"
             job.next_retry_at = current + timedelta(seconds=retry_delay_seconds)
+            lifecycle_state = "retry_scheduled"
+        _record_timeline(
+            db,
+            job=job,
+            state=lifecycle_state,
+            occurred_at=current,
+        )
 
 
 def claim_next_job(
@@ -259,6 +303,12 @@ def claim_next_job(
         cancelled.completed_at = current
         cancelled.next_retry_at = None
         _clear_owner(cancelled)
+        _record_timeline(
+            db,
+            job=cancelled,
+            state="cancelled",
+            occurred_at=current,
+        )
     expired_queued = db.scalars(
         select(BlenderRenderJob)
         .where(
@@ -275,6 +325,12 @@ def claim_next_job(
             expired,
             now=current,
             message="Blender 渲染任务执行期限或重试次数已耗尽",
+        )
+        _record_timeline(
+            db,
+            job=expired,
+            state="dead_letter",
+            occurred_at=current,
         )
     job = db.scalars(
         select(BlenderRenderJob)
@@ -309,6 +365,7 @@ def claim_next_job(
         current + timedelta(seconds=lease_seconds),
         _as_utc(job.execution_deadline_at),
     )
+    _record_timeline(db, job=job, state="claimed", occurred_at=current)
     db.commit()
     db.refresh(job)
     return job
@@ -410,6 +467,7 @@ def mark_completed(
                 mode="blender_cycles" if job.profile == "final" else "blender_eevee",
             )
         )
+    _record_timeline(db, job=job, state="completed", occurred_at=current)
     db.commit()
     return True
 
@@ -463,6 +521,8 @@ def mark_failed(
         job.status = "failed"
         job.progress = 100
         job.completed_at = current
+    state = "retry_scheduled" if job.status == "queued" else job.status
+    _record_timeline(db, job=job, state=state, occurred_at=current)
     db.commit()
     return True
 
@@ -482,6 +542,7 @@ def cancel_job(
     job.completed_at = current
     job.next_retry_at = None
     _clear_owner(job)
+    _record_timeline(db, job=job, state="cancelled", occurred_at=current)
     db.commit()
     db.refresh(job)
     return job
