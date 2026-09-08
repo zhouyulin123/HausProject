@@ -12,11 +12,16 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.models import FailureCluster, FailureTriageImport
+from app.db.models import (
+    FailureCluster,
+    FailureTriageImport,
+    FailureVerificationImport,
+)
 from app.schemas.failure_triage import (
     FailureClusterUpdate,
     FailureTriageItem,
     FailureTriageReportRequest,
+    FailureVerificationReportRequest,
 )
 from app.services.failure_triage_signature import verify_failure_triage_signature
 
@@ -35,6 +40,14 @@ class FailureTriageSyncResult:
     clusters: tuple[FailureCluster, ...]
 
 
+@dataclass(frozen=True)
+class FailureVerificationSyncResult:
+    imported: bool
+    report_digest: str
+    coverage_digest: str
+    clusters: tuple[FailureCluster, ...]
+
+
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 _NEXT_STATUS = {
     "open": "in_progress",
@@ -50,6 +63,52 @@ def _payload_hash(report: FailureTriageReportRequest) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _sha256_digest(payload: object) -> str:
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(serialized).hexdigest()}"
+
+
+def _verification_report_digest(report: FailureVerificationReportRequest) -> str:
+    return _sha256_digest(report.model_dump(mode="json"))
+
+
+def _verification_semantic_digest(report: FailureVerificationReportRequest) -> str:
+    payload = report.model_dump(
+        mode="json",
+        exclude={"report_id", "generated_at", "signature_key_id", "signature"},
+    )
+    payload["verified_clusters"] = sorted(
+        payload["verified_clusters"],
+        key=lambda item: (item["fingerprint"], item["fixed_version"]),
+    )
+    return _sha256_digest(payload)
+
+
+def _verification_coverage_digest(report: FailureVerificationReportRequest) -> str:
+    return _sha256_digest(
+        report.model_dump(
+            mode="json",
+            include={
+                "taxonomy_version",
+                "data_version",
+                "candidate_version",
+                "release_gate_report_digest",
+                "manifest_digests",
+                "evidence_digests",
+                "baseline_evidence_digests",
+                "output_digests",
+                "covered_splits",
+            },
+        )
+    )
 
 
 def _semantic_hash(report: FailureTriageReportRequest) -> str:
@@ -91,6 +150,19 @@ def _clusters_for_report(
             )
         )
         is not None
+    )
+
+
+def _clusters_for_verification_report(
+    db: Session,
+    report_id: str,
+) -> tuple[FailureCluster, ...]:
+    return tuple(
+        db.scalars(
+            select(FailureCluster)
+            .where(FailureCluster.verification_report_id == report_id)
+            .order_by(FailureCluster.id)
+        ).all()
     )
 
 
@@ -159,6 +231,9 @@ def _upsert_cluster(
         cluster.status = "open"
         cluster.fixed_version = None
         cluster.verified_version = None
+        cluster.verification_report_id = None
+        cluster.report_digest = None
+        cluster.coverage_digest = None
     return cluster
 
 
@@ -232,6 +307,117 @@ def sync_verified_report(
     for cluster in clusters:
         db.refresh(cluster)
     return FailureTriageSyncResult(imported=True, clusters=clusters)
+
+
+def sync_failure_verification(
+    db: Session,
+    report: FailureVerificationReportRequest,
+    *,
+    signing_key: str,
+) -> FailureVerificationSyncResult:
+    """验签完整三切分复测证明，并原子关闭全部匹配的 resolved 失败簇。"""
+    serialized = report.model_dump(mode="json")
+    if not verify_failure_triage_signature(serialized, signing_key=signing_key):
+        raise FailureTriageSignatureError("失败复测证明签名无效")
+
+    report_digest = _verification_report_digest(report)
+    semantic_digest = _verification_semantic_digest(report)
+    coverage_digest = _verification_coverage_digest(report)
+    existing = db.scalar(
+        select(FailureVerificationImport).where(
+            FailureVerificationImport.report_id == report.report_id
+        )
+    )
+    if existing is not None:
+        if existing.report_digest != report_digest:
+            raise FailureTriageConflict("report_id 已用于不同复测证明")
+        return FailureVerificationSyncResult(
+            imported=False,
+            report_digest=existing.report_digest,
+            coverage_digest=existing.coverage_digest,
+            clusters=_clusters_for_verification_report(db, report.report_id),
+        )
+    replay = db.scalar(
+        select(FailureVerificationImport).where(
+            FailureVerificationImport.semantic_digest == semantic_digest
+        )
+    )
+    if replay is not None:
+        raise FailureTriageConflict("相同语义证据已使用其他 report_id 导入")
+
+    claims = {item.fingerprint: item for item in report.verified_clusters}
+    clusters = tuple(
+        db.scalars(
+            select(FailureCluster)
+            .where(FailureCluster.fingerprint.in_(sorted(claims)))
+            .order_by(FailureCluster.id)
+            .with_for_update()
+        ).all()
+    )
+    found = {cluster.fingerprint: cluster for cluster in clusters}
+    if set(found) != set(claims):
+        raise FailureTriageConflict("复测证明包含不存在的失败簇")
+    for fingerprint, claim in claims.items():
+        cluster = found[fingerprint]
+        if cluster.status != "resolved":
+            raise FailureTriageConflict("复测目标必须全部处于 resolved 状态")
+        if cluster.taxonomy_version != report.taxonomy_version:
+            raise FailureTriageConflict("复测目标 taxonomy_version 不匹配")
+        if cluster.data_version != report.data_version:
+            raise FailureTriageConflict("复测目标 data_version 不匹配")
+        if cluster.fixed_version != claim.fixed_version:
+            raise FailureTriageConflict("复测目标 fixed_version 不匹配")
+
+    db.add(
+        FailureVerificationImport(
+            report_id=report.report_id,
+            report_digest=report_digest,
+            semantic_digest=semantic_digest,
+            coverage_digest=coverage_digest,
+        )
+    )
+    try:
+        db.flush()
+        for cluster in clusters:
+            cluster.status = "verified"
+            cluster.verified_version = report.candidate_version
+            cluster.verification_report_id = report.report_id
+            cluster.report_digest = report_digest
+            cluster.coverage_digest = coverage_digest
+            cluster.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        existing = db.scalar(
+            select(FailureVerificationImport).where(
+                FailureVerificationImport.report_id == report.report_id
+            )
+        )
+        if existing is not None and existing.report_digest == report_digest:
+            return FailureVerificationSyncResult(
+                imported=False,
+                report_digest=existing.report_digest,
+                coverage_digest=existing.coverage_digest,
+                clusters=_clusters_for_verification_report(db, report.report_id),
+            )
+        replay = db.scalar(
+            select(FailureVerificationImport).where(
+                FailureVerificationImport.semantic_digest == semantic_digest
+            )
+        )
+        if replay is not None:
+            raise FailureTriageConflict(
+                "相同语义证据已使用其他 report_id 导入"
+            ) from exc
+        raise FailureTriageConflict("复测证明同步冲突，请重试") from exc
+    for cluster in clusters:
+        db.refresh(cluster)
+    return FailureVerificationSyncResult(
+        imported=True,
+        report_digest=report_digest,
+        coverage_digest=coverage_digest,
+        clusters=clusters,
+    )
 
 
 def list_failure_clusters(

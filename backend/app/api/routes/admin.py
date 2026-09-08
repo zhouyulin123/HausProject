@@ -20,6 +20,8 @@ from app.schemas.failure_triage import (
     FailureStatus,
     FailureTriageReportRequest,
     FailureTriageSyncResponse,
+    FailureVerificationReportRequest,
+    FailureVerificationSyncResponse,
 )
 from app.schemas.quality import QualitySummaryResponse
 from app.schemas.real_world_readiness import RealWorldReadinessResponse
@@ -90,6 +92,36 @@ def sync_failure_clusters(
     return FailureTriageSyncResponse(
         imported=result.imported,
         cluster_count=len(result.clusters),
+        clusters=[FailureClusterResponse.model_validate(item) for item in result.clusters],
+    )
+
+
+@router.post(
+    "/quality/failure-clusters/verify",
+    response_model=FailureVerificationSyncResponse,
+)
+def verify_failure_clusters(
+    payload: FailureVerificationReportRequest,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> FailureVerificationSyncResponse:
+    if not settings.eval_report_signing_key:
+        raise HTTPException(status_code=503, detail="失败复测证明验签尚未配置")
+    try:
+        result = failure_triage_service.sync_failure_verification(
+            db,
+            payload,
+            signing_key=settings.eval_report_signing_key,
+        )
+    except failure_triage_service.FailureTriageSignatureError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except failure_triage_service.FailureTriageConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return FailureVerificationSyncResponse(
+        imported=result.imported,
+        cluster_count=len(result.clusters),
+        report_digest=result.report_digest,
+        coverage_digest=result.coverage_digest,
         clusters=[FailureClusterResponse.model_validate(item) for item in result.clusters],
     )
 

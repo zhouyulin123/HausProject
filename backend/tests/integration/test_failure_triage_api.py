@@ -44,6 +44,36 @@ def _report():
     return payload
 
 
+def _verification_report(fingerprint: str):
+    payload = {
+        "schema_version": "1.0",
+        "report_type": "failure_verification",
+        "report_id": "failure-verification-001",
+        "taxonomy_version": "taxonomy-1",
+        "data_version": "data-1",
+        "candidate_version": "candidate-2",
+        "release_gate_report_digest": "sha256:" + "0" * 64,
+        "manifest_digests": ["sha256:" + str(index) * 64 for index in range(1, 4)],
+        "evidence_digests": ["sha256:" + str(index) * 64 for index in range(4, 7)],
+        "baseline_evidence_digests": [
+            "sha256:" + str(index) * 64 for index in range(7, 10)
+        ],
+        "output_digests": ["sha256:" + "4" * 64],
+        "covered_splits": ["blind", "development", "regression"],
+        "verified_clusters": [
+            {"fingerprint": fingerprint, "fixed_version": "rules-2"}
+        ],
+        "signature_algorithm": "hmac-sha256",
+        "signature_key_id": "eval-key-v1",
+        "generated_at": "2026-09-08T10:00:00Z",
+    }
+    payload["signature"] = sign_failure_triage_payload(
+        payload,
+        signing_key=_SIGNING_KEY,
+    )
+    return payload
+
+
 def test_failure_triage_api_is_admin_only_strict_and_private(monkeypatch):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -158,6 +188,76 @@ def test_failure_triage_sync_requires_server_signing_key(monkeypatch):
                 json=_report(),
             )
             assert response.status_code == 503
+            verification = _verification_report("a" * 64)
+            response = client.post(
+                "/api/admin/quality/failure-clusters/verify",
+                json=verification,
+            )
+            assert response.status_code == 503
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_failure_verification_api_is_admin_only_and_requires_signed_resolved_match(
+    monkeypatch,
+):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        customer = User(id=1301, phone="13800001301", role="customer", phone_verified=True)
+        admin = User(id=1302, phone="13800001302", role="admin", phone_verified=True)
+        db.add_all([customer, admin])
+        db.commit()
+        customer_token = auth_service.issue_token(customer)
+        admin_token = auth_service.issue_token(admin)
+
+    def override_db():
+        with factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(settings, "eval_report_signing_key", _SIGNING_KEY)
+    try:
+        with TestClient(app) as client:
+            sync_url = "/api/admin/quality/failure-clusters/sync"
+            client.cookies.set(settings.auth_cookie_name, admin_token)
+            assert client.post(sync_url, json=_report()).status_code == 200
+            cluster = client.get("/api/admin/quality/failure-clusters").json()["items"][0]
+            cluster_url = f"/api/admin/quality/failure-clusters/{cluster['id']}"
+            assert client.patch(
+                cluster_url,
+                json={"status": "in_progress", "owner": "quality-admin"},
+            ).status_code == 200
+            assert client.patch(
+                cluster_url,
+                json={"status": "resolved", "fixed_version": "rules-2"},
+            ).status_code == 200
+
+            verify_url = "/api/admin/quality/failure-clusters/verify"
+            client.cookies.set(settings.auth_cookie_name, customer_token)
+            assert client.post(
+                verify_url, json=_verification_report(cluster["fingerprint"])
+            ).status_code == 403
+            client.cookies.set(settings.auth_cookie_name, admin_token)
+            forged = _verification_report(cluster["fingerprint"])
+            forged["candidate_version"] = "forged"
+            assert client.post(verify_url, json=forged).status_code == 422
+            verified = client.post(
+                verify_url, json=_verification_report(cluster["fingerprint"])
+            )
+            assert verified.status_code == 200
+            assert verified.json()["imported"] is True
+            assert verified.json()["clusters"][0]["status"] == "verified"
+            assert verified.json()["clusters"][0]["verification_report_id"] == (
+                "failure-verification-001"
+            )
     finally:
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(engine)

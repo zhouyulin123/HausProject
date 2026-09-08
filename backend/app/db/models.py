@@ -513,6 +513,14 @@ class FailureCluster(Base):
     detected_version = Column(String(100), nullable=False)
     fixed_version = Column(String(100), nullable=True)
     verified_version = Column(String(100), nullable=True)
+    verification_report_id = Column(
+        String(100),
+        ForeignKey("failure_verification_imports.report_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    report_digest = Column(String(71), nullable=True)
+    coverage_digest = Column(String(71), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True),
@@ -530,6 +538,19 @@ class FailureTriageImport(Base):
     report_id = Column(String(100), nullable=False, unique=True, index=True)
     payload_hash = Column(String(64), nullable=False)
     semantic_hash = Column(String(64), nullable=False, unique=True, index=True)
+    imported_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FailureVerificationImport(Base):
+    """已验签复测证明的幂等与覆盖凭据。"""
+
+    __tablename__ = "failure_verification_imports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_id = Column(String(100), nullable=False, unique=True, index=True)
+    report_digest = Column(String(71), nullable=False)
+    semantic_digest = Column(String(71), nullable=False, unique=True, index=True)
+    coverage_digest = Column(String(71), nullable=False)
     imported_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

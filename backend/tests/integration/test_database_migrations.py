@@ -204,10 +204,20 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "langgraph_checkpoint_writes",
             "failure_clusters",
             "failure_triage_imports",
+            "failure_verification_imports",
             "room_fact_confirmations",
             "model_provider_circuits",
             "evaluation_run_bindings",
         } <= tables
+        failure_cluster_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("failure_clusters")
+        }
+        assert {
+            "verification_report_id",
+            "report_digest",
+            "coverage_digest",
+        } <= failure_cluster_columns
         approval_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns("agent_approvals")
