@@ -16,7 +16,7 @@ from app.db.models import (
     EffectRenderJob,
     RenderedImage,
 )
-from app.services import design_version_service, sd_service
+from app.services import design_version_service, llm_service, sd_service
 from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
@@ -44,7 +44,7 @@ def design_access_context(monkeypatch):
         task_id = task.id
 
     monkeypatch.setattr(
-        chat.llm_service,
+        llm_service,
         "chat_reply",
         lambda **_: (_ for _ in ()).throw(AssertionError("越权聊天不应调用模型")),
     )
@@ -132,7 +132,7 @@ def test_legacy_chat_is_retired_without_creating_task_or_calling_model(
 ):
     client, stranger_id, _ = design_access_context
     monkeypatch.setattr(
-        chat.llm_service,
+        llm_service,
         "chat_reply",
         lambda **_: (_ for _ in ()).throw(AssertionError("废弃入口不得调用模型")),
     )
