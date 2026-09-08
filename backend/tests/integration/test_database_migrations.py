@@ -378,6 +378,23 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "scene_snapshot_json",
             "scene_digest",
         } <= effect_render_job_columns
+        timeline_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "task_execution_events"
+            )
+        }
+        assert {
+            "task_id",
+            "source_type",
+            "source_id",
+            "attempt",
+            "event_code",
+            "billing_status",
+            "cost_cny",
+            "event_key",
+            "occurred_at",
+        } <= timeline_columns
         effect_render_job_foreign_keys = {
             tuple(foreign_key["constrained_columns"]): foreign_key["referred_table"]
             for foreign_key in inspect(inspection_engine).get_foreign_keys(
