@@ -96,9 +96,7 @@ def _version_response(version: DesignSceneVersion) -> SceneVersionResponse:
     return SceneVersionResponse(
         version=version.version,
         scene=SceneDocument.model_validate(version.scene_json),
-        validation=SceneValidationReport.model_validate(
-            version.validation_json
-        ),
+        validation=SceneValidationReport.model_validate(version.validation_json),
         source=version.source,
         created_at=version.created_at,
     )
@@ -113,9 +111,7 @@ def _scene_response(
         plan_version_id=scene.plan_version_id,
         current_version=scene.current_version,
         scene=SceneDocument.model_validate(version.scene_json),
-        validation=SceneValidationReport.model_validate(
-            version.validation_json
-        ),
+        validation=SceneValidationReport.model_validate(version.validation_json),
         source=version.source,
         created_at=scene.created_at,
         updated_at=scene.updated_at,
@@ -131,8 +127,15 @@ def _render_job_response(job: BlenderRenderJob) -> BlenderRenderJobResponse:
         status=job.status,
         progress=job.progress,
         attempt=job.attempt,
+        max_attempts=job.max_attempts,
         output_url=job.output_url,
+        error_code=job.error_code,
         error_message=job.error_message,
+        heartbeat_at=job.heartbeat_at,
+        execution_deadline_at=job.execution_deadline_at,
+        next_retry_at=job.next_retry_at,
+        cancel_requested_at=job.cancel_requested_at,
+        dead_lettered_at=job.dead_lettered_at,
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,
@@ -239,7 +242,7 @@ def auto_layout_plan_scene(
 
     revision = db.get(DesignRevision, plan_version.revision_id)
     task = db.get(DesignTask, revision.task_id) if revision else None
-    room_name = (task.space_type if task and task.space_type else "客厅")
+    room_name = task.space_type if task and task.space_type else "客厅"
     geometry = layout_service.room_geometry_from_plan_version(db, plan_version)
     room, openings = geometry or layout_service.default_room_geometry(room_name)
 
@@ -531,8 +534,52 @@ def queue_blender_render(
             scene=scene,
             version=version,
             profile=payload.profile,
+            max_attempts=settings.blender_worker_max_attempts,
+            execution_timeout_seconds=(
+                settings.blender_worker_execution_timeout_seconds
+            ),
         )
     return _render_job_response(job)
+
+
+@router.post(
+    "/scenes/{scene_id}/render-jobs/{job_id}/cancel",
+    response_model=BlenderRenderJobResponse,
+)
+def cancel_blender_render_job(
+    scene_id: int,
+    job_id: int,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_active_session(db, x_session_id)
+    scene = scene_service.get_owned_scene(
+        db,
+        session_id=x_session_id,
+        scene_id=scene_id,
+    )
+    if scene is None:
+        raise _not_found("3D 场景")
+    job = blender_job_service.get_scene_job(
+        db,
+        scene_id=scene.id,
+        job_id=job_id,
+        for_update=True,
+    )
+    if job is None:
+        raise _not_found("Blender 渲染任务")
+    if job.status in {"completed", "failed", "dead_letter", "cancelled"}:
+        if job.status == "cancelled":
+            return _render_job_response(job)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "render_job_not_cancellable",
+                "message": "Blender 渲染任务已进入终态，不能取消",
+                "status": job.status,
+            },
+        )
+    return _render_job_response(blender_job_service.cancel_job(db, job=job))
 
 
 @router.get(
@@ -597,9 +644,7 @@ def run_scene_agent_command(
     current = scene_service.get_current_version(db, scene)
     source_document = SceneDocument.model_validate(current.scene_json)
     delivery_region = scene_service.scene_delivery_region(db, scene)
-    catalog_scope = (
-        {"region": delivery_region} if delivery_region is not None else {}
-    )
+    catalog_scope = {"region": delivery_region} if delivery_region is not None else {}
     context = scene_tools.build_scene_agent_context(
         db,
         source_document,
@@ -632,8 +677,7 @@ def run_scene_agent_command(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"场景已经更新到版本 {locked_scene.current_version}，"
-                "本次 AI 建议未写入"
+                f"场景已经更新到版本 {locked_scene.current_version}，本次 AI 建议未写入"
             ),
         )
 
@@ -647,9 +691,7 @@ def run_scene_agent_command(
                 **catalog_scope,
             )
         ),
-        validate_scene=lambda document: scene_service.validate_scene(
-            db, document
-        ),
+        validate_scene=lambda document: scene_service.validate_scene(db, document),
     )
     try:
         result = workflow.run(

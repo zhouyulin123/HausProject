@@ -52,6 +52,17 @@ def test_worker_converts_nonzero_blender_exit_to_controlled_error(tmp_path):
             stderr="Python traceback with local paths",
         )
 
+    with pytest.raises(BlenderProcessError, match="退出码 70"):
+        execute_blender_process(
+            executable=Path("C:/Blender/blender.exe"),
+            script_path=tmp_path / "trusted.py",
+            manifest_path=tmp_path / "manifest.json",
+            output_path=tmp_path / "render.png",
+            timeout_seconds=90,
+            runner=runner,
+            base_environment={},
+        )
+
 
 def test_supervised_worker_terminates_process_after_ownership_is_lost(tmp_path):
     class FakeProcess:
@@ -84,14 +95,3 @@ def test_supervised_worker_terminates_process_after_ownership_is_lost(tmp_path):
             poll_seconds=0,
         )
     assert process.terminated is True
-
-    with pytest.raises(BlenderProcessError, match="退出码 70"):
-        execute_blender_process(
-            executable=Path("C:/Blender/blender.exe"),
-            script_path=tmp_path / "trusted.py",
-            manifest_path=tmp_path / "manifest.json",
-            output_path=tmp_path / "render.png",
-            timeout_seconds=90,
-            runner=runner,
-            base_environment={},
-        )

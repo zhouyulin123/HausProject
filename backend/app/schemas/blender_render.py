@@ -9,7 +9,14 @@ from app.schemas.scenes import SceneModel
 
 
 RenderProfile = Literal["preview", "final"]
-RenderJobStatus = Literal["queued", "running", "completed", "failed"]
+RenderJobStatus = Literal[
+    "queued",
+    "running",
+    "completed",
+    "failed",
+    "dead_letter",
+    "cancelled",
+]
 
 
 class BlenderRenderRequest(SceneModel):
@@ -25,8 +32,15 @@ class BlenderRenderJobResponse(BaseModel):
     status: RenderJobStatus
     progress: int
     attempt: int
+    max_attempts: int
     output_url: str | None = None
+    error_code: str | None = None
     error_message: str | None = None
+    heartbeat_at: datetime | None = None
+    execution_deadline_at: datetime
+    next_retry_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+    dead_lettered_at: datetime | None = None
     created_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None

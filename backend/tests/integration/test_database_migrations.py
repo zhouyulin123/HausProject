@@ -34,9 +34,7 @@ def test_langgraph_checkpoint_migration_round_trip_from_empty_database():
     backend_dir = Path(__file__).resolve().parents[2]
     artifacts_dir = backend_dir / ".test_artifacts"
     artifacts_dir.mkdir(exist_ok=True)
-    database_path = artifacts_dir / (
-        f"langgraph_checkpoint_migration_{uuid4().hex}.db"
-    )
+    database_path = artifacts_dir / (f"langgraph_checkpoint_migration_{uuid4().hex}.db")
     database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
     config = Config(str(backend_dir / "alembic.ini"))
     config.attributes["database_url"] = database_url
@@ -122,8 +120,7 @@ def test_product_asset_migration_backfills_only_trusted_legacy_glb_as_approved()
         command.upgrade(config, "head")
         engine = create_engine(database_url)
         columns = {
-            column["name"]
-            for column in inspect(engine).get_columns("product_assets")
+            column["name"] for column in inspect(engine).get_columns("product_assets")
         }
         assert {
             "product_id",
@@ -213,9 +210,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
         } <= tables
         approval_columns = {
             column["name"]
-            for column in inspect(inspection_engine).get_columns(
-                "agent_approvals"
-            )
+            for column in inspect(inspection_engine).get_columns("agent_approvals")
         }
         assert {
             "task_id",
@@ -351,9 +346,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
         } <= custom_rule_columns
         render_job_columns = {
             column["name"]
-            for column in inspect(inspection_engine).get_columns(
-                "blender_render_jobs"
-            )
+            for column in inspect(inspection_engine).get_columns("blender_render_jobs")
         }
         assert {
             "scene_id",
@@ -366,6 +359,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "lease_expires_at",
             "output_url",
             "error_message",
+            "error_code",
             "max_attempts",
             "heartbeat_at",
             "execution_deadline_at",
@@ -375,9 +369,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
         } <= render_job_columns
         generation_run_columns = {
             column["name"]
-            for column in inspect(inspection_engine).get_columns(
-                "generation_runs"
-            )
+            for column in inspect(inspection_engine).get_columns("generation_runs")
         }
         assert {
             "model",
@@ -462,21 +454,23 @@ def test_alembic_upgrades_empty_database_to_current_schema():
                 "generation_runs"
             )
         }
-        assert generation_run_constraints[
-            "uq_generation_runs_task_idempotency"
-        ] == {"task_id", "idempotency_key"}
-        assert generation_run_constraints[
-            "uq_generation_runs_result_revision"
-        ] == {"result_revision_id"}
+        assert generation_run_constraints["uq_generation_runs_task_idempotency"] == {
+            "task_id",
+            "idempotency_key",
+        }
+        assert generation_run_constraints["uq_generation_runs_result_revision"] == {
+            "result_revision_id"
+        }
         generation_foreign_keys = {
             tuple(foreign_key["constrained_columns"]): foreign_key
             for foreign_key in inspect(inspection_engine).get_foreign_keys(
                 "generation_runs"
             )
         }
-        assert generation_foreign_keys[("result_revision_id",)][
-            "referred_table"
-        ] == "design_revisions"
+        assert (
+            generation_foreign_keys[("result_revision_id",)]["referred_table"]
+            == "design_revisions"
+        )
         scene_evidence_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns(
@@ -498,9 +492,10 @@ def test_alembic_upgrades_empty_database_to_current_schema():
                 "generation_run_scene_evidence"
             )
         }
-        assert scene_evidence_constraints[
-            "uq_generation_run_scene_plan"
-        ] == {"generation_run_id", "plan_version_id"}
+        assert scene_evidence_constraints["uq_generation_run_scene_plan"] == {
+            "generation_run_id",
+            "plan_version_id",
+        }
     finally:
         if inspection_engine is not None:
             inspection_engine.dispose()
@@ -536,12 +531,16 @@ def test_catalog_migration_keeps_existing_merchant_draft_unverified():
         command.upgrade(config, "head")
         engine = create_engine(database_url)
         with engine.connect() as connection:
-            migrated = connection.execute(
-                text(
-                    "SELECT verification_status, availability_status, record_version "
-                    "FROM products WHERE sku = 'DRAFT-LEGACY'"
+            migrated = (
+                connection.execute(
+                    text(
+                        "SELECT verification_status, availability_status, record_version "
+                        "FROM products WHERE sku = 'DRAFT-LEGACY'"
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
         assert migrated == {
             "verification_status": "draft",
             "availability_status": "unknown",

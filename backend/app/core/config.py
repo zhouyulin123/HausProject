@@ -40,12 +40,8 @@ class Settings(BaseSettings):
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
     # 可选：每百万 token 单价（元），配置后才会估算方案生成成本并写入 generation_runs
-    llm_input_price_per_mtok: float | None = Field(
-        default=None, gt=0, le=1_000_000
-    )
-    llm_output_price_per_mtok: float | None = Field(
-        default=None, gt=0, le=1_000_000
-    )
+    llm_input_price_per_mtok: float | None = Field(default=None, gt=0, le=1_000_000)
+    llm_output_price_per_mtok: float | None = Field(default=None, gt=0, le=1_000_000)
 
     # 视觉模型（SiliconFlow 上的 Qwen3-VL：户型图 / 房间照片分析）
     vl_api_key: str = ""
@@ -104,6 +100,10 @@ class Settings(BaseSettings):
     blender_render_max_mb: int = Field(default=30, ge=1, le=200)
     blender_worker_poll_seconds: float = Field(default=2.0, ge=0.2, le=60)
     blender_worker_max_attempts: int = Field(default=2, ge=1, le=5)
+    blender_worker_lease_seconds: int = Field(default=180, ge=30, le=3600)
+    blender_worker_heartbeat_seconds: int = Field(default=15, ge=1, le=300)
+    blender_worker_execution_timeout_seconds: int = Field(default=1800, ge=60, le=14400)
+    blender_worker_retry_base_seconds: int = Field(default=5, ge=1, le=600)
     blender_render_requests_per_hour: int = Field(default=10, ge=1, le=100)
     blender_allow_uploaded_models: bool = False
     generation_worker_poll_seconds: float = Field(default=1.0, ge=0.2, le=60)
@@ -114,9 +114,7 @@ class Settings(BaseSettings):
     generation_worker_execution_timeout_seconds: int = Field(
         default=900, ge=30, le=7200
     )
-    generation_task_cost_limit_cny: float = Field(
-        default=1.0, gt=0, le=1000
-    )
+    generation_task_cost_limit_cny: float = Field(default=1.0, gt=0, le=1000)
     provider_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
     provider_circuit_cooldown_seconds: int = Field(default=60, ge=5, le=3600)
     provider_circuit_probe_lease_seconds: int = Field(default=30, ge=5, le=300)
@@ -142,10 +140,24 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+        return [
+            origin.strip() for origin in self.cors_origins.split(",") if origin.strip()
+        ]
 
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
+        if self.blender_worker_heartbeat_seconds >= self.blender_worker_lease_seconds:
+            raise ValueError("Blender Worker 心跳间隔必须小于租约有效期")
+        if (
+            self.blender_worker_heartbeat_seconds
+            >= self.blender_worker_execution_timeout_seconds
+        ):
+            raise ValueError("Blender Worker 心跳间隔必须小于执行截止时间")
+        if (
+            self.blender_render_timeout_seconds
+            > self.blender_worker_execution_timeout_seconds
+        ):
+            raise ValueError("Blender 渲染超时不能超过作业执行截止时间")
         if (
             self.generation_worker_heartbeat_seconds
             >= self.generation_worker_lease_seconds

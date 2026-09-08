@@ -171,10 +171,7 @@ def test_scene_create_read_update_and_version_history(scene_api_context):
     )
     assert updated.status_code == 200
     assert updated.json()["current_version"] == 2
-    assert (
-        updated.json()["scene"]["items"][0]["transform"]["position"]["x"]
-        == 2.8
-    )
+    assert updated.json()["scene"]["items"][0]["transform"]["position"]["x"] == 2.8
 
     history = client.get(
         f"/api/design/scenes/{scene_id}/versions",
@@ -284,8 +281,7 @@ def test_scene_agent_command_updates_owned_scene_as_new_version(
     assert response.json()["scene"]["current_version"] == 2
     assert response.json()["scene"]["source"] == "scene_agent"
     assert (
-        response.json()["scene"]["scene"]["items"][0]["transform"]["position"]["x"]
-        == 2
+        response.json()["scene"]["scene"]["items"][0]["transform"]["position"]["x"] == 2
     )
     assert response.json()["message"] == "已将沙发向左移动 50 厘米"
 
@@ -362,10 +358,7 @@ def test_scene_agent_rejects_unsafe_operation_without_creating_version(
 
     assert response.status_code == 422
     assert restored.json()["current_version"] == 1
-    assert (
-        restored.json()["scene"]["items"][0]["transform"]["position"]["x"]
-        == 2.5
-    )
+    assert restored.json()["scene"]["items"][0]["transform"]["position"]["x"] == 2.5
 
 
 @pytest.mark.integration
@@ -445,6 +438,7 @@ def test_owner_can_queue_and_query_versioned_blender_render(
     assert queued.json()["next_retry_at"] is None
     assert queued.json()["cancel_requested_at"] is None
     assert queued.json()["dead_lettered_at"] is None
+    assert queued.json()["error_code"] is None
     assert queued.json()["scene_version"] == 1
     assert duplicate.status_code == 202
     assert duplicate.json()["id"] == queued.json()["id"]
@@ -492,6 +486,17 @@ def test_owner_can_cancel_running_blender_job_and_stale_worker_cannot_publish(
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
     assert cancelled.json()["cancel_requested_at"] is not None
+
+    with client.app.state.scene_db_factory() as db:
+        job = db.get(BlenderRenderJob, job_id)
+        job.status = "completed"
+        db.commit()
+    terminal = client.post(
+        f"/api/design/scenes/{scene_id}/render-jobs/{job_id}/cancel",
+        headers=headers,
+    )
+    assert terminal.status_code == 409
+    assert terminal.json()["detail"]["code"] == "render_job_not_cancellable"
 
 
 @pytest.mark.integration

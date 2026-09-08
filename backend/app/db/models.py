@@ -100,7 +100,9 @@ class UploadedImage(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     task_id = Column(Integer, ForeignKey("design_tasks.id"), nullable=True)
-    image_type = Column(String(50), default="room_photo")  # room_photo / floor_plan / reference_image
+    image_type = Column(
+        String(50), default="room_photo"
+    )  # room_photo / floor_plan / reference_image
     file_url = Column(String(255))
     file_name = Column(String(255), nullable=True)
     file_size = Column(Integer, nullable=True)
@@ -543,9 +545,15 @@ class Product(Base):
     model_reviewed_at = Column(DateTime(timezone=True), nullable=True)
     model_reviewed_by = Column(String(100), nullable=True)
     model_review_note = Column(String(500), nullable=True)
-    model_spec_json = Column(JSON, nullable=True)  # 3D 建模真实参数（尺寸/结构/造型/材质PBR/工艺）
+    model_spec_json = Column(
+        JSON, nullable=True
+    )  # 3D 建模真实参数（尺寸/结构/造型/材质PBR/工艺）
     data_origin = Column(
-        String(30), nullable=False, default="unknown", server_default="unknown", index=True
+        String(30),
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+        index=True,
     )  # unknown / merchant / demo / public_reference
     source_name = Column(String(100), nullable=True)
     source_url = Column(String(500), nullable=True)
@@ -602,8 +610,7 @@ class ProductAsset(Base):
             name="ck_product_assets_kind",
         ),
         CheckConstraint(
-            "review_status IN "
-            "('pending_review', 'approved', 'rejected', 'superseded')",
+            "review_status IN ('pending_review', 'approved', 'rejected', 'superseded')",
             name="ck_product_assets_review_status",
         ),
         UniqueConstraint(
@@ -655,7 +662,9 @@ class CustomQuoteRule(Base):
         CheckConstraint("record_version >= 1"),
     )
     id = Column(Integer, primary_key=True, index=True)
-    project_name = Column(String(100), nullable=False, index=True)  # 定制衣柜 / 橱柜地柜 ...
+    project_name = Column(
+        String(100), nullable=False, index=True
+    )  # 定制衣柜 / 橱柜地柜 ...
     category = Column(String(50), index=True)  # 柜类定制 / 厨房定制 / 背景墙 / 其他
     pricing_unit = Column(String(20), nullable=False)  # ㎡ / 延米 / 项
     material_grade = Column(String(50), nullable=True)  # 颗粒板 / 多层实木 / 实木 ...
@@ -737,9 +746,7 @@ class EffectRenderJob(Base):
     worker_id = Column(String(100), nullable=True, index=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
     heartbeat_at = Column(DateTime(timezone=True), nullable=True)
-    execution_deadline_at = Column(
-        DateTime(timezone=True), nullable=False, index=True
-    )
+    execution_deadline_at = Column(DateTime(timezone=True), nullable=False, index=True)
     next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
     cancel_requested_at = Column(DateTime(timezone=True), nullable=True)
     dead_lettered_at = Column(DateTime(timezone=True), nullable=True, index=True)
@@ -1020,9 +1027,16 @@ class BlenderRenderJob(Base):
     status = Column(String(20), nullable=False, default="queued", index=True)
     progress = Column(Integer, nullable=False, default=0)
     attempt = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=2, server_default="2")
     worker_id = Column(String(100), nullable=True, index=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    execution_deadline_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    cancel_requested_at = Column(DateTime(timezone=True), nullable=True)
+    dead_lettered_at = Column(DateTime(timezone=True), nullable=True, index=True)
     output_url = Column(String(500), nullable=True)
+    error_code = Column(String(100), nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     started_at = Column(DateTime(timezone=True), nullable=True)
@@ -1126,20 +1140,18 @@ class GenerationRun(Base):
     input_snapshot = Column(JSON, nullable=True)  # 本次模型调用的完整动态输入
     input_digest = Column(String(71), nullable=True)
     provenance_schema_version = Column(Integer, nullable=True)
-    output_snapshot = Column(JSON, nullable=True)  # 方案摘要（名称/风格/预算/评分/家具数）
+    output_snapshot = Column(
+        JSON, nullable=True
+    )  # 方案摘要（名称/风格/预算/评分/家具数）
     usage_json = Column(JSON, nullable=True)  # token 用量（prompt/completion/total）
     cost_cny = Column(Float, nullable=True)  # 估算成本（配置单价后才有值）
-    cost_reserved_cny = Column(
-        Float, nullable=False, default=0.0, server_default="0"
-    )
+    cost_reserved_cny = Column(Float, nullable=False, default=0.0, server_default="0")
     cost_limit_cny = Column(Float, nullable=True)
     request_id = Column(String(100), nullable=True, index=True)
     worker_id = Column(String(100), nullable=True, index=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
     heartbeat_at = Column(DateTime(timezone=True), nullable=True)
-    execution_deadline_at = Column(
-        DateTime(timezone=True), nullable=True, index=True
-    )
+    execution_deadline_at = Column(DateTime(timezone=True), nullable=True, index=True)
     dead_lettered_at = Column(DateTime(timezone=True), nullable=True, index=True)
     next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
     attempt_count = Column(Integer, nullable=False, default=0)
