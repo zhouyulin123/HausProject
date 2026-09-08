@@ -93,9 +93,7 @@ describe("Agent 执行快照映射", () => {
     const checkpoint = {
       task_id: 42,
       state_version: 9,
-      status: "completed",
       active_mode: "catalog_design",
-      active_room_id: "living-room",
       intent: "design",
       ...executionFields,
       status: "completed",

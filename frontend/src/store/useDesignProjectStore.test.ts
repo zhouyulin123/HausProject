@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { emptyRequirement } from "@/types/requirement";
-import { useDesignProjectStore } from "./useDesignProjectStore";
+import {
+  migrateDesignProjectState,
+  useDesignProjectStore,
+} from "./useDesignProjectStore";
 import { agentTurnSceneContext } from "@/lib/sceneEditingPolicy";
 
 describe("useDesignProjectStore", () => {
@@ -297,5 +300,28 @@ describe("useDesignProjectStore", () => {
       activePlanId: "worker-plan",
       activePlanVersionId: 11,
     });
+  });
+
+  it("把缺少执行快照的 v2 本地项目迁移为 v3", async () => {
+    const legacyProject = useDesignProjectStore
+      .getState()
+      .registerProject(47, "catalog_design", {
+        requirement: emptyRequirement,
+        roomModel: null,
+      });
+    const project = { ...useDesignProjectStore.getState().projects[legacyProject] };
+    project.generationRunId = 9;
+    Reflect.deleteProperty(project, "execution");
+    const migrated = migrateDesignProjectState({
+      projects: { 47: project },
+      currentProjectId: 47,
+    }, 2) as { projects: Record<number, { execution?: unknown; generationRunId?: number | null }> };
+
+    expect(migrated.projects[47]?.execution).toMatchObject({
+      currentNode: "idle",
+      stepCount: 0,
+      events: [],
+    });
+    expect(migrated.projects[47]?.generationRunId).toBe(9);
   });
 });

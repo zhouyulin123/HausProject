@@ -7,6 +7,7 @@ import type {
 import type { ImageAnalysis, UserRequirement } from "@/types/requirement";
 import type { RoomModel } from "@/types/roomModel";
 import type {
+  AgentExecutionEvent,
   AgentExitReason,
   AgentPendingQuestion,
   AgentSceneReference,
@@ -1288,26 +1289,7 @@ export interface AgentTurnRequest {
   custom_furniture_spec?: CustomFurnitureSpecPatch;
 }
 
-export interface AgentEvent {
-  sequence: number;
-  type:
-    | "state_changed"
-    | "question_created"
-    | "tool_started"
-    | "tool_completed"
-    | "validation_failed"
-    | "scene_committed"
-    | "generation_queued"
-    | "fallback_used"
-    | "human_handoff"
-    | "failed";
-  node: string;
-  status: string;
-  source: string;
-  summary: string;
-  details: Record<string, unknown>;
-  created_at: string | null;
-}
+export type AgentEvent = AgentExecutionEvent;
 
 export interface AgentTurnResponse {
   task_id: number;

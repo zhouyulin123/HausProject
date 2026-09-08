@@ -174,6 +174,39 @@ export function buildMoveFeedbackEvent(
   };
 }
 
+export function createMoveFeedbackReporter({
+  taskId,
+  planVersionId,
+  roomId,
+  submit,
+}: {
+  taskId: number;
+  planVersionId: number | null | undefined;
+  roomId: string | null | undefined;
+  submit: (request: DesignFeedbackEventRequest, label: string) => void;
+}) {
+  const submittedVersions = new Set<string>();
+  return (move: {
+    sceneId: number;
+    sceneVersion: number;
+    instanceId: string;
+  }) => {
+    if (!positiveInteger(taskId) || !positiveInteger(planVersionId)) return;
+    const signature = `${move.sceneId}:${move.sceneVersion}:${move.instanceId.trim()}`;
+    if (submittedVersions.has(signature)) return;
+    const event = buildMoveFeedbackEvent(
+      createFeedbackClientEventId(taskId, "move", signature),
+      move.sceneId,
+      move.sceneVersion,
+      move.instanceId,
+      roomId,
+    );
+    if (!event) return;
+    submittedVersions.add(signature);
+    submit(event, "家具位置调整");
+  };
+}
+
 export type FeedbackDeliveryAction =
   | { type: "reset" }
   | { type: "queued"; request: DesignFeedbackEventRequest; label: string }

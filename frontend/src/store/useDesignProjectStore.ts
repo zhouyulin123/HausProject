@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import type { ChatMessage } from "@/types/chat";
 import type { RoomModel } from "@/types/roomModel";
 import type {
+  AgentExecutionState,
   AgentExitReason,
   AgentPendingQuestion,
   AgentSceneReference,
@@ -12,6 +13,7 @@ import type {
   CustomFurnitureSpecPatch,
 } from "@/types/customFurniture";
 import {
+  createEmptyAgentExecutionState,
   createDesignProject,
   type DesignProject,
   type DesignProjectMode,
@@ -58,8 +60,33 @@ interface DesignProjectState {
       customFurnitureResult?: CustomFurniturePreviewResult | null;
       approvalRequired?: boolean;
       generationRunId?: number | null;
+      execution?: AgentExecutionState;
     },
   ) => void;
+}
+
+export function migrateDesignProjectState(persisted: unknown, _version?: number): {
+  projects: Record<string, DesignProject>;
+  currentProjectId: number | null;
+} {
+  const state = persisted as Partial<DesignProjectState>;
+  return {
+    projects: Object.fromEntries(
+      Object.entries(state.projects ?? {}).map(([id, project]) => [
+        id,
+        {
+          ...project,
+          messages: [],
+          customFurnitureSpec: null,
+          customFurnitureResult: null,
+          approvalRequired: false,
+          generationRunId: project.generationRunId ?? null,
+          execution: project.execution ?? createEmptyAgentExecutionState(),
+        },
+      ]),
+    ),
+    currentProjectId: state.currentProjectId ?? null,
+  };
 }
 
 function updateProject(
@@ -214,31 +241,14 @@ export const useDesignProjectStore = create<DesignProjectState>()(
               checkpoint.generationRunId === undefined
                 ? project.generationRunId
                 : checkpoint.generationRunId,
+            execution: checkpoint.execution ?? project.execution,
           })),
         ),
     }),
     {
       name: "ai-home-design-projects",
-      version: 2,
-      migrate: (persisted) => {
-        const state = persisted as Partial<DesignProjectState>;
-        return {
-          projects: Object.fromEntries(
-            Object.entries(state.projects ?? {}).map(([id, project]) => [
-              id,
-              {
-                ...project,
-                messages: [],
-                customFurnitureSpec: null,
-                customFurnitureResult: null,
-                approvalRequired: false,
-                generationRunId: null,
-              },
-            ]),
-          ),
-          currentProjectId: state.currentProjectId ?? null,
-        };
-      },
+      version: 3,
+      migrate: migrateDesignProjectState,
       partialize: (state) => ({
         projects: Object.fromEntries(
           Object.entries(state.projects).map(([id, project]) => [

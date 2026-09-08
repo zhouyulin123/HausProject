@@ -4,6 +4,7 @@ import type { FurnitureItem } from "@/types/furniture";
 import type { UserRequirement } from "@/types/requirement";
 import type { RoomModel } from "@/types/roomModel";
 import type {
+  AgentExecutionState,
   AgentExitReason,
   AgentPendingQuestion,
   AgentSceneReference,
@@ -50,6 +51,7 @@ export interface DesignProject {
   customFurnitureResult: CustomFurniturePreviewResult | null;
   approvalRequired: boolean;
   generationRunId: number | null;
+  execution: AgentExecutionState;
   activePlanId: string | null;
   activePlanVersionId: number | null;
 }
@@ -98,6 +100,24 @@ export const DESIGN_ENTRY_MODES: readonly DesignEntryMode[] = [
   },
 ] as const;
 
+export function createEmptyAgentExecutionState(): AgentExecutionState {
+  return {
+    currentNode: "idle",
+    stepCount: 0,
+    retryCount: 0,
+    maxSteps: 12,
+    maxRetries: 2,
+    hardErrors: [],
+    costCny: null,
+    costReservedCny: 0,
+    costLimitCny: null,
+    executionDeadlineAt: null,
+    cancelRequestedAt: null,
+    turnExecutionDeadlineAt: null,
+    events: [],
+  };
+}
+
 function cloneRequirement(requirement: UserRequirement): UserRequirement {
   return {
     ...requirement,
@@ -138,6 +158,7 @@ export function createDesignProject(
     customFurnitureResult: null,
     approvalRequired: false,
     generationRunId: null,
+    execution: createEmptyAgentExecutionState(),
     activePlanId: null,
     activePlanVersionId: null,
   };

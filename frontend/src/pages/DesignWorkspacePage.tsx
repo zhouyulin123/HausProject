@@ -14,6 +14,7 @@ import RoomView3D from "@/components/design/RoomView3D";
 import CustomFurniturePanel from "@/components/workspace/CustomFurniturePanel";
 import DesignWorkspaceInspector from "@/components/workspace/DesignWorkspaceInspector";
 import WorkspaceFeedbackControls from "@/components/workspace/WorkspaceFeedbackControls";
+import AgentExecutionPanel from "@/components/workspace/AgentExecutionPanel";
 import {
   fetchDesignAgentState,
   fetchDesignScene,
@@ -24,10 +25,15 @@ import {
   type AgentTurnResponse,
 } from "@/api/designApi";
 import { parseCustomFurniturePreview } from "@/lib/customFurnitureWorkspace";
+import {
+  agentExecutionFromCheckpoint,
+  agentExecutionFromTurn,
+} from "@/lib/agentExecution";
 import { useFeedbackDelivery } from "@/hooks/useFeedbackDelivery";
 import {
   buildFinalSelectFeedbackEvent,
   buildGlbLoadFailureFeedbackEvent,
+  createMoveFeedbackReporter,
   createFeedbackClientEventId,
 } from "@/lib/workspaceFeedback";
 import { buildWorkspacePlan, DESIGN_ENTRY_MODES } from "@/lib/designProject";
@@ -108,6 +114,7 @@ export default function DesignWorkspacePage() {
       customFurnitureResult: parseCustomFurniturePreview(response.result),
       approvalRequired: response.approval_required,
       generationRunId: response.run_id,
+      execution: agentExecutionFromTurn(response),
     });
     if (response.status === "completed" && response.intent === "design") {
       void restoreServerPlans(projectId);
@@ -148,6 +155,10 @@ export default function DesignWorkspacePage() {
           customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
           approvalRequired: checkpoint.approval_required,
           generationRunId: checkpoint.run_id,
+          execution: agentExecutionFromCheckpoint(
+            checkpoint,
+            useDesignProjectStore.getState().projects[project.id]?.execution.events,
+          ),
         });
         setMessages(
           project.id,
@@ -194,6 +205,10 @@ export default function DesignWorkspacePage() {
           customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
           approvalRequired: checkpoint.approval_required,
           generationRunId: checkpoint.run_id,
+          execution: agentExecutionFromCheckpoint(
+            checkpoint,
+            useDesignProjectStore.getState().projects[project.id]?.execution.events,
+          ),
         });
         setMessages(
           project.id,
@@ -282,6 +297,16 @@ export default function DesignWorkspacePage() {
     ? DESIGN_ENTRY_MODES.find((item) => item.id === project.mode)
     : null;
   const planVersionId = plan?.planVersionId ?? null;
+  const activeRoomId = project?.activeRoomId ?? project?.roomModel?.rooms[0]?.id ?? null;
+  const reportMovePersisted = useMemo(
+    () => createMoveFeedbackReporter({
+      taskId: projectId ?? 0,
+      planVersionId,
+      roomId: activeRoomId,
+      submit: feedback.submit,
+    }),
+    [activeRoomId, feedback.submit, planVersionId, projectId],
+  );
 
   useEffect(() => {
     if (!project || !activePlan || !catalog.length) return;
@@ -395,7 +420,6 @@ export default function DesignWorkspacePage() {
   }
 
   const roomType = project.requirement.rooms[0] ?? project.roomModel?.spaceType ?? "客厅";
-  const activeRoomId = project.activeRoomId ?? project.roomModel?.rooms[0]?.id ?? null;
   const sceneKey = `${plan.planVersionId ?? plan.id}-${project.selectedFurnitureIds.join("-")}-${activeRoomId ?? "no-room"}`;
   const connectionLabel = {
     checking: "正在连接智能体",
@@ -434,6 +458,12 @@ export default function DesignWorkspacePage() {
             </Link>
           </div>
         </header>
+
+        <AgentExecutionPanel
+          status={project.status}
+          exitReason={project.exitReason}
+          execution={project.execution}
+        />
 
         <WorkspaceFeedbackControls
           planVersionId={planVersionId}
@@ -536,6 +566,7 @@ export default function DesignWorkspacePage() {
                 plan={plan}
                 roomType={roomType}
                 roomModel={project.roomModel}
+                onMovePersisted={reportMovePersisted}
                 onGlbLoadFailed={reportGlbLoadFailure}
                 onSceneReferenceChange={handleSceneReferenceChange}
               />
