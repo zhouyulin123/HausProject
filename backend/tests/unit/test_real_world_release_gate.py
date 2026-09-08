@@ -327,6 +327,23 @@ def test_controlled_workflow_contract_is_fail_closed():
     assert "EVAL_REPORT_SIGNING_KEY: ${{ secrets." in workflow
     assert "EVAL_REPORT_SIGNING_KEY_ID: ${{ secrets." in workflow
     assert "python -m evals.real_world_release_gate" in workflow
+    run_output_dir = (
+        ".test_artifacts/real-world-release-gate/"
+        "${{ github.run_id }}-${{ github.run_attempt }}"
+    )
+    assert f"REAL_WORLD_RELEASE_GATE_OUTPUT_DIR: {run_output_dir}" in workflow
+    assert (
+        "--output-dir ${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}" in workflow
+    )
+    assert (
+        "${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}/"
+        "real_world_release_gate.json" in workflow
+    )
+    assert (
+        "${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}/"
+        "failure-triage/*.failure_triage.json" in workflow
+    )
+    assert "--output-dir .test_artifacts/real-world-release-gate" not in workflow
     assert "if-no-files-found: error" in workflow
     assert "real_world_release_gate.json" in workflow
     assert "failure-triage/*.failure_triage.json" in workflow
