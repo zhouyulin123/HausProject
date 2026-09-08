@@ -34,13 +34,41 @@
 
 ## 每周方案来源抽检
 
-对完成状态的不可变方案执行 20 条固定种子抽样；查询不会预先排除缺失报价快照的坏记录。任一商品缺少人工核验来源、数据版本或报价行不一致，以及可用方案不足 20 条，整批审计都会失败：
+审计只接受由受控流程签名的生产验收 cohort，不会根据历史状态、生成器、日期或 seed 自动把旧 Demo 认定为生产数据。manifest 必须使用如下严格结构，并以去掉 `attestation` 后的 JSON（UTF-8、键排序、无多余空白）作为 HMAC-SHA256 签名输入：
 
-```powershell
-python audit_plan_traceability.py --seed 2026-W36 --sample-size 20 --output .test_artifacts/traceability-2026-W36.json
+```json
+{
+  "schema_version": "1.0",
+  "cohort_kind": "production_acceptance",
+  "cohort_id": "prod-acceptance-2026-w36",
+  "cutover_id": "release-2026-w36",
+  "environment": "production-cn",
+  "issued_at": "2026-09-08T00:00:00+08:00",
+  "members": [
+    {"task_id": 101, "plan_version_id": 501}
+  ],
+  "attestation": {
+    "algorithm": "hmac-sha256",
+    "key_id": "traceability-cohort-v1",
+    "signature": "<64 位小写十六进制签名>"
+  }
+}
 ```
 
-退出码 `0` 表示通过，`1` 表示质量门禁失败，`2` 表示参数、数据库或输出文件错误。每周保留种子和 JSON 报告，设计师可据其中的任务、版本、方案键和原因码回查原始快照。
+`task_id` 与 `plan_version_id` 必须精确绑定数据库事实；成员不存在、跨任务、非 completed、重复或签名/环境不匹配都作为门禁失败，不能被抽样查询过滤。密钥只能由受控执行环境提供，禁止写入 manifest、命令行或报告：
+
+```powershell
+$env:PLAN_TRACEABILITY_COHORT_KEY_ID = "traceability-cohort-v1"
+$env:PLAN_TRACEABILITY_COHORT_HMAC_KEY = "<从受保护密钥库注入>"
+$env:PLAN_TRACEABILITY_COHORT_MANIFEST = "<受保护目录>\traceability-cohort.json"
+python audit_plan_traceability.py `
+  --cohort-manifest $env:PLAN_TRACEABILITY_COHORT_MANIFEST `
+  --environment production-cn `
+  --sample-size 20 `
+  --output .test_artifacts/traceability-2026-W36.json
+```
+
+`sample-size` 只定义最低验收数量；签名 cohort 中的全部成员都会核验，不能用 seed 选出子集或跳过坏样本。退出码 `0` 表示通过，`1` 表示质量门禁失败，`2` 表示 manifest、验签、参数、数据库或输出文件错误。每周保留签名 manifest 和 JSON 报告；报告记录 cohort、cutover、环境、manifest 摘要、签名 key_id、成员绑定结果及核验原因码，不包含密钥。
 
 升级数据库：
 
