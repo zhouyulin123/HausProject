@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api.routes import design_agent, upload
+from app.api.routes import design_agent, tasks, upload
 from app.db.database import Base, get_db
 from app.db.models import (
     ChatLog,
@@ -123,6 +123,7 @@ def agent_api_context(monkeypatch):
         design_agent.router,
         prefix="/api/design/tasks",
     )
+    app.include_router(tasks.router, prefix="/api/design/tasks")
     app.include_router(upload.router, prefix="/api/upload")
     monkeypatch.setattr(upload.llm_service, "analyze_room_model", lambda *_: None)
     monkeypatch.setattr(
@@ -167,6 +168,16 @@ def test_agent_turn_pauses_persists_checkpoint_and_task_bound_chat(
         "delivery_region",
     ]
     assert payload["events"]
+
+    timeline = client.get(
+        f"/api/design/tasks/{task_id}/timeline",
+        headers={"X-Session-ID": owner_id},
+    )
+    assert timeline.status_code == 200
+    assert timeline.json()["events"][-1]["event_code"] == (
+        "agent.turn.waiting_user"
+    )
+    assert timeline.json()["events"][-1]["billing_status"] == "not_billable"
 
     with factory() as db:
         task = db.get(DesignTask, task_id)
