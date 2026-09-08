@@ -795,6 +795,55 @@ def test_agent_turn_is_idempotent_by_client_turn_id(agent_api_context):
 
 
 @pytest.mark.integration
+def test_plan_refine_runs_as_metering_aware_agent_tool(
+    agent_api_context,
+    monkeypatch,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+    model_attempts: list[str] = []
+
+    def plan_refine_tool(_db, _task, _payload, *, on_model_attempt):
+        def execute(_state):
+            on_model_attempt()
+            model_attempts.append("plan_refine")
+            return {
+                "plan": {"id": "A", "planVersionId": 19},
+                "version": 2,
+                "message": "已调整方案",
+            }
+
+        return execute
+
+    monkeypatch.setattr(
+        design_agent.design_agent_service,
+        "_plan_refine_tool",
+        plan_refine_tool,
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "plan-refine-agent-001",
+            "message": "把主沙发换成浅灰色",
+            "active_mode": "catalog_design",
+            "plan_id": "A",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["intent"] == "plan_refine"
+    assert response.json()["result"]["plan"]["planVersionId"] == 19
+    assert model_attempts == ["plan_refine"]
+    timeline = client.get(
+        f"/api/design/tasks/{task_id}/timeline",
+        headers={"X-Session-ID": owner_id},
+    )
+    assert timeline.status_code == 200
+    assert timeline.json()["events"][-1]["billing_status"] == "unknown"
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "changed_fields",
     [

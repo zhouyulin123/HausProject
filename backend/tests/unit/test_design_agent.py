@@ -373,6 +373,34 @@ def test_scene_timeout_after_planning_never_writes_late_version(monkeypatch):
 
 
 @pytest.mark.unit
+def test_plan_refine_uses_dedicated_allowlisted_tool():
+    workflow = DesignAgentWorkflow(
+        retrieve_catalog=lambda _: {},
+        execute_design=lambda _: {},
+        execute_scene=lambda _: {},
+        execute_plan_refine=lambda state: {
+            "plan": {"id": state["plan_id"], "planVersionId": 20},
+            "version": 3,
+            "message": "已调整方案",
+        },
+    )
+
+    result = workflow.run(
+        task_id=1,
+        turn_id=5,
+        active_mode="catalog_design",
+        intent="plan_refine",
+        message="把主沙发换成浅灰色",
+        facts={},
+        plan_id="A",
+    )
+
+    assert result["status"] == "completed"
+    assert result["result"]["plan"]["planVersionId"] == 20
+    assert result["tool_events"][-1]["tool"] == "plan_refine"
+
+
+@pytest.mark.unit
 def test_custom_tool_timeout_discards_late_result_without_retry():
     started_at = datetime(2026, 9, 4, 8, 0, tzinfo=timezone.utc)
     readings = iter([started_at, started_at + timedelta(seconds=31)])
