@@ -5,6 +5,7 @@ import {
   buildFurnitureFeedbackEvent,
   buildMoveFeedbackEvent,
   buildReplaceFeedbackEvent,
+  createMoveFeedbackReporter,
   createFeedbackClientEventId,
   feedbackDeliveryReducer,
 } from "./workspaceFeedback";
@@ -121,6 +122,47 @@ describe("工作台结构化反馈事件", () => {
     expect(buildMoveFeedbackEvent("feedback-42-move-002", null, 7, "sofa-1", null)).toBeNull();
     expect(buildMoveFeedbackEvent("feedback-42-move-003", 3, null, "sofa-1", null)).toBeNull();
     expect(buildMoveFeedbackEvent("feedback-42-move-004", 3, 7, null, null)).toBeNull();
+  });
+
+  it("移动持久化成功后按场景版本与实例只投递一次", () => {
+    const submitted: unknown[] = [];
+    const reportMove = createMoveFeedbackReporter({
+      taskId: 42,
+      planVersionId: 8,
+      roomId: "living-room",
+      submit: (request, label) => submitted.push({ request, label }),
+    });
+
+    reportMove({ sceneId: 3, sceneVersion: 7, instanceId: "sofa-1" });
+    reportMove({ sceneId: 3, sceneVersion: 7, instanceId: "sofa-1" });
+    reportMove({ sceneId: 3, sceneVersion: 8, instanceId: "sofa-1" });
+
+    expect(submitted).toHaveLength(2);
+    expect(submitted[0]).toEqual({
+      request: expect.objectContaining({
+        action_type: "move",
+        scene_id: 3,
+        scene_version: 7,
+        instance_id: "sofa-1",
+      }),
+      label: "家具位置调整",
+    });
+  });
+
+  it("移动上下文缺少任务、方案或持久化场景事实时不投递", () => {
+    const submitted: unknown[] = [];
+    const reportMove = createMoveFeedbackReporter({
+      taskId: 42,
+      planVersionId: null,
+      roomId: null,
+      submit: (request) => submitted.push(request),
+    });
+
+    reportMove({ sceneId: 3, sceneVersion: 7, instanceId: "sofa-1" });
+    reportMove({ sceneId: 3, sceneVersion: 0, instanceId: "sofa-1" });
+    reportMove({ sceneId: 3, sceneVersion: 7, instanceId: "" });
+
+    expect(submitted).toEqual([]);
   });
 
   it("替换事件只接受真实方案版本和两个不同的 SKU", () => {

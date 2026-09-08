@@ -102,6 +102,70 @@ describe("useDesignProjectStore", () => {
     ).toBe("客厅实际宽度是多少？");
   });
 
+  it("完整保留服务端执行快照和工具事件", () => {
+    useDesignProjectStore.getState().registerProject(46, "catalog_design", {
+      requirement: emptyRequirement,
+      roomModel: null,
+    });
+
+    useDesignProjectStore.getState().applyAgentState(46, {
+      stateVersion: 8,
+      status: "running",
+      activeMode: "catalog_design",
+      pendingQuestions: [],
+      sceneRef: null,
+      exitReason: "generation_queued",
+      execution: {
+        currentNode: "retrieve_catalog",
+        stepCount: 4,
+        retryCount: 1,
+        maxSteps: 12,
+        maxRetries: 2,
+        hardErrors: [],
+        costCny: 0.36,
+        costReservedCny: 0.14,
+        costLimitCny: 2,
+        executionDeadlineAt: "2026-09-08T08:30:00Z",
+        turnExecutionDeadlineAt: "2026-09-08T08:25:00Z",
+        cancelRequestedAt: null,
+        events: [
+          {
+            sequence: 3,
+            type: "tool_completed",
+            node: "retrieve_catalog",
+            status: "completed",
+            source: "catalog",
+            summary: "已筛选 12 件可用商品",
+            details: {},
+            created_at: "2026-09-08T08:20:00Z",
+          },
+        ],
+      },
+    });
+
+    expect(useDesignProjectStore.getState().projects[46]?.execution).toEqual({
+      currentNode: "retrieve_catalog",
+      stepCount: 4,
+      retryCount: 1,
+      maxSteps: 12,
+      maxRetries: 2,
+      hardErrors: [],
+      costCny: 0.36,
+      costReservedCny: 0.14,
+      costLimitCny: 2,
+      executionDeadlineAt: "2026-09-08T08:30:00Z",
+      turnExecutionDeadlineAt: "2026-09-08T08:25:00Z",
+      cancelRequestedAt: null,
+      events: [
+        expect.objectContaining({
+          sequence: 3,
+          type: "tool_completed",
+          summary: "已筛选 12 件可用商品",
+        }),
+      ],
+    });
+  });
+
   it("场景加载 v1 后保存 v2，工作台与对话始终读取最新场景引用", () => {
     useDesignProjectStore.getState().registerProject(42, "catalog_design", {
       requirement: emptyRequirement,
