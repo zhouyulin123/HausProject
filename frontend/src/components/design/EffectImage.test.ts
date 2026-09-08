@@ -101,6 +101,19 @@ describe("效果图任务展示状态", () => {
     }));
   });
 
+  it("服务端场景恢复失败时提供明确重试操作", () => {
+    const html = renderToStaticMarkup(
+      createElement(EffectImage, {
+        plan: { ...mockDesigns[0], planVersionId: 42 },
+        sceneBinding: { syncState: "offline", sceneId: null, sceneVersion: null },
+        onRetryScene: () => undefined,
+      }),
+    );
+
+    expect(html).toContain("重试恢复场景");
+    expect(html).toContain("3D 场景尚未同步到服务端");
+  });
+
   it("明确展示供应商不可用、死信和取消", () => {
     expect(effectRenderFailureMessage(job("provider_unavailable"))).toContain("暂不可用");
     expect(effectRenderFailureMessage(job("dead_letter"))).toContain("重试已耗尽");

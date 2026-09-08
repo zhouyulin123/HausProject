@@ -16,11 +16,9 @@ import {
 } from "lucide-react";
 import { mockDesigns } from "@/data/mockDesigns";
 import {
-  ApiError,
   createPlanShare,
   exportProposalPdf,
   fetchPlanByVersion,
-  fetchDesignSceneByPlanVersion,
   getCurrentTaskId,
   refinePlan,
   revokePlanShare,
@@ -35,7 +33,8 @@ import BudgetBreakdown from "@/components/design/BudgetBreakdown";
 import ColorPalette from "@/components/design/ColorPalette";
 import MaterialBoard from "@/components/design/MaterialBoard";
 import EffectImage from "@/components/design/EffectImage";
-import type { EffectSceneBinding } from "@/components/design/EffectImage";
+import type { EffectSceneBinding } from "@/lib/effectSceneBinding";
+import { resolveEffectSceneBinding } from "@/lib/effectSceneBinding";
 import type { SceneReference, SceneSyncState } from "@/lib/sceneEditingPolicy";
 import ShopQuoteCard from "@/components/design/ShopQuoteCard";
 import EmptyState from "@/components/common/EmptyState";
@@ -99,6 +98,7 @@ export default function DesignDetailPage() {
     sceneId: null,
     sceneVersion: null,
   });
+  const [sceneRecoveryAttempt, setSceneRecoveryAttempt] = useState(0);
 
   const localPlan = useMemo(() => {
     // 优先按服务端 planVersionId 精确定位，避免多个任务的 plan-a 串号
@@ -129,9 +129,17 @@ export default function DesignDetailPage() {
 
   const plan = refinedPlan ?? localPlan ?? fetchedPlan;
 
+  // 3D 视图聚焦的主空间：优先用户所选（跳过"全屋"），否则看方案家具都属于哪个空间
+  const primaryRoom = useMemo(() => {
+    const chosen = rooms.find((r) => r !== "全屋");
+    if (chosen) return chosen;
+    return (plan?.furnitureSuggestions ?? []).find((f) => f.room)?.room ?? "客厅";
+  }, [rooms, plan]);
+
   useEffect(() => {
     let cancelled = false;
-    if (!plan?.planVersionId) {
+    if (!plan) return () => { cancelled = true; };
+    if (!plan.planVersionId) {
       setEffectSceneBinding({
         syncState: "demo",
         sceneId: null,
@@ -144,27 +152,13 @@ export default function DesignDetailPage() {
       sceneId: null,
       sceneVersion: null,
     });
-    fetchDesignSceneByPlanVersion(plan.planVersionId)
-      .then((scene) => {
+    resolveEffectSceneBinding({ plan, primaryRoom, roomModel })
+      .then((binding) => {
         if (cancelled) return;
-        setEffectSceneBinding({
-          syncState: "saved",
-          sceneId: scene.id,
-          sceneVersion: scene.current_version,
-        });
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setEffectSceneBinding({
-          syncState: error instanceof ApiError && error.status === 404
-            ? "demo"
-            : "offline",
-          sceneId: null,
-          sceneVersion: null,
-        });
+        setEffectSceneBinding(binding);
       });
     return () => { cancelled = true; };
-  }, [plan?.planVersionId]);
+  }, [plan, primaryRoom, roomModel, sceneRecoveryAttempt]);
 
   const handleSceneSyncChange = useCallback((
     syncState: SceneSyncState,
@@ -210,13 +204,6 @@ export default function DesignDetailPage() {
     }
     setRefineState("idle");
   };
-
-  // 3D 视图聚焦的主空间：优先用户所选（跳过"全屋"），否则看方案家具都属于哪个空间
-  const primaryRoom = useMemo(() => {
-    const chosen = rooms.find((r) => r !== "全屋");
-    if (chosen) return chosen;
-    return (plan?.furnitureSuggestions ?? []).find((f) => f.room)?.room ?? "客厅";
-  }, [rooms, plan]);
 
   if (!plan) {
     if (fetching) {
@@ -510,7 +497,11 @@ export default function DesignDetailPage() {
             <>
               {/* 视觉预览区 */}
               <div className="grid gap-4 sm:grid-cols-2">
-                <EffectImage plan={plan} sceneBinding={effectSceneBinding} />
+                <EffectImage
+                  plan={plan}
+                  sceneBinding={effectSceneBinding}
+                  onRetryScene={() => setSceneRecoveryAttempt((attempt) => attempt + 1)}
+                />
                 <div className="grid grid-rows-2 gap-4">
                   <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-cream-100 to-cream-300">
                     <div className="absolute inset-6 rounded-xl border-2 border-dashed border-wood-400/50" />

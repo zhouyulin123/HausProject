@@ -10,6 +10,9 @@ import {
 import type { EffectRenderJob } from "@/api/designApi";
 import type { DesignPlan } from "@/types/design";
 import type { SceneSyncState } from "@/lib/sceneEditingPolicy";
+import type { EffectSceneBinding } from "@/lib/effectSceneBinding";
+
+export type { EffectSceneBinding } from "@/lib/effectSceneBinding";
 
 type Status = "idle" | "loading" | "done" | "error" | "cancelled";
 
@@ -18,12 +21,6 @@ const loadingLines = [
   "正在锁定户型结构、铺陈家具...",
   "正在渲染灯光与材质质感...",
 ];
-
-export interface EffectSceneBinding {
-  syncState: SceneSyncState;
-  sceneId: number | null;
-  sceneVersion: number | null;
-}
 
 function clientRenderKey(
   planVersionId: number,
@@ -66,6 +63,10 @@ export function effectRenderMatchesScene(
     && job.sceneVersion === binding.sceneVersion;
 }
 
+export function effectSceneBindingKey(binding: EffectSceneBinding): string {
+  return [binding.syncState, binding.sceneId ?? "none", binding.sceneVersion ?? "none"].join(":");
+}
+
 export function visibleEffectRenderStatus(job: EffectRenderJob): Status {
   if (job.status === "completed" && job.imageUrl) return "done";
   if (job.status === "queued" || job.status === "running") return "loading";
@@ -84,9 +85,11 @@ export function effectRenderFailureMessage(job: EffectRenderJob | null): string 
 export default function EffectImage({
   plan,
   sceneBinding,
+  onRetryScene,
 }: {
   plan: DesignPlan;
   sceneBinding: EffectSceneBinding;
+  onRetryScene?: () => void;
 }) {
   const [status, setStatus] = useState<Status>("idle");
   const [job, setJob] = useState<EffectRenderJob | null>(null);
@@ -94,6 +97,8 @@ export default function EffectImage({
   const enqueueingRef = useRef(false);
   const idempotencyKeyRef = useRef<string | null>(null);
   const availability = effectRenderAvailability(sceneBinding);
+  const sceneId = sceneBinding.sceneId;
+  const sceneVersion = sceneBinding.sceneVersion;
 
   const applyJob = useCallback((next: EffectRenderJob) => {
     setJob(next);
@@ -108,19 +113,20 @@ export default function EffectImage({
     if (
       !plan.planVersionId
       || !availability.ready
-      || !sceneBinding.sceneId
-      || !sceneBinding.sceneVersion
+      || !sceneId
+      || !sceneVersion
     ) return () => { active = false; };
     fetchLatestEffectRender(
       plan.planVersionId,
-      sceneBinding.sceneId,
-      sceneBinding.sceneVersion,
+      sceneId,
+      sceneVersion,
     )
       .then((restored) => {
         if (
           !active
           || !restored
-          || !effectRenderMatchesScene(restored, sceneBinding)
+          || restored.sceneId !== sceneId
+          || restored.sceneVersion !== sceneVersion
         ) return;
         applyJob(restored);
       })
@@ -132,8 +138,8 @@ export default function EffectImage({
     applyJob,
     availability.ready,
     plan.planVersionId,
-    sceneBinding.sceneId,
-    sceneBinding.sceneVersion,
+    sceneId,
+    sceneVersion,
   ]);
 
   useEffect(() => {
@@ -141,7 +147,7 @@ export default function EffectImage({
     const timer = window.setInterval(() => {
       fetchEffectRender(job.jobId)
         .then((next) => {
-          if (!effectRenderMatchesScene(next, sceneBinding)) {
+          if (next.sceneId !== sceneId || next.sceneVersion !== sceneVersion) {
             setStatus("error");
             return;
           }
@@ -150,7 +156,7 @@ export default function EffectImage({
         .catch(() => setStatus("error"));
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [applyJob, job, sceneBinding, status]);
+  }, [applyJob, job?.jobId, sceneId, sceneVersion, status]);
 
   useEffect(() => {
     if (status !== "loading") return;
@@ -172,22 +178,22 @@ export default function EffectImage({
       }
       if (
         !availability.ready
-        || !sceneBinding.sceneId
-        || !sceneBinding.sceneVersion
+        || !sceneId
+        || !sceneVersion
       ) {
         throw new Error(availability.message);
       }
       if (newVariation || !idempotencyKeyRef.current) {
         idempotencyKeyRef.current = clientRenderKey(
           plan.planVersionId,
-          sceneBinding.sceneId,
-          sceneBinding.sceneVersion,
+          sceneId,
+          sceneVersion,
         );
       }
       const queued = await queueEffectRender(
         plan.planVersionId,
-        sceneBinding.sceneId,
-        sceneBinding.sceneVersion,
+        sceneId,
+        sceneVersion,
         idempotencyKeyRef.current,
       );
       if (!effectRenderMatchesScene(queued, sceneBinding)) {
@@ -287,15 +293,26 @@ export default function EffectImage({
               </p>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => run(status !== "idle")}
-            disabled={!availability.ready}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-sage-600 px-4 py-2 text-sm font-medium text-white shadow-card transition-colors hover:bg-sage-700 disabled:cursor-not-allowed disabled:bg-stone-400 disabled:shadow-none"
-          >
-            <Sparkles className="h-4 w-4" />
-            {status === "idle" ? "生成效果图" : "重新生成"}
-          </button>
+          {!availability.ready && sceneBinding.syncState === "offline" && onRetryScene ? (
+            <button
+              type="button"
+              onClick={onRetryScene}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-stone-700 px-4 py-2 text-sm font-medium text-white shadow-card transition-colors hover:bg-stone-800"
+            >
+              <RefreshCw className="h-4 w-4" />
+              重试恢复场景
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => run(status !== "idle")}
+              disabled={!availability.ready}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-sage-600 px-4 py-2 text-sm font-medium text-white shadow-card transition-colors hover:bg-sage-700 disabled:cursor-not-allowed disabled:bg-stone-400 disabled:shadow-none"
+            >
+              <Sparkles className="h-4 w-4" />
+              {status === "idle" ? "生成效果图" : "重新生成"}
+            </button>
+          )}
         </motion.div>
       )}
     </div>
