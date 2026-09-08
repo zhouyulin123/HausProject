@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 from copy import deepcopy
 from typing import Annotated
@@ -45,6 +46,7 @@ from app.schemas.tasks import (
     TaskStatusResponse,
 )
 from app.schemas.task_timeline import TaskTimelineEventResponse, TaskTimelineResponse
+from app.schemas.design_agent import AgentTurnRequest
 from app.services import (
     anonymous_session_service,
     aggregate_lock_service,
@@ -55,7 +57,6 @@ from app.services import (
     generation_request_service,
     generation_run_service,
     llm_service,
-    plan_refine_service,
     plan_mutation_service,
     profile_service,
     task_service,
@@ -809,21 +810,36 @@ def refine_plan(
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    """按自然语言指令在现有方案上精准修改，写入新的不可变版本。"""
+    """兼容入口：实际写入统一 Agent turn，不再直接调用模型服务。"""
     task = require_owned_design_task(
         db,
         session_id=x_session_id,
         task_id=task_id,
     )
-    try:
-        return plan_refine_service.refine_plan_version(
-            db,
-            task=task,
+    digest = hashlib.sha256(
+        f"{task_id}:{plan_id}:{req.instruction}".encode("utf-8")
+    ).hexdigest()[:32]
+    result = design_agent_service.run_turn(
+        db,
+        task=task,
+        payload=AgentTurnRequest(
+            client_turn_id=f"legacy-refine-{digest}",
+            message=req.instruction,
+            active_mode="catalog_design",
             plan_id=plan_id,
-            instruction=req.instruction,
+        ),
+    )
+    if result.get("status") != "completed" or not isinstance(
+        result.get("result"), dict
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "agent_plan_refine_incomplete",
+                "message": result.get("reply") or "方案精修未完成",
+            },
         )
-    except plan_refine_service.PlanRefineError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return result["result"]
 
 
 @router.get(

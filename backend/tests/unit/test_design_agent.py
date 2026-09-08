@@ -339,7 +339,7 @@ def test_scene_timeout_after_planning_never_writes_late_version(monkeypatch):
         def __init__(self, **_):
             pass
 
-        def run(self, **kwargs):
+        def run_planned(self, **kwargs):
             return {"proposed_scene": kwargs["source_scene"]}
 
     monkeypatch.setattr(design_agent_service, "SceneAgentWorkflow", FakeSceneWorkflow)

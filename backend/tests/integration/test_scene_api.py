@@ -256,7 +256,7 @@ def test_scene_agent_command_updates_owned_scene_as_new_version(
         json={"scene": _scene_payload()},
     )
     monkeypatch.setattr(
-        scenes.llm_service,
+        scenes.design_agent_service.llm_service,
         "plan_scene_operations",
         lambda **_: SceneOperationBatch.model_validate(
             {
@@ -306,7 +306,11 @@ def test_scene_agent_checks_version_before_calling_model(
         called = True
         raise AssertionError("不应调用模型")
 
-    monkeypatch.setattr(scenes.llm_service, "plan_scene_operations", planner)
+    monkeypatch.setattr(
+        scenes.design_agent_service.llm_service,
+        "plan_scene_operations",
+        planner,
+    )
     response = client.post(
         f"/api/design/scenes/{created.json()['id']}/agent-command",
         headers=headers,
@@ -331,7 +335,7 @@ def test_scene_agent_rejects_unsafe_operation_without_creating_version(
     )
     scene_id = created.json()["id"]
     monkeypatch.setattr(
-        scenes.llm_service,
+        scenes.design_agent_service.llm_service,
         "plan_scene_operations",
         lambda **_: SceneOperationBatch.model_validate(
             {
@@ -386,7 +390,11 @@ def test_scene_agent_rate_limit_rejects_before_calling_model(
         "retry_after",
         lambda *_args, **_kwargs: 12,
     )
-    monkeypatch.setattr(scenes.llm_service, "plan_scene_operations", planner)
+    monkeypatch.setattr(
+        scenes.design_agent_service.llm_service,
+        "plan_scene_operations",
+        planner,
+    )
 
     response = client.post(
         f"/api/design/scenes/{created.json()['id']}/agent-command",

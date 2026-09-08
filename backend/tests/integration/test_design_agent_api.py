@@ -844,6 +844,41 @@ def test_plan_refine_runs_as_metering_aware_agent_tool(
 
 
 @pytest.mark.integration
+def test_legacy_plan_refine_route_delegates_to_unified_agent(
+    agent_api_context,
+    monkeypatch,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+    captured = {}
+
+    def run_turn(_db, *, task, payload):
+        captured["task_id"] = task.id
+        captured["payload"] = payload
+        return {
+            "status": "completed",
+            "result": {
+                "plan": {"id": "plan-a", "name": "调整后方案"},
+                "version": 2,
+                "message": "已调整方案",
+            },
+        }
+
+    monkeypatch.setattr(tasks.design_agent_service, "run_turn", run_turn)
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/plans/plan-a/refine",
+        headers={"X-Session-ID": owner_id},
+        json={"instruction": "换成浅灰色"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["version"] == 2
+    assert captured["task_id"] == task_id
+    assert captured["payload"].plan_id == "plan-a"
+    assert captured["payload"].message == "换成浅灰色"
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "changed_fields",
     [

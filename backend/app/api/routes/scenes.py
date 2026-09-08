@@ -1,5 +1,6 @@
 """客户 Web 3D 编辑器的场景版本 API。"""
 
+import hashlib
 import logging
 import time
 
@@ -11,7 +12,6 @@ from app.api.dependencies import (
     get_current_user,
     require_active_session,
 )
-from app.agents.scene_agent import SceneAgentSafetyError, SceneAgentWorkflow
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import (
@@ -26,6 +26,7 @@ from app.schemas.blender_render import (
     BlenderRenderJobResponse,
     BlenderRenderRequest,
 )
+from app.schemas.design_agent import AgentTurnRequest
 from app.schemas.scenes import (
     CustomFurnitureSceneItemRequest,
     SceneCreateRequest,
@@ -49,11 +50,9 @@ from app.services import (
     feedback_service,
     layout_generator,
     layout_service,
-    llm_service,
     scene_service,
     scene_tools,
 )
-from app.services.llm_service import LLMUnavailable
 from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
 
 router = APIRouter()
@@ -707,98 +706,50 @@ def run_scene_agent_command(
             detail="Scene Agent 请求过于频繁，请稍后重试",
             headers={"Retry-After": str(retry_after)},
         )
-    current = scene_service.get_current_version(db, scene)
-    source_document = SceneDocument.model_validate(current.scene_json)
-    delivery_region = scene_service.scene_delivery_region(db, scene)
-    catalog_scope = {"region": delivery_region} if delivery_region is not None else {}
-    context = scene_tools.build_scene_agent_context(
-        db,
-        source_document,
-        **catalog_scope,
-    )
-
-    # 模型调用期间不持有数据库事务或行锁。
-    db.rollback()
+    task_id = scene_service.get_scene_task_id(db, scene.id)
+    task = db.get(DesignTask, task_id) if task_id is not None else None
+    if task is None:
+        raise _not_found("设计任务")
+    digest = hashlib.sha256(
+        f"{scene.id}:{payload.base_version}:{payload.instruction}".encode("utf-8")
+    ).hexdigest()[:32]
     try:
-        batch = llm_service.plan_scene_operations(
-            instruction=payload.instruction,
-            context=context,
-        )
-    except LLMUnavailable as error:
-        raise HTTPException(
-            status_code=503,
-            detail="Scene Agent 暂时不可用，请稍后重试",
-        ) from error
-
-    locked_scene = scene_service.get_owned_scene(
-        db,
-        session_id=x_session_id,
-        scene_id=scene_id,
-        for_update=True,
-    )
-    if locked_scene is None:
-        raise _not_found("3D 场景")
-    if locked_scene.current_version != payload.base_version:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"场景已经更新到版本 {locked_scene.current_version}，本次 AI 建议未写入"
+        agent_result = design_agent_service.run_turn(
+            db,
+            task=task,
+            payload=AgentTurnRequest(
+                client_turn_id=f"legacy-scene-{digest}",
+                message=payload.instruction,
+                active_mode="catalog_design",
+                scene_id=scene.id,
+                base_scene_version=payload.base_version,
             ),
         )
-
-    workflow = SceneAgentWorkflow(
-        plan_operations=lambda **_: batch,
-        execute_operations=lambda document, operations: (
-            scene_tools.apply_scene_operations(
-                db,
-                document,
-                operations,
-                **catalog_scope,
-            )
-        ),
-        validate_scene=lambda document: scene_service.validate_scene(db, document),
-    )
-    try:
-        result = workflow.run(
-            instruction=payload.instruction,
-            context=context,
-            source_scene=source_document,
-        )
-        proposed = result["proposed_scene"]
-        if proposed is None:
-            raise RuntimeError("Scene Agent 未生成候选场景")
-        version = scene_service.update_scene(
-            db,
-            scene=locked_scene,
-            base_version=payload.base_version,
-            document=proposed,
-            source="scene_agent",
-        )
-        db.commit()
-        db.refresh(locked_scene)
-        db.refresh(version)
-    except scene_tools.SceneCatalogEligibilityError as error:
-        db.rollback()
-        raise _catalog_error(error) from error
-    except scene_tools.SceneToolError as error:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    except SceneAgentSafetyError as error:
-        db.rollback()
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": str(error),
-                "validation": error.report.model_dump(mode="json"),
-            },
-        ) from error
-    except scene_service.SceneConflictError as error:
+    except design_agent_service.AgentSceneVersionConflict as error:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
-
+    result = agent_result.get("result")
+    if agent_result.get("status") != "completed" or not isinstance(result, dict):
+        hard_errors = (agent_result.get("state") or {}).get("hard_errors") or []
+        status_code = 503 if "model_unavailable" in hard_errors else 422
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "code": "agent_scene_edit_incomplete",
+                "message": agent_result.get("reply") or "场景调整未完成",
+                "reason_codes": hard_errors,
+            },
+        )
+    refreshed_scene = scene_service.get_owned_scene(
+        db,
+        session_id=x_session_id,
+        scene_id=scene.id,
+    )
+    if refreshed_scene is None:
+        raise _not_found("3D 场景")
+    version = scene_service.get_current_version(db, refreshed_scene)
     return SceneAgentCommandResponse(
-        message=batch.message,
-        operations=batch.operations,
-        scene=_scene_response(locked_scene, version),
+        message=str(result.get("message") or agent_result.get("reply") or "已完成场景调整"),
+        operations=result.get("operations") or [],
+        scene=_scene_response(refreshed_scene, version),
     )

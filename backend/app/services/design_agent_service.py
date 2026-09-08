@@ -695,9 +695,8 @@ def _scene_tool(
                     db, candidate
                 ),
             )
-            workflow_result = workflow.run(
-                instruction=state["message"],
-                context=context,
+            workflow_result = workflow.run_planned(
+                batch=batch,
                 source_scene=document,
             )
         except LLMUnavailable as exc:
@@ -747,6 +746,10 @@ def _scene_tool(
             raise AgentToolRejected(str(exc), codes=codes) from exc
         return {
             "operation_count": len(batch.operations),
+            "operations": [
+                operation.model_dump(mode="json")
+                for operation in batch.operations
+            ],
             "message": batch.message,
             "scene_ref": {"scene_id": refreshed.id, "version": version.version},
         }

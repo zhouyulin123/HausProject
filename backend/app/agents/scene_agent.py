@@ -111,3 +111,22 @@ class SceneAgentWorkflow:
                 "validation": None,
             }
         )
+
+    def run_planned(
+        self,
+        *,
+        batch: SceneOperationBatch,
+        source_scene: SceneDocument,
+    ) -> SceneAgentState:
+        """在父 LangGraph 节点内执行已规划批次，避免嵌套图继承检查点。"""
+        state: SceneAgentState = {
+            "instruction": "",
+            "context": {},
+            "source_scene": source_scene,
+            "batch": batch,
+            "proposed_scene": None,
+            "validation": None,
+        }
+        state.update(self._execute(state))
+        state.update(self._validate(state))
+        return state
