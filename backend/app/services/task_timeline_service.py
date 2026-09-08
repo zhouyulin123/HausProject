@@ -31,6 +31,7 @@ EVENT_SUMMARIES = {
     "effect.retry_scheduled": "效果图生成已安排重试",
     "effect.completed": "效果图生成已完成",
     "effect.failed": "效果图生成失败",
+    "effect.provider_unavailable": "效果图供应商暂不可用",
     "effect.cancelled": "效果图生成已取消",
     "effect.dead_letter": "效果图生成已进入死信",
     "blender.queued": "3D 渲染已排队",
@@ -125,19 +126,32 @@ def record_lifecycle_event(
     occurred_at: datetime | None = None,
 ) -> TaskExecutionEvent:
     """Append a normalized lifecycle event inside the caller's transaction."""
-    event_code = f"{source_type}.{state}"
+    event_code = (
+        f"agent.turn.{state}"
+        if source_type == "agent"
+        else f"{source_type}.{state}"
+    )
     billing_status: BillingStatus = "not_billable"
     cost_cny: float | None = None
 
     is_terminal = state in {"completed", "failed", "cancelled", "dead_letter"}
-    if source_type == "generation" and is_terminal:
+    if source_type == "agent" and (attempt or 0) > 0:
+        billing_status = "unknown"
+    elif source_type == "generation" and is_terminal:
         if generation_cost_cny is not None:
             billing_status = "metered"
             cost_cny = generation_cost_cny
         elif (attempt or 0) > 0:
             billing_status = "unknown"
     elif source_type in {"effect", "blender"} and (
-        state in {"retry_scheduled", "completed", "failed", "dead_letter"}
+        state
+        in {
+            "retry_scheduled",
+            "completed",
+            "failed",
+            "provider_unavailable",
+            "dead_letter",
+        }
         or (state == "cancelled" and (attempt or 0) > 0)
     ):
         billing_status = "unknown"

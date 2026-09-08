@@ -581,6 +581,7 @@ def _scene_tool(
     *,
     turn_execution_deadline_at: datetime,
     clock: Callable[[], datetime] | None = None,
+    on_model_attempt: Callable[[], None] | None = None,
 ):
     current_time = clock or _utc_now
 
@@ -640,6 +641,8 @@ def _scene_tool(
             **catalog_scope,
         )
         try:
+            if on_model_attempt is not None:
+                on_model_attempt()
             batch: SceneOperationBatch = llm_service.plan_scene_operations(
                 instruction=state["message"],
                 context=context,
@@ -872,6 +875,7 @@ def _record_agent_timeline_event(
     *,
     event: DesignAgentEvent,
     state: str | None = None,
+    model_attempted: bool = False,
 ) -> None:
     normalized_state = state
     if normalized_state is None:
@@ -885,7 +889,8 @@ def _record_agent_timeline_event(
         task_id=event.task_id,
         source_type="agent",
         source_id=event.turn_id,
-        state=f"turn.{normalized_state}",
+        state=normalized_state,
+        attempt=1 if model_attempted else None,
         occurred_at=event.created_at,
     )
 
@@ -1436,6 +1441,12 @@ def _run_turn(
 
         return execute
 
+    model_attempted = False
+
+    def mark_model_attempted() -> None:
+        nonlocal model_attempted
+        model_attempted = True
+
     registry = DesignAgentToolRegistry()
     registry.register("catalog_search", _catalog_tool(db))
     registry.register(
@@ -1453,6 +1464,7 @@ def _run_turn(
                 payload,
                 turn.id,
                 turn_execution_deadline_at=turn_execution_deadline_at,
+                on_model_attempt=mark_model_attempted,
             )
         ),
     )
@@ -1569,7 +1581,11 @@ def _run_turn(
     events = _events_from_state(task.id, turn.id, state)
     db.add_all(events)
     db.flush()
-    _record_agent_timeline_event(db, event=events[-1])
+    _record_agent_timeline_event(
+        db,
+        event=events[-1],
+        model_attempted=model_attempted,
+    )
     agent_approval_service.ensure_for_agent_handoff(
         db,
         task=task,

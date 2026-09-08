@@ -447,10 +447,7 @@ def fail_job(
         job.status = terminal_status
         job.progress = 100
         job.completed_at = current
-    state = {
-        "queued": "retry_scheduled",
-        "provider_unavailable": "failed",
-    }.get(job.status, job.status)
+    state = {"queued": "retry_scheduled"}.get(job.status, job.status)
     task_timeline_service.record_lifecycle_event(
         db,
         task_id=job.task_id,
