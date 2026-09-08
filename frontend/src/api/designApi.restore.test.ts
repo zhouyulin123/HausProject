@@ -22,6 +22,35 @@ function jsonResponse(body: unknown): Response {
 }
 
 describe("方案结果恢复", () => {
+  it("按有界参数读取任务级 Agent 事件", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        events: [{
+          event_id: 12,
+          turn_id: 5,
+          sequence: 2,
+          type: "tool_completed",
+          node: "catalog_search",
+          status: "completed",
+          source: "deterministic",
+          summary: "商品检索已完成",
+          details: {},
+          created_at: "2026-09-08T08:20:00Z",
+        }],
+        has_more: false,
+        next_before_id: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    const { fetchDesignAgentEvents } = await import("./designApi");
+
+    const result = await fetchDesignAgentEvents(42, { limit: 50 });
+
+    expect(result.events[0]?.event_id).toBe(12);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      "/api/design/tasks/42/agent-events?limit=50",
+    );
+    fetchMock.mockRestore();
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.resetModules();
