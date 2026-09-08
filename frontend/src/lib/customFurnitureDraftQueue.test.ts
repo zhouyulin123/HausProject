@@ -64,6 +64,7 @@ describe("定制家具草稿串行协调器", () => {
     expect(onSynced).toHaveBeenCalledWith(expect.objectContaining({
       stateVersion: 2,
       spec: draftB,
+      clientMutationId: "draft-b",
     }));
   });
 

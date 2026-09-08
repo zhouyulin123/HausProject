@@ -6,6 +6,7 @@ import {
   clampItemTransform,
   isDemoScene,
   sceneDocumentSourceKey,
+  removeSceneItem,
   updateSceneItemTransform,
 } from "./sceneDocument";
 
@@ -128,6 +129,18 @@ describe("方案到 3D 场景转换", () => {
     );
 
     expect(unchanged).toBe(scene);
+  });
+
+  it("删除定制家具实例时不修改原场景，找不到实例则保持引用", () => {
+    const scene = buildSceneDocument(mockDesigns[0], "客厅");
+    const target = scene.items[0];
+
+    const updated = removeSceneItem(scene, target.instanceId);
+
+    expect(updated).not.toBe(scene);
+    expect(updated.items).not.toContain(target);
+    expect(scene.items).toContain(target);
+    expect(removeSceneItem(scene, "missing-item")).toBe(scene);
   });
 
   it("RoomModel 提供校准尺寸时优先采用真实宽深与层高", () => {

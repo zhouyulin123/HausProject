@@ -274,6 +274,27 @@ describe("useDesignProjectStore", () => {
     });
   });
 
+  it("仅持久化已确认保存的定制草稿引用，并可在规格变化时清除", () => {
+    useDesignProjectStore.getState().registerProject(48, "custom_furniture", {
+      requirement: emptyRequirement,
+      roomModel: null,
+    });
+
+    useDesignProjectStore.getState().setCustomFurnitureDraftReference(48, {
+      clientMutationId: "draft-custom-001",
+      specSignature: "stable-spec-signature",
+    });
+    expect(useDesignProjectStore.getState().projects[48]?.customFurnitureDraftReference)
+      .toEqual({
+        clientMutationId: "draft-custom-001",
+        specSignature: "stable-spec-signature",
+      });
+
+    useDesignProjectStore.getState().setCustomFurnitureDraftReference(48, null);
+    expect(useDesignProjectStore.getState().projects[48]?.customFurnitureDraftReference)
+      .toBeNull();
+  });
+
   it("恢复 Worker 运行引用并在挂载方案后保留 Agent 完成态", () => {
     useDesignProjectStore.getState().registerProject(45, "catalog_design", {
       requirement: emptyRequirement,
