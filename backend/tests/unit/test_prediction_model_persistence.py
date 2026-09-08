@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from starlette.datastructures import Headers, UploadFile
@@ -265,3 +266,65 @@ async def test_upload_placeholder_keeps_model_null(db, monkeypatch, tmp_path: Pa
     saved = db.query(UploadedImage).one()
     assert saved.original_prediction_source == "placeholder"
     assert saved.original_prediction_model is None
+
+
+@pytest.mark.asyncio
+async def test_upload_idempotency_reuses_analysis_and_rejects_changed_content(
+    db, monkeypatch, tmp_path: Path
+):
+    monkeypatch.setattr(upload, "require_active_session", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        upload,
+        "validate_image_upload",
+        lambda **_kwargs: SimpleNamespace(extension="png"),
+    )
+    calls = 0
+
+    def analyze_once(*_args):
+        nonlocal calls
+        calls += 1
+        return _room_model()
+
+    monkeypatch.setattr(upload.llm_service, "analyze_room_model", analyze_once)
+    monkeypatch.setattr(
+        upload.anonymous_session_service,
+        "attach_image",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(upload.settings, "upload_dir", str(tmp_path / "uploads"))
+
+    def image_file(content: bytes):
+        return UploadFile(
+            BytesIO(content),
+            filename="floor-plan.png",
+            headers=Headers({"content-type": "image/png"}),
+        )
+
+    first = await upload.upload_image(
+        "session-001",
+        image_file(b"same-image"),
+        None,
+        db,
+        idempotency_key="upload-content-001",
+    )
+    replay = await upload.upload_image(
+        "session-001",
+        image_file(b"same-image"),
+        None,
+        db,
+        idempotency_key="upload-content-001",
+    )
+
+    assert replay == first
+    assert calls == 1
+    assert db.query(UploadedImage).count() == 1
+
+    with pytest.raises(HTTPException) as exc_info:
+        await upload.upload_image(
+            "session-001",
+            image_file(b"changed-image"),
+            None,
+            db,
+            idempotency_key="upload-content-001",
+        )
+    assert exc_info.value.status_code == 409
