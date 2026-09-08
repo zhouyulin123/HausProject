@@ -472,46 +472,61 @@ def _execute_generation(
         workflow_trace: list[dict] = []
         retry_count = 0
         attempt_requirement = deepcopy(requirement)
-        while True:
-            workflow_result = workflow.run(
-                requirement=attempt_requirement,
-                image_context=image_context,
+
+        def emit_generation_meta(
+            generated_plans: list[dict],
+            *,
+            accepted: bool,
+        ) -> None:
+            if on_meta is None:
+                return
+            meta = llm_service.last_generation_meta()
+            if meta is None:
+                return
+            provenance = generation_provenance.build_generation_provenance(
+                prompt_snapshot=str(meta.get("prompt_snapshot") or ""),
+                input_snapshot=meta.get("input_snapshot") or {},
                 catalog_context=catalog_context,
             )
+            on_meta(
+                {
+                    "meta": {**meta, **provenance},
+                    "output_snapshot": {
+                        "retry_count": retry_count,
+                        "model_output_accepted": accepted,
+                        "plan_count": len(generated_plans),
+                        "plans": [
+                            {
+                                "name": plan.get("name"),
+                                "style": plan.get("style"),
+                                "budget": plan.get("budget"),
+                                "score": plan.get("score"),
+                                "furniture_count": len(
+                                    plan.get("furnitureSuggestions") or []
+                                ),
+                            }
+                            for plan in generated_plans
+                        ],
+                    },
+                }
+            )
+
+        while True:
+            try:
+                workflow_result = workflow.run(
+                    requirement=attempt_requirement,
+                    image_context=image_context,
+                    catalog_context=catalog_context,
+                )
+            except Exception:
+                emit_generation_meta([], accepted=False)
+                raise
             plans = workflow_result["plans"]
             generator = workflow_result["generator"]
             workflow_trace.extend(workflow_result["node_trace"])
 
-            # 每轮真实模型调用都先记账；被预算门禁拒绝的产物也属于已发生成本。
-            if on_meta is not None and generator == "llm":
-                meta = llm_service.last_generation_meta()
-                if meta:
-                    provenance = generation_provenance.build_generation_provenance(
-                        prompt_snapshot=str(meta.get("prompt_snapshot") or ""),
-                        input_snapshot=meta.get("input_snapshot") or {},
-                        catalog_context=catalog_context,
-                    )
-                    on_meta(
-                        {
-                            "meta": {**meta, **provenance},
-                            "output_snapshot": {
-                                "retry_count": retry_count,
-                                "plan_count": len(plans),
-                                "plans": [
-                                    {
-                                        "name": plan.get("name"),
-                                        "style": plan.get("style"),
-                                        "budget": plan.get("budget"),
-                                        "score": plan.get("score"),
-                                        "furniture_count": len(
-                                            plan.get("furnitureSuggestions") or []
-                                        ),
-                                    }
-                                    for plan in plans
-                                ],
-                            },
-                        }
-                    )
+            # 模型输出即使触发模板降级，供应商已返回的 usage 仍必须记账。
+            emit_generation_meta(plans, accepted=generator == "llm")
 
             plan_totals = [
                 int(plan["shopQuote"]["total"])
@@ -859,12 +874,22 @@ def get_task_result(
 @router.post(
     "/{task_id}/plans/{plan_id}/refine",
     response_model=RefinePlanResponse,
+    deprecated=True,
 )
 def refine_plan(
     task_id: int,
     plan_id: str,
     req: RefinePlanRequest,
     x_session_id: SessionIdHeader,
+    idempotency_key: Annotated[
+        str,
+        Header(
+            alias="Idempotency-Key",
+            min_length=8,
+            max_length=100,
+            pattern=r"^[A-Za-z0-9._:-]+$",
+        ),
+    ],
     db: Session = Depends(get_db),
 ):
     """兼容入口：实际写入统一 Agent turn，不再直接调用模型服务。"""
@@ -874,7 +899,7 @@ def refine_plan(
         task_id=task_id,
     )
     digest = hashlib.sha256(
-        f"{task_id}:{plan_id}:{req.instruction}".encode("utf-8")
+        f"{task_id}:{idempotency_key}".encode("utf-8")
     ).hexdigest()[:32]
     result = design_agent_service.run_turn(
         db,

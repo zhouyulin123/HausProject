@@ -36,9 +36,12 @@ class LLMUnavailable(Exception):
 _client: Optional[OpenAI] = None
 _vl_client: Optional[OpenAI] = None
 
-# 最近一次 generate_plans 的完整生成元数据（模型/Prompt/输入/用量/成本）。
-# 由 generate_plans 成功调用后更新，tasks 层在 workflow.run 之后读取落库。
-_last_generation_meta: Optional[Dict[str, Any]] = None
+# 当前执行上下文最近一次 generate_plans 的生成元数据。
+# ContextVar 防止同一进程中的线程或异步任务互相覆盖用量与成本。
+_last_generation_meta: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "last_generation_meta",
+    default=None,
+)
 ModelCostGuard = Callable[[Optional[float]], None]
 _model_cost_guard: ContextVar[ModelCostGuard | None] = ContextVar(
     "model_cost_guard",
@@ -109,7 +112,7 @@ def _capture_model_usage(usage: Any) -> None:
 
 def last_generation_meta() -> Optional[Dict[str, Any]]:
     """返回最近一次方案生成的元数据；无则为 None。"""
-    return _last_generation_meta
+    return _last_generation_meta.get()
 
 
 def estimate_cost_cny(
@@ -460,19 +463,43 @@ def generate_plans(
     catalog_context：商品库 + 定制价目表文本，提供时家具与定制项只能从中选择。
     成功后把模型 / Prompt / 输入 / 用量 / 成本记录到 last_generation_meta()。
     """
-    global _last_generation_meta
-    _last_generation_meta = None  # 每次调用先清空，避免降级时残留上次的元数据
+    _last_generation_meta.set(None)
 
     input_snapshot = generation_input_snapshot(requirement, catalog_context)
     user = input_snapshot["user"]
     usage: Dict[str, Any] = {}
-    data = _chat_json(
-        _PLAN_SYSTEM,
-        user,
-        max_tokens=_PLAN_MAX_TOKENS,
-        temperature=_PLAN_TEMPERATURE,
-        usage_out=usage,
-    )
+    prompt_contract = generation_prompt_snapshot()
+
+    def preserve_call_meta() -> None:
+        _last_generation_meta.set(
+            {
+                "model": settings.llm_model,
+                "prompt_snapshot": prompt_contract,
+                "input_snapshot": input_snapshot,
+                "provenance_schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
+                "usage": dict(usage) or None,
+                "cost_cny": estimate_cost_cny(
+                    usage or None,
+                    settings.llm_input_price_per_mtok,
+                    settings.llm_output_price_per_mtok,
+                ),
+            }
+        )
+
+    try:
+        data = _chat_json(
+            _PLAN_SYSTEM,
+            user,
+            max_tokens=_PLAN_MAX_TOKENS,
+            temperature=_PLAN_TEMPERATURE,
+            usage_out=usage,
+        )
+    except Exception:
+        preserve_call_meta()
+        raise
+
+    # usage 在供应商响应返回时即成为计费事实，不能等待业务结构校验通过。
+    preserve_call_meta()
     raw_plans = data.get("plans")
     if not isinstance(raw_plans, list):
         raise LLMUnavailable("LLM 返回的方案结构不完整")
@@ -481,19 +508,6 @@ def generate_plans(
     if len(plans) < _PLAN_MIN_VALID_COUNT:
         raise LLMUnavailable(f"LLM 有效方案不足（{len(plans)} 套）")
 
-    prompt_contract = generation_prompt_snapshot()
-    _last_generation_meta = {
-        "model": settings.llm_model,
-        "prompt_snapshot": prompt_contract,
-        "input_snapshot": input_snapshot,
-        "provenance_schema_version": GENERATION_PROVENANCE_SCHEMA_VERSION,
-        "usage": usage or None,
-        "cost_cny": estimate_cost_cny(
-            usage or None,
-            settings.llm_input_price_per_mtok,
-            settings.llm_output_price_per_mtok,
-        ),
-    }
     return plans
 
 

@@ -130,7 +130,7 @@ def process_one_run(
                     output_snapshot=payload["output_snapshot"],
                     worker_id=worker_id,
                     worker_attempt=worker_attempt,
-                    commit=False,
+                    commit=True,
                 ):
                     raise generation_run_service.GenerationRunOwnershipError(
                         "方案生成任务已失去租约或被取消"

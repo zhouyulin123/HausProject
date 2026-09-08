@@ -888,7 +888,9 @@ def test_worker_requeues_retryable_execution_failure(monkeypatch):
         assert failed.worker_id is None
 
 
-def test_worker_rolls_back_result_and_cost_when_deadline_expires(monkeypatch):
+def test_worker_rolls_back_result_but_preserves_cost_when_deadline_expires(
+    monkeypatch,
+):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -950,7 +952,7 @@ def test_worker_rolls_back_result_and_cost_when_deadline_expires(monkeypatch):
         assert expired is not None
         assert task is not None
         assert expired.status == "dead_letter"
-        assert expired.cost_cny is None
+        assert expired.cost_cny == pytest.approx(9.9)
         assert expired.output_snapshot is None
         assert db.scalar(select(DesignResult)) is None
         assert db.scalar(select(DesignRevision)) is None

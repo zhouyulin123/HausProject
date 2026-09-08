@@ -300,9 +300,9 @@ def test_generation_meta_is_isolated_between_concurrent_execution_contexts(
         alpha_meta = alpha.result(timeout=10)
         beta_meta = beta.result(timeout=10)
 
-    assert '"marker":"alpha"' in alpha_meta["input_snapshot"]["user"]
+    assert '"marker": "alpha"' in alpha_meta["input_snapshot"]["user"]
     assert alpha_meta["usage"]["prompt_tokens"] == 11
-    assert '"marker":"beta"' in beta_meta["input_snapshot"]["user"]
+    assert '"marker": "beta"' in beta_meta["input_snapshot"]["user"]
     assert beta_meta["usage"]["prompt_tokens"] == 29
 
 
