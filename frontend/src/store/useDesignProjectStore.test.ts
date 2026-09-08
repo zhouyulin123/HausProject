@@ -362,7 +362,7 @@ describe("useDesignProjectStore", () => {
     });
   });
 
-  it("把缺少执行快照的 v2 本地项目迁移为 v3", async () => {
+  it("把旧本地项目迁移为 v4 并补齐执行与定制草稿引用", async () => {
     const legacyProject = useDesignProjectStore
       .getState()
       .registerProject(47, "catalog_design", {
@@ -375,7 +375,13 @@ describe("useDesignProjectStore", () => {
     const migrated = migrateDesignProjectState({
       projects: { 47: project },
       currentProjectId: 47,
-    }, 2) as { projects: Record<number, { execution?: unknown; generationRunId?: number | null }> };
+    }, 2) as {
+      projects: Record<number, {
+        execution?: unknown;
+        generationRunId?: number | null;
+        customFurnitureDraftReference?: unknown;
+      }>;
+    };
 
     expect(migrated.projects[47]?.execution).toMatchObject({
       currentNode: "idle",
@@ -383,5 +389,8 @@ describe("useDesignProjectStore", () => {
       events: [],
     });
     expect(migrated.projects[47]?.generationRunId).toBe(9);
+    expect(migrated.projects[47]).toMatchObject({
+      customFurnitureDraftReference: null,
+    });
   });
 });

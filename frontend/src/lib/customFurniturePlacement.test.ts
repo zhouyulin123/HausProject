@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createCustomFurniturePlacementCoordinator } from "./customFurniturePlacement";
+import {
+  createCustomFurniturePlacementCoordinator,
+  placeCustomFurnitureWithConflictRecovery,
+} from "./customFurniturePlacement";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -19,7 +22,9 @@ describe("定制家具场景放置协调器", () => {
       .mockRejectedValueOnce(new Error("connection reset"))
       .mockResolvedValueOnce({ current_version: 2 });
     const coordinator = createCustomFurniturePlacementCoordinator({
-      createMutationId: vi.fn().mockReturnValue("stable-placement-id"),
+      createMutationId: vi.fn()
+        .mockReturnValueOnce("first-placement-id")
+        .mockReturnValueOnce("retry-placement-id"),
       add,
     });
     const placement = {
@@ -39,9 +44,11 @@ describe("定制家具场景放置协调器", () => {
     await expect(coordinator.place(placement)).resolves.toEqual({ current_version: 2 });
 
     expect(add).toHaveBeenCalledTimes(3);
-    expect(add.mock.calls.every(([request]) =>
-      request.clientMutationId === "stable-placement-id"
-    )).toBe(true);
+    expect(add.mock.calls.map(([request]) => request.clientMutationId)).toEqual([
+      "first-placement-id",
+      "retry-placement-id",
+      "retry-placement-id",
+    ]);
   });
 
   it("权威场景版本变化后生成新的幂等键", async () => {
@@ -70,5 +77,32 @@ describe("定制家具场景放置协调器", () => {
     expect(onConflict).toHaveBeenCalledTimes(1);
     expect(add.mock.calls[0][0].clientMutationId).toBe("stale-placement-id");
     expect(add.mock.calls[1][0].clientMutationId).toBe("fresh-placement-id");
+  });
+
+  it("409 时仅应用重新获取的权威场景，不应用失败请求的本地猜测", async () => {
+    const authoritative = { id: 9, current_version: 4 };
+    const apply = vi.fn();
+    const result = await placeCustomFurnitureWithConflictRecovery({
+      place: vi.fn().mockRejectedValue({ status: 409 }),
+      reload: vi.fn().mockResolvedValue(authoritative),
+      apply,
+    });
+
+    expect(result).toBe("conflict_recovered");
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply).toHaveBeenCalledWith(authoritative);
+  });
+
+  it("非冲突失败不读取或伪造场景", async () => {
+    const reload = vi.fn();
+    const apply = vi.fn();
+    await expect(placeCustomFurnitureWithConflictRecovery({
+      place: vi.fn().mockRejectedValue(new Error("offline")),
+      reload,
+      apply,
+    })).rejects.toThrow("offline");
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
   });
 });

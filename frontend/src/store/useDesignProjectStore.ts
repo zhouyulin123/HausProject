@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { ChatMessage } from "@/types/chat";
 import type { RoomModel } from "@/types/roomModel";
+import type { DesignScene } from "@/types/scene";
 import type {
   AgentExecutionState,
   AgentExitReason,
@@ -15,6 +16,7 @@ import type {
 import {
   createEmptyAgentExecutionState,
   createDesignProject,
+  type CustomFurnitureDraftReference,
   type DesignProject,
   type DesignProjectMode,
   type DesignProjectSeed,
@@ -41,6 +43,14 @@ interface DesignProjectState {
   setSceneReference: (
     projectId: number,
     sceneRef: AgentSceneReference | null,
+  ) => void;
+  setAuthoritativeScene: (
+    projectId: number,
+    scene: DesignScene | null,
+  ) => void;
+  setCustomFurnitureDraftReference: (
+    projectId: number,
+    reference: CustomFurnitureDraftReference | null,
   ) => void;
   attachPlan: (
     projectId: number,
@@ -79,6 +89,9 @@ export function migrateDesignProjectState(persisted: unknown, _version?: number)
           messages: [],
           customFurnitureSpec: null,
           customFurnitureResult: null,
+          authoritativeScene: null,
+          customFurnitureDraftReference:
+            project.customFurnitureDraftReference ?? null,
           approvalRequired: false,
           generationRunId: project.generationRunId ?? null,
           execution: project.execution ?? createEmptyAgentExecutionState(),
@@ -192,8 +205,37 @@ export const useDesignProjectStore = create<DesignProjectState>()(
             ) {
               return project;
             }
-            return { ...project, sceneRef };
+            return {
+              ...project,
+              sceneRef,
+              authoritativeScene:
+                project.authoritativeScene
+                && sceneRef
+                && project.authoritativeScene.id === sceneRef.scene_id
+                && project.authoritativeScene.current_version >= sceneRef.version
+                  ? project.authoritativeScene
+                  : null,
+            };
           }),
+        ),
+      setAuthoritativeScene: (projectId, scene) =>
+        set((state) =>
+          updateProject(state, projectId, (project) => ({
+            ...project,
+            authoritativeScene: scene,
+            sceneRef: scene
+              ? { scene_id: scene.id, version: scene.current_version }
+              : project.sceneRef,
+          })),
+        ),
+      setCustomFurnitureDraftReference: (projectId, reference) =>
+        set((state) =>
+          updateProject(state, projectId, (project) => ({
+            ...project,
+            customFurnitureDraftReference: reference
+              ? { ...reference }
+              : null,
+          })),
         ),
       attachPlan: (projectId, plan) =>
         set((state) =>
@@ -247,7 +289,7 @@ export const useDesignProjectStore = create<DesignProjectState>()(
     }),
     {
       name: "ai-home-design-projects",
-      version: 3,
+      version: 4,
       migrate: migrateDesignProjectState,
       partialize: (state) => ({
         projects: Object.fromEntries(
@@ -258,6 +300,7 @@ export const useDesignProjectStore = create<DesignProjectState>()(
               messages: [],
               customFurnitureSpec: null,
               customFurnitureResult: null,
+              authoritativeScene: null,
               approvalRequired: false,
               generationRunId: project.generationRunId,
             },

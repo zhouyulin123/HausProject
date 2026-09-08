@@ -69,6 +69,10 @@ export default function DesignWorkspacePage() {
   const applyAgentState = useDesignProjectStore((state) => state.applyAgentState);
   const attachPlan = useDesignProjectStore((state) => state.attachPlan);
   const setSceneReference = useDesignProjectStore((state) => state.setSceneReference);
+  const setAuthoritativeScene = useDesignProjectStore((state) => state.setAuthoritativeScene);
+  const setCustomFurnitureDraftReference = useDesignProjectStore(
+    (state) => state.setCustomFurnitureDraftReference,
+  );
   const setFurnitureSelection = useDesignProjectStore((state) => state.setFurnitureSelection);
   const generatedPlans = useDesignStore((state) => state.generatedPlans);
   const setGeneratedPlans = useDesignStore((state) => state.setGeneratedPlans);
@@ -470,6 +474,20 @@ export default function DesignWorkspacePage() {
     );
   }, [projectId, setSceneReference]);
 
+  const handleAuthoritativeScene = useCallback((scene: Parameters<
+    typeof setAuthoritativeScene
+  >[1]) => {
+    if (!projectId) return;
+    setAuthoritativeScene(projectId, scene);
+  }, [projectId, setAuthoritativeScene]);
+
+  const handleCustomDraftSaved = useCallback((reference: Parameters<
+    typeof setCustomFurnitureDraftReference
+  >[1]) => {
+    if (!projectId || !reference) return;
+    setCustomFurnitureDraftReference(projectId, reference);
+  }, [projectId, setCustomFurnitureDraftReference]);
+
   if (!project || !plan || !entry) {
     return (
       <div className="flex min-h-[70vh] items-center justify-center bg-[#111713] px-5 text-center text-[#e5e8e1]">
@@ -617,10 +635,10 @@ export default function DesignWorkspacePage() {
                 </p>
               </div>
               <span className="text-[10px] text-[#69736a]">
-                {project.mode === "custom_furniture" || !plan.planVersionId ? "LOCAL DRAFT" : `VERSION ${plan.planVersionId}`}
+                {!plan.planVersionId ? "LOCAL DRAFT" : `VERSION ${plan.planVersionId}`}
               </span>
             </div>
-            {project.mode === "custom_furniture" ? (
+            {project.mode === "custom_furniture" && !plan.planVersionId ? (
               project.customFurnitureResult ? (
                 <div className="h-[540px] min-h-[420px] overflow-hidden border border-[#1d241f]/15 bg-[#efe8db]">
                   <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-[#69736a]">正在加载确定性模型…</div>}>
@@ -645,6 +663,7 @@ export default function DesignWorkspacePage() {
                 onMovePersisted={reportMovePersisted}
                 onGlbLoadFailed={reportGlbLoadFailure}
                 onSceneReferenceChange={handleSceneReferenceChange}
+                authoritativeScene={project.authoritativeScene}
               />
             )}
           </main>
@@ -658,6 +677,10 @@ export default function DesignWorkspacePage() {
                 preview={project.customFurnitureResult}
                 approvalRequired={project.approvalRequired}
                 pendingQuestions={project.pendingQuestions}
+                sceneReference={project.sceneRef}
+                savedDraftReference={project.customFurnitureDraftReference}
+                onDraftSaved={handleCustomDraftSaved}
+                onSceneApplied={handleAuthoritativeScene}
                 onAgentResponse={applyWorkspaceAgentResponse}
                 onConversationTurn={appendConversationTurn}
               />

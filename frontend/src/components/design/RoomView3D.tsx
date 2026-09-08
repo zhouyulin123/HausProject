@@ -26,6 +26,7 @@ import {
   Save,
   Send,
   ShieldCheck,
+  Trash2,
   Undo2,
 } from "lucide-react";
 import { type Group } from "three";
@@ -47,7 +48,7 @@ import {
 import type { TransformMode } from "@/hooks/useSceneEditor";
 import type { DesignPlan } from "@/types/design";
 import type { RoomModel } from "@/types/roomModel";
-import type { SceneItem, SceneTransform } from "@/types/scene";
+import type { DesignScene, SceneItem, SceneTransform } from "@/types/scene";
 import {
   sceneSyncPresentation,
   type SceneReference,
@@ -308,6 +309,7 @@ export default function RoomView3D({
   onMovePersisted,
   onGlbLoadFailed,
   onSceneReferenceChange,
+  authoritativeScene,
 }: {
   plan: DesignPlan;
   roomType: string;
@@ -325,6 +327,7 @@ export default function RoomView3D({
     sku: string;
   }) => void;
   onSceneReferenceChange?: (reference: SceneReference | null) => void;
+  authoritativeScene?: DesignScene | null;
 }) {
   const editor = useSceneEditor(
     plan,
@@ -341,6 +344,10 @@ export default function RoomView3D({
   const [cameraPreset, setCameraPreset] =
     useState<RoomCameraPreset>("perspective");
   const scene = editor.history.present;
+
+  useEffect(() => {
+    if (authoritativeScene) editor.applyAuthoritativeScene(authoritativeScene);
+  }, [authoritativeScene, editor.applyAuthoritativeScene]);
 
   useEffect(() => {
     setRuntimeAssetOverrides({});
@@ -727,7 +734,9 @@ export default function RoomView3D({
                 {selectedItem.sku}
               </p>
               <p className="mt-1 text-[10px] font-medium text-stone-500">
-                {productAssetLabel(itemAssets[selectedItem.instanceId])}
+                {selectedItem.sourceType === "custom_furniture_draft"
+                  ? "参数化定制草稿 · 非正式商品"
+                  : productAssetLabel(itemAssets[selectedItem.instanceId])}
               </p>
             </div>
             <Box className="h-5 w-5 shrink-0 text-wood-500" />
@@ -790,6 +799,18 @@ export default function RoomView3D({
             </ToolButton>
             <span />
           </div>
+          {selectedItem.sourceType === "custom_furniture_draft" && (
+            <button
+              type="button"
+              title="从当前房间删除"
+              disabled={editor.editingBlocked}
+              onClick={editor.removeSelected}
+              className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 border border-red-200 bg-red-50 px-3 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              <Trash2 className="h-4 w-4" />
+              从房间删除
+            </button>
+          )}
         </aside>
       )}
     </div>

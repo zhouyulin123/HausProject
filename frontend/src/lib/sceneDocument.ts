@@ -185,6 +185,17 @@ export function updateSceneItemTransform(
   };
 }
 
+export function removeSceneItem(
+  scene: SceneDocument,
+  instanceId: string,
+): SceneDocument {
+  if (!scene.items.some((item) => item.instanceId === instanceId)) return scene;
+  return {
+    ...scene,
+    items: scene.items.filter((item) => item.instanceId !== instanceId),
+  };
+}
+
 function clamp(value: number, minimum: number, maximum: number): number {
   if (minimum > maximum) return (minimum + maximum) / 2;
   return Math.min(maximum, Math.max(minimum, value));

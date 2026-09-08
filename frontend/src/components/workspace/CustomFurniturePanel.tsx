@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type RefObject } from "rea
 import {
   BadgeDollarSign,
   CircleCheck,
+  Cuboid,
   Loader2,
   PanelsTopLeft,
   Ruler,
@@ -10,6 +11,9 @@ import {
   Table2,
 } from "lucide-react";
 import {
+  addCustomFurnitureDraftToScene,
+  ApiError,
+  fetchDesignScene,
   saveCustomFurnitureDraft,
   sendAgentTurn,
   type AgentTurnResponse,
@@ -25,7 +29,14 @@ import {
   quotePreviewDisplay,
 } from "@/lib/customFurnitureWorkspace";
 import { createCustomFurnitureDraftSaveCoordinator } from "@/lib/customFurnitureDraftQueue";
+import {
+  createCustomFurniturePlacementCoordinator,
+  placeCustomFurnitureWithConflictRecovery,
+} from "@/lib/customFurniturePlacement";
 import type { AgentPendingQuestion } from "@/types/agent";
+import type { AgentSceneReference } from "@/types/agent";
+import type { DesignScene } from "@/types/scene";
+import type { CustomFurnitureDraftReference } from "@/lib/designProject";
 import type {
   CabinetCustomFurnitureSpec,
   CustomFurnitureFamily,
@@ -42,6 +53,10 @@ interface CustomFurniturePanelProps {
   preview: CustomFurniturePreviewResult | null;
   approvalRequired: boolean;
   pendingQuestions: AgentPendingQuestion[];
+  sceneReference: AgentSceneReference | null;
+  savedDraftReference: CustomFurnitureDraftReference | null;
+  onDraftSaved: (reference: CustomFurnitureDraftReference) => void;
+  onSceneApplied: (scene: DesignScene) => void;
   onAgentResponse: (response: AgentTurnResponse) => void;
   onConversationTurn: (message: string, reply: string) => void;
 }
@@ -110,6 +125,10 @@ export default function CustomFurniturePanel({
   preview,
   approvalRequired,
   pendingQuestions,
+  sceneReference,
+  savedDraftReference,
+  onDraftSaved,
+  onSceneApplied,
   onAgentResponse,
   onConversationTurn,
 }: CustomFurniturePanelProps) {
@@ -119,10 +138,16 @@ export default function CustomFurniturePanel({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [draftSaveError, setDraftSaveError] = useState("");
+  const [placing, setPlacing] = useState(false);
+  const [placementError, setPlacementError] = useState("");
+  const [placementPosition, setPlacementPosition] = useState({ x: 0, z: 0 });
   const lastSubmissionRef = useRef<{ signature: string; turnId: string } | null>(null);
   const initialDraftSignatureRef = useRef(JSON.stringify(draft));
   const draftCoordinatorRef = useRef<ReturnType<
     typeof createCustomFurnitureDraftSaveCoordinator
+  > | null>(null);
+  const placementCoordinatorRef = useRef<ReturnType<
+    typeof createCustomFurniturePlacementCoordinator<DesignScene>
   > | null>(null);
   const familyRef = useRef<HTMLButtonElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -137,8 +162,12 @@ export default function CustomFurniturePanel({
       initialStateVersion: stateVersion,
       createMutationId: () => nextTurnId(taskId),
       save: (payload) => saveCustomFurnitureDraft(taskId, payload),
-      onSynced: ({ spec }) => {
+      onSynced: ({ spec, clientMutationId }) => {
         initialDraftSignatureRef.current = JSON.stringify(spec);
+        onDraftSaved({
+          clientMutationId,
+          specSignature: JSON.stringify(spec),
+        });
         setDraftSaveError("");
       },
       onError: () => {
@@ -151,6 +180,17 @@ export default function CustomFurniturePanel({
       if (draftCoordinatorRef.current === coordinator) {
         draftCoordinatorRef.current = null;
       }
+    };
+  }, [onDraftSaved, taskId]);
+
+  useEffect(() => {
+    placementCoordinatorRef.current = createCustomFurniturePlacementCoordinator({
+      createMutationId: () => nextTurnId(taskId),
+      add: ({ sceneId, ...payload }) =>
+        addCustomFurnitureDraftToScene(sceneId, payload),
+    });
+    return () => {
+      placementCoordinatorRef.current = null;
     };
   }, [taskId]);
 
@@ -241,8 +281,46 @@ export default function CustomFurniturePanel({
   };
 
   const quote = preview ? quotePreviewDisplay(preview.quote_preview) : null;
+  const draftSignature = JSON.stringify(draft);
+  const placementReady = Boolean(
+    sceneReference
+    && savedDraftReference
+    && savedDraftReference.specSignature === draftSignature,
+  );
   const purposes = draft.family === "cabinet" ? CABINET_PURPOSES : TABLE_PURPOSES;
   const materials = draft.family === "cabinet" ? CABINET_MATERIALS : TABLE_MATERIALS;
+
+  const placeInRoom = async () => {
+    if (!sceneReference || !savedDraftReference || !placementReady || placing) return;
+    setPlacing(true);
+    setPlacementError("");
+    try {
+      const outcome = await placeCustomFurnitureWithConflictRecovery({
+        place: () => placementCoordinatorRef.current!.place({
+          sceneId: sceneReference.scene_id,
+          baseVersion: sceneReference.version,
+          draftClientMutationId: savedDraftReference.clientMutationId,
+          position: placementPosition,
+          rotationY: 0,
+        }),
+        reload: () => fetchDesignScene(sceneReference.scene_id),
+        apply: onSceneApplied,
+      });
+      if (outcome === "conflict_recovered") {
+        setPlacementError("房间已在其他页面更新，已恢复最新版本，请再次加入。");
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setPlacementError("房间版本冲突且恢复失败，请检查网络后重试。");
+      } else if (error instanceof ApiError && error.status === 422) {
+        setPlacementError("当前草稿无法加入房间，请先重新保存草稿或调整摆放位置。");
+      } else {
+        setPlacementError("加入结果未知，可直接重试；系统会复用同一幂等请求。");
+      }
+    } finally {
+      setPlacing(false);
+    }
+  };
 
   return (
     <aside className="overflow-hidden rounded-lg border border-[#293229] bg-[#171e18] text-[#e3e7df] xl:h-[calc(100vh-8.5rem)] xl:min-h-[620px]">
@@ -416,6 +494,33 @@ export default function CustomFurniturePanel({
             {preview.warnings.map((warning) => <p key={warning} className="mt-2 text-[10px] leading-4 text-[#89948b]">{warning}</p>)}
           </section>
         )}
+
+        <section className="mt-5 border-t border-white/10 pt-4">
+          <div className="flex items-center gap-2">
+            <Cuboid className="h-4 w-4 text-[#d5ff67]" />
+            <p className="text-xs font-medium">加入当前房间</p>
+          </div>
+          <p className="mt-2 text-[10px] leading-4 text-[#89948b]">
+            作为参数化草稿体块加入版本化 3D 房间，可继续移动或删除；不代表制造级资产或正式商品。
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <NumberField label="房间 X（m）" value={placementPosition.x} min={-20} max={20} step={0.1} onChange={(x) => setPlacementPosition((current) => ({ ...current, x }))} />
+            <NumberField label="房间 Z（m）" value={placementPosition.z} min={-20} max={20} step={0.1} onChange={(z) => setPlacementPosition((current) => ({ ...current, z }))} />
+          </div>
+          <button
+            type="button"
+            data-placement-ready={placementReady ? "true" : "false"}
+            disabled={!placementReady || placing}
+            onClick={() => void placeInRoom()}
+            className="mt-3 flex min-h-10 w-full items-center justify-center gap-2 border border-[#d5ff67]/45 px-3 text-xs font-medium text-[#d5ff67] transition-colors hover:bg-[#d5ff67]/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-[#667068]"
+          >
+            {placing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Cuboid className="h-4 w-4" />}
+            {placing ? "正在加入房间" : "加入当前房间"}
+          </button>
+          {!sceneReference && <p className="mt-2 text-[10px] text-[#f1c08b]">当前没有已恢复的服务端房间场景。</p>}
+          {sceneReference && !placementReady && <p className="mt-2 text-[10px] text-[#f1c08b]">请等待当前草稿成功保存后再加入。</p>}
+          {placementError && <p role="alert" className="mt-2 text-[10px] leading-4 text-[#f1b59e]">{placementError}</p>}
+        </section>
 
         {submitError && <p role="alert" className="mt-4 border border-[#8f4938] bg-[#2b1c18] px-3 py-2 text-xs text-[#f1b59e]">{submitError}</p>}
         {draftSaveError && (

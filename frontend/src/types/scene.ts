@@ -54,9 +54,18 @@ export type AssetFallbackReason =
   | "catalog_product_unavailable"
   | "glb_load_failed";
 
+export interface CustomFurnitureSceneReference {
+  taskId: number;
+  planVersionId: number;
+  introducedSceneVersion: number;
+  draftClientMutationId: string;
+  draftStateVersion: number;
+  specDigest: string;
+}
+
 export interface SceneItem {
   instanceId: string;
-  /** 必须对应服务端商品库中的有效 SKU。 */
+  /** 目录实例对应真实 SKU；定制草稿使用服务端生成的 CUSTOM 标识。 */
   sku: string;
   category?: string | null;
   transform: SceneTransform;
@@ -65,6 +74,8 @@ export interface SceneItem {
   /** 服务端审核后的资产模式；浏览器运行时失败会按实例覆写为 fallback。 */
   assetMode?: AssetMode;
   fallbackReason?: AssetFallbackReason | null;
+  sourceType?: "catalog" | "custom_furniture_draft";
+  customFurnitureRef?: CustomFurnitureSceneReference | null;
 }
 
 export interface SceneCamera {

@@ -68,6 +68,10 @@ describe("自定义家具结构化面板", () => {
             reason: "完整毫米尺寸是几何生成和报价复算的必要输入",
           },
         ]}
+        sceneReference={null}
+        savedDraftReference={null}
+        onDraftSaved={vi.fn()}
+        onSceneApplied={vi.fn()}
         onAgentResponse={vi.fn()}
         onConversationTurn={vi.fn()}
       />,
@@ -95,6 +99,10 @@ describe("自定义家具结构化面板", () => {
         preview={preview}
         approvalRequired={false}
         pendingQuestions={[]}
+        sceneReference={null}
+        savedDraftReference={null}
+        onDraftSaved={vi.fn()}
+        onSceneApplied={vi.fn()}
         onAgentResponse={vi.fn()}
         onConversationTurn={vi.fn()}
       />,
@@ -126,6 +134,10 @@ describe("自定义家具结构化面板", () => {
         preview={preview}
         approvalRequired
         pendingQuestions={[]}
+        sceneReference={null}
+        savedDraftReference={null}
+        onDraftSaved={vi.fn()}
+        onSceneApplied={vi.fn()}
         onAgentResponse={vi.fn()}
         onConversationTurn={vi.fn()}
       />,
@@ -135,5 +147,37 @@ describe("自定义家具结构化面板", () => {
     expect(html).toContain("待人工报价");
     expect(html).toContain("需要人工确认报价");
     expect(html).not.toContain("6,800.00");
+  });
+
+  it("仅允许把已确认保存且规格一致的草稿加入服务端房间", () => {
+    const preview = previewResult({
+      ...quoteBase,
+      status: "estimated",
+      reason_code: null,
+      estimated_amount: "6800.00",
+    });
+    const html = renderToStaticMarkup(
+      <CustomFurniturePanel
+        taskId={42}
+        stateVersion={2}
+        initialSpec={preview.spec}
+        preview={preview}
+        approvalRequired={false}
+        pendingQuestions={[]}
+        sceneReference={{ scene_id: 9, version: 3 }}
+        savedDraftReference={{
+          clientMutationId: "draft-custom-001",
+          specSignature: JSON.stringify(preview.spec),
+        }}
+        onDraftSaved={vi.fn()}
+        onSceneApplied={vi.fn()}
+        onAgentResponse={vi.fn()}
+        onConversationTurn={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('data-placement-ready="true"');
+    expect(html).toContain("参数化草稿体块");
+    expect(html).toContain("不代表制造级资产或正式商品");
   });
 });

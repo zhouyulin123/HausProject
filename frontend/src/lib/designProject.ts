@@ -3,6 +3,7 @@ import type { DesignPlan } from "@/types/design";
 import type { FurnitureItem } from "@/types/furniture";
 import type { UserRequirement } from "@/types/requirement";
 import type { RoomModel } from "@/types/roomModel";
+import type { DesignScene } from "@/types/scene";
 import type {
   AgentExecutionState,
   AgentExitReason,
@@ -30,6 +31,11 @@ export type DesignProjectStatus =
   | "failed"
   | "cancelled";
 
+export interface CustomFurnitureDraftReference {
+  clientMutationId: string;
+  specSignature: string;
+}
+
 export interface DesignProject {
   /** 与后端 DesignTask.id 完全一致。 */
   id: number;
@@ -46,9 +52,11 @@ export interface DesignProject {
   stateVersion: number;
   pendingQuestions: AgentPendingQuestion[];
   sceneRef: AgentSceneReference | null;
+  authoritativeScene: DesignScene | null;
   exitReason: AgentExitReason | null;
   customFurnitureSpec: CustomFurnitureSpecPatch | null;
   customFurnitureResult: CustomFurniturePreviewResult | null;
+  customFurnitureDraftReference: CustomFurnitureDraftReference | null;
   approvalRequired: boolean;
   generationRunId: number | null;
   execution: AgentExecutionState;
@@ -153,9 +161,11 @@ export function createDesignProject(
     stateVersion: 0,
     pendingQuestions: [],
     sceneRef: null,
+    authoritativeScene: null,
     exitReason: null,
     customFurnitureSpec: null,
     customFurnitureResult: null,
+    customFurnitureDraftReference: null,
     approvalRequired: false,
     generationRunId: null,
     execution: createEmptyAgentExecutionState(),

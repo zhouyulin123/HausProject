@@ -986,6 +986,26 @@ export async function fetchDesignScene(sceneId: number): Promise<DesignScene> {
   return request<DesignScene>(`/api/design/scenes/${sceneId}`);
 }
 
+/** 将同一任务内已成功保存的定制草稿加入版本化房间场景。 */
+export async function addCustomFurnitureDraftToScene(
+  sceneId: number,
+  payload: {
+    baseVersion: number;
+    clientMutationId: string;
+    draftClientMutationId: string;
+    position: { x: number; z: number };
+    rotationY?: number;
+  },
+): Promise<DesignScene> {
+  return request<DesignScene>(
+    `/api/design/scenes/${sceneId}/custom-furniture-items`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 /** 基于已知版本保存场景；服务端会拒绝过期版本，避免静默覆盖。 */
 export async function updateDesignScene(
   sceneId: number,

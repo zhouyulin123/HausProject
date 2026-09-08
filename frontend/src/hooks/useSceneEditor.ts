@@ -12,6 +12,7 @@ import {
   buildSceneDocument,
   clampItemTransform,
   isDemoScene,
+  removeSceneItem,
   sceneDocumentSourceKey,
   updateSceneItemTransform,
 } from "@/lib/sceneDocument";
@@ -33,6 +34,7 @@ import type { RoomModel } from "@/types/roomModel";
 import type {
   BlenderRenderJob,
   BlenderRenderProfile,
+  DesignScene,
   SceneTransform,
   SceneValidationReport,
 } from "@/types/scene";
@@ -66,6 +68,8 @@ interface UseSceneEditorResult {
   ) => void;
   nudgeSelected: (x: number, z: number) => void;
   rotateSelected: (radians?: number) => void;
+  removeSelected: () => void;
+  applyAuthoritativeScene: (scene: DesignScene) => void;
   undo: () => void;
   redo: () => void;
   reload: () => Promise<void>;
@@ -369,6 +373,42 @@ export function useSceneEditor(
     [commitTransform, selectedItemId],
   );
 
+  const removeSelected = useCallback(() => {
+    if (
+      !selectedItemId
+      || sceneAgentStateRef.current === "thinking"
+      || blenderRenderInFlightRef.current
+      || (Boolean(plan.planVersionId) && !sceneIdRef.current)
+    ) return;
+    setHistory((current) =>
+      commitScene(current, removeSceneItem(current.present, selectedItemId)),
+    );
+    setSelectedItemId(null);
+  }, [plan.planVersionId, selectedItemId]);
+
+  const applyAuthoritativeScene = useCallback((authoritative: DesignScene) => {
+    if (
+      !plan.planVersionId
+      || authoritative.plan_version_id !== plan.planVersionId
+      || (
+        sceneIdRef.current === authoritative.id
+        && (serverVersionRef.current ?? 0) >= authoritative.current_version
+      )
+    ) return;
+    pendingMoveChangeIdsRef.current.clear();
+    pendingSaveMutationRef.current = null;
+    lastSavedChangeIdRef.current = 0;
+    setSelectedItemId(null);
+    publishSceneReference({
+      id: authoritative.id,
+      version: authoritative.current_version,
+    });
+    setValidation(authoritative.validation);
+    setHistory((current) => replaceScene(current, authoritative.scene));
+    syncStateRef.current = "saved";
+    setSyncState("saved");
+  }, [plan.planVersionId, publishSceneReference]);
+
   const undo = useCallback(() => {
     if (
       sceneAgentStateRef.current === "thinking" ||
@@ -606,6 +646,8 @@ export function useSceneEditor(
         z * KEYBOARD_NUDGE_METERS,
       ),
     rotateSelected,
+    removeSelected,
+    applyAuthoritativeScene,
     undo,
     redo,
     reload,

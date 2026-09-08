@@ -34,6 +34,8 @@ vi.mock("@/store/useDesignProjectStore", () => {
     applyAgentState: vi.fn(),
     attachPlan: vi.fn(),
     setSceneReference: vi.fn(),
+    setAuthoritativeScene: vi.fn(),
+    setCustomFurnitureDraftReference: vi.fn(),
     setFurnitureSelection: vi.fn(),
   });
   const useDesignProjectStore = (

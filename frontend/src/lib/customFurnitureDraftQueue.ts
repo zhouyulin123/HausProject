@@ -29,6 +29,7 @@ interface DraftSaveResult {
 interface DraftSyncResult {
   stateVersion: number;
   spec: CustomFurnitureSpec;
+  clientMutationId: string;
 }
 
 interface DraftSyncError {
@@ -93,7 +94,11 @@ export function createCustomFurnitureDraftSaveCoordinator(
         stateVersion = Math.max(stateVersion, saved.state_version);
         failedJob = null;
         if (isCurrent(job)) {
-          options.onSynced({ stateVersion, spec: cloneSpec(job.spec) });
+          options.onSynced({
+            stateVersion,
+            spec: cloneSpec(job.spec),
+            clientMutationId: mutationId,
+          });
         }
         return;
       } catch (error) {
@@ -103,7 +108,11 @@ export function createCustomFurnitureDraftSaveCoordinator(
           stateVersion = Math.max(stateVersion, conflict.stateVersion);
           if (signatureOf(conflict.customFurnitureDraft) === job.signature) {
             failedJob = null;
-            options.onSynced({ stateVersion, spec: cloneSpec(job.spec) });
+            options.onSynced({
+              stateVersion,
+              spec: cloneSpec(job.spec),
+              clientMutationId: mutationId,
+            });
             return;
           }
           if (conflictRetries >= maxConflictRetries) {
