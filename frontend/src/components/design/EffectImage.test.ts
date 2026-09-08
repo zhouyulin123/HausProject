@@ -6,6 +6,7 @@ import EffectImage, {
   effectRenderAvailability,
   effectRenderFailureMessage,
   effectRenderMatchesScene,
+  effectSceneBindingKey,
   visibleEffectRenderStatus,
 } from "./EffectImage";
 import type { EffectRenderJob } from "@/api/designApi";
@@ -77,6 +78,27 @@ describe("效果图任务展示状态", () => {
 
     expect(html).toContain("当前 3D 编辑尚未保存");
     expect(html).toContain("disabled");
+  });
+
+  it("相同场景标量生成稳定 key，不受父组件对象重建影响", () => {
+    expect(effectSceneBindingKey({
+      syncState: "saved",
+      sceneId: 9,
+      sceneVersion: 3,
+    })).toBe(effectSceneBindingKey({
+      syncState: "saved",
+      sceneId: 9,
+      sceneVersion: 3,
+    }));
+    expect(effectSceneBindingKey({
+      syncState: "saved",
+      sceneId: 9,
+      sceneVersion: 3,
+    })).not.toBe(effectSceneBindingKey({
+      syncState: "saved",
+      sceneId: 9,
+      sceneVersion: 4,
+    }));
   });
 
   it("明确展示供应商不可用、死信和取消", () => {
