@@ -203,6 +203,45 @@ describe("useDesignProjectStore", () => {
     )).toEqual({ scene_id: 9, base_scene_version: 2 });
   });
 
+  it("用加入接口返回的完整权威场景替换项目快照", () => {
+    useDesignProjectStore.getState().registerProject(49, "custom_furniture", {
+      requirement: emptyRequirement,
+      roomModel: null,
+    });
+    const authoritativeScene = {
+      id: 9,
+      plan_version_id: 7,
+      current_version: 2,
+      scene: {
+        schemaVersion: "1.0" as const,
+        unit: "m" as const,
+        coordinateSystem: "right-handed-y-up" as const,
+        room: {
+          id: "living-room",
+          name: "客厅",
+          floorPolygon: [
+            { x: -3, z: -2 },
+            { x: 3, z: -2 },
+            { x: 3, z: 2 },
+          ],
+          ceilingHeight: 2.8,
+          wallThickness: 0.12,
+        },
+        openings: [],
+        items: [],
+      },
+      validation: { valid: true, errors: [], warnings: [] },
+      source: "manual" as const,
+    };
+
+    useDesignProjectStore.getState().setAuthoritativeScene(49, authoritativeScene);
+
+    expect(useDesignProjectStore.getState().projects[49]).toMatchObject({
+      sceneRef: { scene_id: 9, version: 2 },
+      authoritativeScene,
+    });
+  });
+
   it("从 checkpoint 恢复自定义家具规格、预览与审批状态", () => {
     useDesignProjectStore.getState().registerProject(43, "custom_furniture", {
       requirement: emptyRequirement,
