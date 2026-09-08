@@ -1376,6 +1376,10 @@ export interface DesignAgentStateResponse {
   hard_errors: string[];
   custom_furniture_spec: CustomFurnitureSpecPatch | null;
   custom_furniture_draft: CustomFurnitureSpecPatch | null;
+  custom_furniture_draft_ref?: {
+    client_mutation_id: string;
+    state_version: number;
+  } | null;
   approval_required: boolean;
   scene_ref: AgentSceneReference | null;
   run_id: number | null;

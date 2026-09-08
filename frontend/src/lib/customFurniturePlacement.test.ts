@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createCustomFurniturePlacementCoordinator,
   placeCustomFurnitureWithConflictRecovery,
+  restoreCustomFurnitureDraftReference,
 } from "./customFurniturePlacement";
 
 function deferred<T>() {
@@ -15,6 +16,22 @@ function deferred<T>() {
 }
 
 describe("定制家具场景放置协调器", () => {
+  it("从服务端 checkpoint 恢复草稿引用且缺任一事实时失败关闭", () => {
+    const spec = { family: "table" as const, name: "餐桌草稿" };
+    expect(restoreCustomFurnitureDraftReference(spec, {
+      client_mutation_id: "custom-draft-001",
+      state_version: 3,
+    })).toEqual({
+      clientMutationId: "custom-draft-001",
+      specSignature: JSON.stringify(spec),
+    });
+    expect(restoreCustomFurnitureDraftReference(null, {
+      client_mutation_id: "custom-draft-001",
+      state_version: 3,
+    })).toBeNull();
+    expect(restoreCustomFurnitureDraftReference(spec, null)).toBeNull();
+  });
+
   it("并发点击共享同一请求，网络结果未知时复用原幂等键", async () => {
     const first = deferred<{ current_version: number }>();
     const add = vi.fn()

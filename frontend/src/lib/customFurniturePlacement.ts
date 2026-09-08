@@ -1,3 +1,6 @@
+import type { CustomFurnitureDraftReference } from "@/lib/designProject";
+import type { CustomFurnitureSpecPatch } from "@/types/customFurniture";
+
 interface PlacementInput {
   sceneId: number;
   baseVersion: number;
@@ -32,6 +35,17 @@ function isConflict(error: unknown): boolean {
     && error !== null
     && "status" in error
     && error.status === 409;
+}
+
+export function restoreCustomFurnitureDraftReference(
+  spec: CustomFurnitureSpecPatch | null,
+  reference: { client_mutation_id: string; state_version: number } | null | undefined,
+): CustomFurnitureDraftReference | null {
+  if (!spec || !reference) return null;
+  return {
+    clientMutationId: reference.client_mutation_id,
+    specSignature: JSON.stringify(spec),
+  };
 }
 
 export async function placeCustomFurnitureWithConflictRecovery<TResult>({

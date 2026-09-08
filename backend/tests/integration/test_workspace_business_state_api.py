@@ -385,6 +385,10 @@ def test_custom_draft_is_versioned_idempotent_and_task_isolated(workspace_state_
     assert duplicate.json() == first.json()
     assert first.json()["state_version"] == 1
     assert checkpoint.json()["custom_furniture_draft"] == payload["custom_furniture_spec"]
+    assert checkpoint.json()["custom_furniture_draft_ref"] == {
+        "client_mutation_id": payload["client_mutation_id"],
+        "state_version": 1,
+    }
     assert foreign.status_code == 404
     with context["factory"]() as db:
         assert db.scalar(select(func.count(DesignAgentTurn.id))) == 0

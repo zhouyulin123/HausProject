@@ -1745,10 +1745,29 @@ def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
         .where(ChatLog.task_id == task.id)
         .order_by(ChatLog.id)
     ).all()
+    latest_draft = db.scalar(
+        select(CustomFurnitureDraftMutation)
+        .where(CustomFurnitureDraftMutation.task_id == task.id)
+        .order_by(CustomFurnitureDraftMutation.id.desc())
+        .limit(1)
+    )
+    draft_ref = None
+    if latest_draft is not None and isinstance(latest_draft.response_json, dict):
+        response = latest_draft.response_json
+        if (
+            response.get("custom_furniture_spec")
+            == state.get("custom_furniture_draft")
+            and isinstance(response.get("state_version"), int)
+        ):
+            draft_ref = {
+                "client_mutation_id": latest_draft.client_mutation_id,
+                "state_version": response["state_version"],
+            }
     return {
         "task_id": task.id,
         "state_version": task.agent_state_version or 0,
         **state,
+        "custom_furniture_draft_ref": draft_ref,
         "messages": [
             {
                 "id": message.id,

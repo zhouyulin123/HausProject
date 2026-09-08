@@ -30,6 +30,7 @@ import {
   type AgentApproval,
 } from "@/api/designApi";
 import { parseCustomFurniturePreview } from "@/lib/customFurnitureWorkspace";
+import { restoreCustomFurnitureDraftReference } from "@/lib/customFurniturePlacement";
 import {
   agentExecutionFromCheckpoint,
   agentExecutionFromTurn,
@@ -207,6 +208,13 @@ export default function DesignWorkspacePage() {
             content: message.content,
           })),
         );
+        setCustomFurnitureDraftReference(
+          project.id,
+          restoreCustomFurnitureDraftReference(
+            checkpoint.custom_furniture_draft,
+            checkpoint.custom_furniture_draft_ref,
+          ),
+        );
         if (checkpoint.status === "completed" && checkpoint.intent === "design") {
           void restoreServerPlans(project.id);
         }
@@ -218,7 +226,13 @@ export default function DesignWorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, [applyAgentState, project?.id, restoreServerPlans, setMessages]);
+  }, [
+    applyAgentState,
+    project?.id,
+    restoreServerPlans,
+    setCustomFurnitureDraftReference,
+    setMessages,
+  ]);
 
   useEffect(() => {
     if (

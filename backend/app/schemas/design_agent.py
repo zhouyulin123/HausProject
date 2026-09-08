@@ -172,6 +172,7 @@ class AgentCheckpointResponse(BaseModel):
     hard_errors: list[str] = Field(default_factory=list)
     custom_furniture_spec: dict[str, Any] | None = None
     custom_furniture_draft: dict[str, Any] | None = None
+    custom_furniture_draft_ref: "CustomFurnitureDraftReferenceResponse | None" = None
     approval_required: bool = False
     exit_reason: str
     scene_ref: dict[str, Any] | None = None
@@ -196,6 +197,15 @@ class CustomFurnitureDraftRequest(BaseModel):
     )
     base_state_version: int = Field(ge=0)
     custom_furniture_spec: CustomFurnitureSpec
+
+
+class CustomFurnitureDraftReferenceResponse(BaseModel):
+    client_mutation_id: str = Field(
+        min_length=8,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    state_version: int = Field(ge=1)
 
 
 class CustomFurnitureDraftResponse(BaseModel):
