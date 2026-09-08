@@ -224,6 +224,87 @@ def test_generation_emits_provenance_from_actual_prompt_rules_and_catalog(monkey
 
 
 @pytest.mark.integration
+def test_paid_model_failure_before_template_fallback_accumulates_run_cost(
+    monkeypatch,
+):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    plans = [{
+        "id": "plan-a",
+        "name": "受控降级方案",
+        "style": "现代简约",
+        "furnitureSuggestions": [],
+        "shopQuote": {
+            "furnitureTotal": 0,
+            "customTotal": 0,
+            "total": 0,
+        },
+    }]
+
+    class FallbackWorkflow:
+        def run(self, **_):
+            return {
+                "plans": plans,
+                "generator": "template",
+                "node_trace": [],
+            }
+
+    monkeypatch.setattr(task_routes, "DesignWorkflow", lambda **_: FallbackWorkflow())
+    monkeypatch.setattr(
+        task_routes.catalog_service,
+        "build_catalog_context",
+        lambda _: "catalog",
+    )
+    monkeypatch.setattr(
+        task_routes.llm_service,
+        "last_generation_meta",
+        lambda: {
+            "model": "provider/model",
+            "prompt_snapshot": "prompt",
+            "input_snapshot": {"requirement": {"space_type": "客厅"}},
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 25,
+                "total_tokens": 125,
+            },
+            "cost_cny": 0.0004,
+        },
+    )
+
+    with session_factory() as db:
+        task = DesignTask(
+            status="confirmed",
+            progress=50,
+            confirmed_requirement_json={"space_type": "客厅"},
+        )
+        db.add(task)
+        db.commit()
+        run = generation_run_service.create_run(db, task=task)
+
+        def persist_meta(payload):
+            generation_run_service.record_generation_meta(
+                db,
+                run=run,
+                meta=payload["meta"],
+                output_snapshot=payload["output_snapshot"],
+                commit=False,
+            )
+
+        response = task_routes._execute_generation(
+            db,
+            task=task,
+            on_meta=persist_meta,
+        )
+        db.refresh(run)
+
+        assert response.generator == "template"
+        assert run.usage_json["total_tokens"] == 125
+        assert run.cost_cny == pytest.approx(0.0004)
+
+
+@pytest.mark.integration
 def test_generation_replans_once_when_first_deterministic_quote_exceeds_budget(
     monkeypatch,
 ):

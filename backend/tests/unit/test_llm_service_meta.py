@@ -1,4 +1,6 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import httpx
 import pytest
@@ -256,3 +258,76 @@ def test_generated_plans_do_not_publish_model_self_reported_match_scores(monkeyp
 
     assert all("score" not in plan for plan in plans)
     assert '"score"' not in llm_service._PLAN_SYSTEM
+
+
+def test_generation_meta_is_isolated_between_concurrent_execution_contexts(
+    monkeypatch,
+):
+    read_barrier = Barrier(2)
+    required_plan = {
+        "name": "方案",
+        "style": "现代",
+        "budget": 10000,
+        "furnitureSuggestions": [{"sku": "SKU-1"}],
+        "customItems": [],
+        "colorPalette": ["白色"],
+        "budgetBreakdown": [
+            {"name": "家具", "percent": 100, "amount": 10000}
+        ],
+    }
+
+    def fake_chat(_system, user, *, usage_out, **_kwargs):
+        tokens = 11 if "alpha" in user else 29
+        usage_out.update(
+            {
+                "prompt_tokens": tokens,
+                "completion_tokens": 1,
+                "total_tokens": tokens + 1,
+            }
+        )
+        return {"plans": [dict(required_plan), dict(required_plan)]}
+
+    monkeypatch.setattr(llm_service, "_chat_json", fake_chat)
+
+    def generate_and_read(marker):
+        llm_service.generate_plans({"marker": marker}, "catalog")
+        read_barrier.wait(timeout=5)
+        return llm_service.last_generation_meta()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        alpha = pool.submit(generate_and_read, "alpha")
+        beta = pool.submit(generate_and_read, "beta")
+        alpha_meta = alpha.result(timeout=10)
+        beta_meta = beta.result(timeout=10)
+
+    assert '"marker":"alpha"' in alpha_meta["input_snapshot"]["user"]
+    assert alpha_meta["usage"]["prompt_tokens"] == 11
+    assert '"marker":"beta"' in beta_meta["input_snapshot"]["user"]
+    assert beta_meta["usage"]["prompt_tokens"] == 29
+
+
+def test_generation_meta_keeps_usage_when_output_parsing_fails(monkeypatch):
+    def invalid_json_call(_system, _user, *, usage_out, **_kwargs):
+        usage_out.update(
+            {
+                "prompt_tokens": 100,
+                "completion_tokens": 25,
+                "total_tokens": 125,
+            }
+        )
+        raise llm_service.LLMUnavailable("模型响应不是合法 JSON")
+
+    monkeypatch.setattr(llm_service, "_chat_json", invalid_json_call)
+    monkeypatch.setattr(llm_service.settings, "llm_input_price_per_mtok", 2.0)
+    monkeypatch.setattr(llm_service.settings, "llm_output_price_per_mtok", 8.0)
+
+    with pytest.raises(llm_service.LLMUnavailable):
+        llm_service.generate_plans({"space_type": "客厅"}, "catalog")
+
+    meta = llm_service.last_generation_meta()
+    assert meta["usage"] == {
+        "prompt_tokens": 100,
+        "completion_tokens": 25,
+        "total_tokens": 125,
+    }
+    assert meta["cost_cny"] == pytest.approx(0.0004)
