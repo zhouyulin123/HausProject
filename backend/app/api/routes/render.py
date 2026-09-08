@@ -99,6 +99,7 @@ def _source_image_snapshot(
 def _response(job: EffectRenderJob) -> EffectRenderJobResponse:
     return EffectRenderJobResponse(
         job_id=job.id,
+        request_id=job.request_id,
         task_id=job.task_id,
         plan_version_id=job.plan_version_id,
         scene_id=job.scene_id,

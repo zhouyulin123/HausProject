@@ -4,7 +4,7 @@ import hashlib
 import logging
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
@@ -13,6 +13,7 @@ from app.api.dependencies import (
     require_active_session,
 )
 from app.core.config import settings
+from app.core.request_context import normalize_request_id
 from app.db.database import get_db
 from app.db.models import (
     BlenderRenderJob,
@@ -121,6 +122,7 @@ def _scene_response(
 def _render_job_response(job: BlenderRenderJob) -> BlenderRenderJobResponse:
     return BlenderRenderJobResponse(
         id=job.id,
+        request_id=job.request_id,
         scene_id=job.scene_id,
         scene_version=job.scene_version,
         profile=job.profile,
@@ -549,6 +551,7 @@ def validate_scene(
 def queue_blender_render(
     scene_id: int,
     payload: BlenderRenderRequest,
+    request: Request,
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
@@ -603,6 +606,8 @@ def queue_blender_render(
             execution_timeout_seconds=(
                 settings.blender_worker_execution_timeout_seconds
             ),
+            request_id=getattr(request.state, "request_id", None)
+            or normalize_request_id(request.headers.get("X-Request-ID")),
         )
     return _render_job_response(job)
 

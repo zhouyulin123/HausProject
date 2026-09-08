@@ -349,6 +349,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             for column in inspect(inspection_engine).get_columns("blender_render_jobs")
         }
         assert {
+            "request_id",
             "scene_id",
             "scene_version_id",
             "profile",

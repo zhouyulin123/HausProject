@@ -26,6 +26,7 @@ class EffectRenderRequest(BaseModel):
 
 class EffectRenderJobResponse(BaseModel):
     job_id: int
+    request_id: str | None = None
     task_id: int
     plan_version_id: int
     scene_id: int | None = None

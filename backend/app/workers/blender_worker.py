@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.logging_config import configure_logging
+from app.core.request_context import bind_request_id
 from app.db.database import SessionLocal
 from app.db.models import BlenderRenderJob, DesignScene, DesignSceneVersion, Product
 from app.schemas.scenes import SceneDocument
@@ -274,6 +276,8 @@ def process_one_job(*, worker_id: str, executable: Path) -> bool:
         job_id = job.id
         worker_attempt = job.attempt
 
+    request_scope = ExitStack()
+    request_scope.enter_context(bind_request_id(job.request_id))
     final_path: Path | None = None
     try:
         scene, model_urls, detached_job = _load_job_payload(job_id)
@@ -436,6 +440,8 @@ def process_one_job(*, worker_id: str, executable: Path) -> bool:
                 error_code="render_output_invalid",
                 retryable=False,
             )
+    finally:
+        request_scope.close()
     return True
 
 

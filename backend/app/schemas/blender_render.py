@@ -26,6 +26,7 @@ class BlenderRenderRequest(SceneModel):
 
 class BlenderRenderJobResponse(BaseModel):
     id: int
+    request_id: str | None = None
     scene_id: int
     scene_version: int
     profile: RenderProfile

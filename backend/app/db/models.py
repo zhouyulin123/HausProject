@@ -1061,6 +1061,7 @@ class BlenderRenderJob(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
+    request_id = Column(String(100), nullable=True, index=True)
     scene_id = Column(
         Integer,
         ForeignKey("design_scenes.id", ondelete="CASCADE"),

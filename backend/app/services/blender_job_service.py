@@ -131,6 +131,7 @@ def create_or_get_job(
     profile: str,
     max_attempts: int = 2,
     execution_timeout_seconds: int = 1800,
+    request_id: str | None = None,
 ) -> tuple[BlenderRenderJob, bool]:
     existing = get_existing_job(
         db,
@@ -141,6 +142,7 @@ def create_or_get_job(
         return existing, False
     now = datetime.now(timezone.utc)
     job = BlenderRenderJob(
+        request_id=request_id,
         scene_id=scene.id,
         scene_version_id=version.id,
         scene_version=version.version,
