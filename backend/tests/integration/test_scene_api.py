@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.routes import scenes
 from app.schemas.scene_agent import SceneOperationBatch
 from app.db.database import Base, get_db
-from app.db.models import DesignTask, Product
+from app.db.models import BlenderRenderJob, DesignTask, Product
 from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
@@ -439,12 +439,59 @@ def test_owner_can_queue_and_query_versioned_blender_render(
 
     assert queued.status_code == 202
     assert queued.json()["status"] == "queued"
+    assert queued.json()["max_attempts"] >= 1
+    assert queued.json()["execution_deadline_at"] is not None
+    assert queued.json()["heartbeat_at"] is None
+    assert queued.json()["next_retry_at"] is None
+    assert queued.json()["cancel_requested_at"] is None
+    assert queued.json()["dead_lettered_at"] is None
     assert queued.json()["scene_version"] == 1
     assert duplicate.status_code == 202
     assert duplicate.json()["id"] == queued.json()["id"]
     assert restored.status_code == 200
     assert restored.json()["profile"] == "preview"
     assert forbidden.status_code == 404
+
+
+@pytest.mark.integration
+def test_owner_can_cancel_running_blender_job_and_stale_worker_cannot_publish(
+    scene_api_context,
+):
+    client, owner_id, stranger_id, plan_version_id = scene_api_context
+    headers = {"X-Session-ID": owner_id}
+    created = client.post(
+        f"/api/design/plan-versions/{plan_version_id}/scene",
+        headers=headers,
+        json={"scene": _scene_payload()},
+    )
+    scene_id = created.json()["id"]
+    queued = client.post(
+        f"/api/design/scenes/{scene_id}/render-jobs",
+        headers=headers,
+        json={"baseVersion": 1, "profile": "preview"},
+    )
+    job_id = queued.json()["id"]
+    with client.app.state.scene_db_factory() as db:
+        job = db.get(BlenderRenderJob, job_id)
+        job.status = "running"
+        job.worker_id = "worker-a"
+        job.attempt = 1
+        job.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        db.commit()
+
+    forbidden = client.post(
+        f"/api/design/scenes/{scene_id}/render-jobs/{job_id}/cancel",
+        headers={"X-Session-ID": stranger_id},
+    )
+    cancelled = client.post(
+        f"/api/design/scenes/{scene_id}/render-jobs/{job_id}/cancel",
+        headers=headers,
+    )
+
+    assert forbidden.status_code == 404
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["cancel_requested_at"] is not None
 
 
 @pytest.mark.integration

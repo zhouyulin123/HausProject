@@ -6,6 +6,7 @@ import pytest
 from app.workers.blender_worker import (
     BlenderProcessError,
     execute_blender_process,
+    execute_supervised_blender_process,
 )
 
 
@@ -50,6 +51,39 @@ def test_worker_converts_nonzero_blender_exit_to_controlled_error(tmp_path):
             stdout="",
             stderr="Python traceback with local paths",
         )
+
+
+def test_supervised_worker_terminates_process_after_ownership_is_lost(tmp_path):
+    class FakeProcess:
+        returncode = None
+        terminated = False
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def communicate(self):
+            return "", ""
+
+    process = FakeProcess()
+    with pytest.raises(BlenderProcessError, match="取消|租约"):
+        execute_supervised_blender_process(
+            executable=Path("C:/Blender/blender.exe"),
+            script_path=tmp_path / "trusted.py",
+            manifest_path=tmp_path / "manifest.json",
+            output_path=tmp_path / "render.png",
+            timeout_seconds=90,
+            popen_factory=lambda *_, **__: process,
+            should_continue=lambda: False,
+            poll_seconds=0,
+        )
+    assert process.terminated is True
 
     with pytest.raises(BlenderProcessError, match="退出码 70"):
         execute_blender_process(

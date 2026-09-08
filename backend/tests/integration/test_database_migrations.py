@@ -366,6 +366,12 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "lease_expires_at",
             "output_url",
             "error_message",
+            "max_attempts",
+            "heartbeat_at",
+            "execution_deadline_at",
+            "next_retry_at",
+            "cancel_requested_at",
+            "dead_lettered_at",
         } <= render_job_columns
         generation_run_columns = {
             column["name"]

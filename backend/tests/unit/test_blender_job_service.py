@@ -31,6 +31,8 @@ def _job(*, status: str = "queued", attempt: int = 0):
         status=status,
         progress=0,
         attempt=attempt,
+        max_attempts=2,
+        execution_deadline_at=datetime.now(timezone.utc) + timedelta(hours=1),
     )
 
 
@@ -98,8 +100,135 @@ def test_expired_job_retries_once_then_becomes_failed():
 
             assert none_left is None
             db.refresh(retried)
-            assert retried.status == "failed"
+            assert retried.status == "dead_letter"
             assert retried.progress == 100
+            assert retried.dead_lettered_at is not None
+    finally:
+        engine.dispose()
+
+
+def test_claim_only_due_jobs_and_dead_letters_queued_deadline_or_exhaustion():
+    engine, factory = _database()
+    now = datetime(2026, 9, 8, 8, tzinfo=timezone.utc)
+    try:
+        with factory() as db:
+            future = _job()
+            future.next_retry_at = now + timedelta(minutes=1)
+            future.execution_deadline_at = now + timedelta(hours=1)
+            exhausted = _job(attempt=2)
+            exhausted.execution_deadline_at = now + timedelta(hours=1)
+            expired = _job()
+            expired.execution_deadline_at = now
+            db.add_all([future, exhausted, expired])
+            db.commit()
+
+            claimed = blender_job_service.claim_next_job(
+                db,
+                worker_id="worker-a",
+                lease_seconds=300,
+                max_attempts=5,
+                now=now,
+            )
+
+            assert claimed is None
+            db.refresh(future)
+            db.refresh(exhausted)
+            db.refresh(expired)
+            assert future.status == "queued"
+            assert exhausted.status == "dead_letter"
+            assert expired.status == "dead_letter"
+            assert exhausted.dead_lettered_at == now
+            assert expired.dead_lettered_at == now
+    finally:
+        engine.dispose()
+
+
+def test_transient_failure_requeues_before_deadline_then_exhaustion_dead_letters():
+    engine, factory = _database()
+    now = datetime(2026, 9, 8, 8, tzinfo=timezone.utc)
+    try:
+        with factory() as db:
+            job = _job(status="running", attempt=1)
+            job.worker_id = "worker-a"
+            job.heartbeat_at = now
+            job.lease_expires_at = now + timedelta(minutes=5)
+            job.execution_deadline_at = now + timedelta(minutes=10)
+            db.add(job)
+            db.commit()
+
+            assert blender_job_service.mark_failed(
+                db,
+                job_id=job.id,
+                worker_id="worker-a",
+                worker_attempt=1,
+                error_message="临时 IO 错误",
+                retryable=True,
+                retry_delay_seconds=20,
+                now=now,
+            ) is True
+            db.refresh(job)
+            assert job.status == "queued"
+            assert job.next_retry_at == now + timedelta(seconds=20)
+
+            job.status = "running"
+            job.attempt = 2
+            job.worker_id = "worker-b"
+            job.lease_expires_at = now + timedelta(minutes=5)
+            job.heartbeat_at = now
+            db.commit()
+            assert blender_job_service.mark_failed(
+                db,
+                job_id=job.id,
+                worker_id="worker-b",
+                worker_attempt=2,
+                error_message="再次失败",
+                retryable=True,
+                retry_delay_seconds=40,
+                now=now,
+            ) is True
+            db.refresh(job)
+            assert job.status == "dead_letter"
+            assert job.dead_lettered_at == now
+    finally:
+        engine.dispose()
+
+
+def test_heartbeat_is_capped_by_deadline_and_cancel_blocks_stale_completion():
+    engine, factory = _database()
+    now = datetime(2026, 9, 8, 8, tzinfo=timezone.utc)
+    try:
+        with factory() as db:
+            job = _job(status="running", attempt=1)
+            job.worker_id = "worker-a"
+            job.heartbeat_at = now
+            job.lease_expires_at = now + timedelta(seconds=30)
+            job.execution_deadline_at = now + timedelta(seconds=45)
+            db.add(job)
+            db.commit()
+
+            assert blender_job_service.renew_lease(
+                db,
+                job_id=job.id,
+                worker_id="worker-a",
+                worker_attempt=1,
+                lease_seconds=300,
+                now=now + timedelta(seconds=10),
+            ) is True
+            db.refresh(job)
+            assert job.heartbeat_at == now + timedelta(seconds=10)
+            assert job.lease_expires_at == job.execution_deadline_at
+
+            cancelled = blender_job_service.cancel_job(db, job=job, now=now)
+            assert cancelled.status == "cancelled"
+            assert cancelled.cancel_requested_at == now
+            assert blender_job_service.mark_completed(
+                db,
+                job_id=job.id,
+                worker_id="worker-a",
+                worker_attempt=1,
+                output_url="/uploads/late.png",
+                now=now + timedelta(seconds=1),
+            ) is False
     finally:
         engine.dispose()
 
