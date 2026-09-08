@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -69,6 +70,14 @@ class ReleaseSplitConfig:
     security_targets: Path
     baseline_evidence: Path
     deployment_base_url: str
+
+
+@dataclass(frozen=True)
+class VerifiedReleaseSplit:
+    split: EvaluationSplit
+    dataset: RealWorldDataset
+    candidate: VerifiedEvaluationEvidence
+    report: dict[str, Any]
 
 
 def validate_release_event(
@@ -354,6 +363,58 @@ def _generate_candidate_failure_triage_artifacts(
     }
 
 
+def _clear_failure_triage_artifacts(output_dir: Path) -> None:
+    triage_dir = output_dir / "failure-triage"
+    if not triage_dir.exists():
+        return
+    try:
+        shutil.rmtree(triage_dir)
+    except OSError as exc:
+        raise EvaluationInputError("无法清理旧失败分诊制品") from exc
+
+
+def _publish_failure_triage_artifacts(
+    *,
+    verified_splits: tuple[VerifiedReleaseSplit, ...],
+    output_dir: Path,
+    candidate_version: str,
+    anonymization_salt: str,
+    salt_id: str,
+    signing_key_id: str,
+    signing_key: str,
+) -> dict[EvaluationSplit, dict[str, Any]]:
+    """三组全部生成成功后，将 staging 目录一次发布到 artifact 路径。"""
+    if tuple(item.split for item in verified_splits) != REQUIRED_SPLITS:
+        raise EvaluationInputError("失败分诊必须按顺序完整覆盖三类 split")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_dir = output_dir / "failure-triage"
+    if final_dir.exists():
+        raise EvaluationInputError("失败分诊发布目录必须在运行开始前清空")
+    summaries: dict[EvaluationSplit, dict[str, Any]] = {}
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".failure-triage-staging-",
+            dir=output_dir,
+        ) as raw_staging:
+            staging_dir = Path(raw_staging)
+            for item in verified_splits:
+                summaries[item.split] = _generate_candidate_failure_triage_artifacts(
+                    dataset=item.dataset,
+                    evidence=item.candidate,
+                    split=item.split,
+                    output_dir=staging_dir,
+                    candidate_version=candidate_version,
+                    anonymization_salt=anonymization_salt,
+                    salt_id=salt_id,
+                    signing_key_id=signing_key_id,
+                    signing_key=signing_key,
+                )
+            staging_dir.replace(final_dir)
+    except OSError as exc:
+        raise EvaluationInputError("失败分诊制品原子发布失败") from exc
+    return summaries
+
+
 def _verify_split(
     config: ReleaseSplitConfig,
     *,
@@ -363,13 +424,7 @@ def _verify_split(
     app_build_digest: str,
     eval_keys: Mapping[str, str],
     security_keys: Mapping[str, str],
-    triage_output_dir: Path,
-    candidate_version: str,
-    anonymization_salt: str,
-    salt_id: str,
-    triage_signing_key_id: str,
-    triage_signing_key: str,
-) -> dict[str, Any]:
+) -> VerifiedReleaseSplit:
     dataset = dataset or load_case_manifest(
         config.manifest,
         asset_root=config.asset_root,
@@ -444,17 +499,6 @@ def _verify_split(
     )
     if candidate.evidence_digest == baseline.evidence_digest:
         raise EvaluationInputError(f"split={split} 候选不得重放基线证据")
-    failure_triage = _generate_candidate_failure_triage_artifacts(
-        dataset=dataset,
-        evidence=candidate,
-        split=split,
-        output_dir=triage_output_dir,
-        candidate_version=candidate_version,
-        anonymization_salt=anonymization_salt,
-        salt_id=salt_id,
-        signing_key_id=triage_signing_key_id,
-        signing_key=triage_signing_key,
-    )
     candidate_report = build_evaluation_report(
         dataset=dataset,
         split=split,
@@ -466,7 +510,7 @@ def _verify_split(
         evidence=baseline,
     )
     comparison = compare_evaluation_reports(candidate_report, baseline_report)
-    return {
+    report = {
         "split": split,
         "dataset_fingerprint": candidate.dataset_fingerprint,
         "eligible_case_count": len(dataset.eligible_cases(split)),
@@ -480,8 +524,13 @@ def _verify_split(
         "absolute_gate_passed": candidate_report["gate_passed"],
         "regression_passed": comparison["passed"],
         "comparison_items": comparison["items"],
-        "failure_triage": failure_triage,
     }
+    return VerifiedReleaseSplit(
+        split=split,
+        dataset=dataset,
+        candidate=candidate,
+        report=report,
+    )
 
 
 def _write_report(output_dir: Path, report: dict[str, Any]) -> None:
@@ -532,6 +581,7 @@ def _verify(args: argparse.Namespace) -> int:
     app_build_digest = ""
     changes: SensitiveChanges | None = None
     try:
+        _clear_failure_triage_artifacts(output_dir)
         commit_sha = _required_environment("GITHUB_SHA").lower()
         base_ref = _required_environment("REAL_WORLD_BASE_REF")
         event_name = _required_environment("GITHUB_EVENT_NAME")
@@ -577,7 +627,7 @@ def _verify(args: argparse.Namespace) -> int:
         expected_rules = current_generation_rules_digest()
         with tempfile.TemporaryDirectory(prefix="real-world-release-gate-") as raw_dir:
             work_dir = Path(raw_dir)
-            split_reports = [
+            verified_splits = tuple(
                 _verify_split(
                     config[split],
                     split=split,
@@ -586,15 +636,10 @@ def _verify(args: argparse.Namespace) -> int:
                     app_build_digest=app_build_digest,
                     eval_keys={eval_key_id: eval_key},
                     security_keys={security_key_id: security_key},
-                    triage_output_dir=output_dir / "failure-triage",
-                    candidate_version=commit_sha,
-                    anonymization_salt=anonymization_salt,
-                    salt_id=salt_id,
-                    triage_signing_key_id=triage_signing_key_id,
-                    triage_signing_key=triage_signing_key,
                 )
                 for split in REQUIRED_SPLITS
-            ]
+            )
+        split_reports = [item.report for item in verified_splits]
         versions = {
             tuple(sorted(item["candidate_versions"].items())) for item in split_reports
         }
@@ -607,6 +652,17 @@ def _verify(args: argparse.Namespace) -> int:
                 expected_prompt=expected_prompt,
                 expected_rules=expected_rules,
             )
+        triage_summaries = _publish_failure_triage_artifacts(
+            verified_splits=verified_splits,
+            output_dir=output_dir,
+            candidate_version=commit_sha,
+            anonymization_salt=anonymization_salt,
+            salt_id=salt_id,
+            signing_key_id=triage_signing_key_id,
+            signing_key=triage_signing_key,
+        )
+        for item in split_reports:
+            item["failure_triage"] = triage_summaries[item["split"]]
         passed = all(
             item["absolute_gate_passed"] and item["regression_passed"]
             for item in split_reports
@@ -626,7 +682,11 @@ def _verify(args: argparse.Namespace) -> int:
         _write_report(output_dir, report)
         print(f"REAL_WORLD_RELEASE_GATE={'PASS' if passed else 'FAIL'}")
         return 0 if passed else 1
-    except (EvaluationInputError, ValueError):
+    except (EvaluationInputError, OSError, ValueError):
+        try:
+            _clear_failure_triage_artifacts(output_dir)
+        except EvaluationInputError:
+            pass
         report = {
             "schema_version": RELEASE_GATE_SCHEMA_VERSION,
             "proof_type": "real_world_release_regression",

@@ -17,6 +17,8 @@ from evals.real_world import (
 from evals.release_change_detection import classify_release_sensitive_paths
 from evals.real_world_release_gate import (
     _generate_candidate_failure_triage_artifacts,
+    _publish_failure_triage_artifacts,
+    VerifiedReleaseSplit,
     load_release_gate_config,
     main as release_gate_main,
     validate_candidate_runtime_versions,
@@ -426,6 +428,113 @@ def test_candidate_triage_fails_closed_before_writing_unverified_evidence(tmp_pa
     assert not output_dir.exists()
 
 
+def _verified_release_splits(dataset):
+    return tuple(
+        VerifiedReleaseSplit(
+            split=split,
+            dataset=dataset,
+            candidate=_candidate_evidence(dataset),
+            report={"split": split},
+        )
+        for split in ("development", "regression", "blind")
+    )
+
+
+def test_triage_artifacts_publish_atomically_after_all_splits_succeed(
+    tmp_path,
+    monkeypatch,
+):
+    from evals import real_world_release_gate
+
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    dataset = _manifest(dataset_root)
+    output_dir = tmp_path / "release"
+    candidate_version = "a" * 40
+    calls = []
+
+    def generate(**kwargs):
+        calls.append((kwargs["split"], kwargs["candidate_version"]))
+        target = kwargs["output_dir"]
+        target.mkdir(parents=True, exist_ok=True)
+        (target / f"{kwargs['split']}.failure_triage.json").write_text(
+            "{}",
+            encoding="utf-8",
+        )
+        (target / f"{kwargs['split']}.failure_triage.md").write_text(
+            "# redacted\n",
+            encoding="utf-8",
+        )
+        return {"failure_count": 0, "report_digest": "sha256:" + "f" * 64}
+
+    monkeypatch.setattr(
+        real_world_release_gate,
+        "_generate_candidate_failure_triage_artifacts",
+        generate,
+    )
+
+    summaries = _publish_failure_triage_artifacts(
+        verified_splits=_verified_release_splits(dataset),
+        output_dir=output_dir,
+        candidate_version=candidate_version,
+        anonymization_salt="case-alias-secret-at-least-16",
+        salt_id="case-alias-v1",
+        signing_key_id="triage-signing-v1",
+        signing_key="triage-signing-secret-at-least-32-bytes",
+    )
+
+    final_dir = output_dir / "failure-triage"
+    assert calls == [
+        ("development", candidate_version),
+        ("regression", candidate_version),
+        ("blind", candidate_version),
+    ]
+    assert tuple(summaries) == ("development", "regression", "blind")
+    assert len(list(final_dir.glob("*.failure_triage.json"))) == 3
+    assert len(list(final_dir.glob("*.failure_triage.md"))) == 3
+    assert not list(output_dir.glob(".failure-triage-staging-*"))
+
+
+def test_triage_artifact_failure_leaves_no_partial_files(tmp_path, monkeypatch):
+    from evals import real_world_release_gate
+
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    dataset = _manifest(dataset_root)
+    output_dir = tmp_path / "release"
+
+    def fail_second_split(**kwargs):
+        target = kwargs["output_dir"]
+        target.mkdir(parents=True, exist_ok=True)
+        (target / f"{kwargs['split']}.failure_triage.json").write_text(
+            "{}",
+            encoding="utf-8",
+        )
+        if kwargs["split"] == "regression":
+            raise FailureTriageInputError("private-path-must-not-publish")
+        return {"failure_count": 0, "report_digest": "sha256:" + "f" * 64}
+
+    monkeypatch.setattr(
+        real_world_release_gate,
+        "_generate_candidate_failure_triage_artifacts",
+        fail_second_split,
+    )
+
+    with pytest.raises(FailureTriageInputError):
+        _publish_failure_triage_artifacts(
+            verified_splits=_verified_release_splits(dataset),
+            output_dir=output_dir,
+            candidate_version="a" * 40,
+            anonymization_salt="case-alias-secret-at-least-16",
+            salt_id="case-alias-v1",
+            signing_key_id="triage-signing-v1",
+            signing_key="triage-signing-secret-at-least-32-bytes",
+        )
+
+    assert not (output_dir / "failure-triage").exists()
+    assert not list(output_dir.glob(".failure-triage-staging-*"))
+
+
 def test_missing_controlled_environment_fails_closed_with_redacted_report(
     tmp_path, monkeypatch
 ):
@@ -498,13 +607,48 @@ def test_triage_generation_failure_fails_release_gate_with_redacted_report(
     )
     monkeypatch.setattr(real_world_release_gate, "validate_release_cohort", lambda _datasets: 20)
 
-    def fail_triage(*_args, **_kwargs):
+    runtime_versions = EvaluationVersions(
+        model=real_world_release_gate.settings.llm_model,
+        prompt=real_world_release_gate.canonical_digest(
+            real_world_release_gate.generation_prompt_snapshot()
+        ),
+        rules=real_world_release_gate.current_generation_rules_digest(),
+        data="sha256:" + "d" * 64,
+    )
+
+    def verified_split(_config, *, split, **_kwargs):
+        evidence = _candidate_evidence(dataset)
+        evidence = VerifiedEvaluationEvidence(
+            **{
+                **evidence.__dict__,
+                "split": split,
+                "versions": runtime_versions,
+            }
+        )
+        return VerifiedReleaseSplit(
+            split=split,
+            dataset=dataset,
+            candidate=evidence,
+            report={
+                "split": split,
+                "candidate_versions": runtime_versions.__dict__,
+                "absolute_gate_passed": True,
+                "regression_passed": True,
+            },
+        )
+
+    def fail_triage_publish(**_kwargs):
         raise FailureTriageInputError("sensitive-case-id must not leak")
 
     monkeypatch.setattr(
         real_world_release_gate,
         "_verify_split",
-        fail_triage,
+        verified_split,
+    )
+    monkeypatch.setattr(
+        real_world_release_gate,
+        "_publish_failure_triage_artifacts",
+        fail_triage_publish,
     )
     output_dir = tmp_path / "release-output"
 
@@ -521,6 +665,7 @@ def test_triage_generation_failure_fails_release_gate_with_redacted_report(
     assert report["status"] == "invalid_or_missing_evidence"
     assert report["overall_passed"] is False
     assert "sensitive-case-id" not in report_text
+    assert not (output_dir / "failure-triage").exists()
     assert "sensitive-case-id" not in captured.out
     assert str(tmp_path) not in captured.out
     assert "REAL_WORLD_RELEASE_GATE_ERROR=release_gate_input_invalid" in captured.out

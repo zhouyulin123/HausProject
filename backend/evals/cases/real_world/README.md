@@ -185,7 +185,7 @@ python -m evals.run_real_world_eval `
 }
 ```
 
-门禁在临时目录内现场签发候选安全证据和评测证据，不上传这些内部制品；上传目录只包含脱敏的 `real_world_release_gate.json/.md`，以及从已验签候选证据自动派生的每个 split 的 `failure-triage/*.failure_triage.json/.md`。分诊 JSON 包含既有签名同步载荷，门禁总报告只记录其摘要与 digest。候选证据验签失败、分诊派生失败或制品写入失败都会让发布门禁失败关闭，不会把原始 evidence、case ID、用户输入或资产路径复制到 artifact。
+门禁在临时目录内现场签发候选安全证据和评测证据，不上传这些内部制品；上传目录只包含脱敏的 `real_world_release_gate.json/.md`，以及从已验签候选证据自动派生的每个 split 的 `failure-triage/*.failure_triage.json/.md`。三组候选必须先全部完成验签、案例队列核验、跨组版本一致性及当前 runtime 绑定校验，之后才使用已验证的提交 SHA 在同一 staging 目录生成三组分诊；三组全部成功后一次发布最终目录。任一 split、版本、分诊派生或制品写入失败都会清除分诊目录，只保留脱敏总失败报告。分诊 JSON 包含既有签名同步载荷，门禁总报告只记录其摘要与 digest；原始 evidence、case ID、用户输入、异常原文或资产路径不会进入 artifact 和 CI 日志。
 
 受控 Environment 还必须分别配置 `EVAL_CASE_ID_SALT`、`EVAL_CASE_ID_SALT_ID`、`EVAL_REPORT_SIGNING_KEY` 与 `EVAL_REPORT_SIGNING_KEY_ID`。评测签名、安全签名、分诊签名及 case 别名四个用途的密钥和值标识不得复用；缺少任一项时门禁返回输入错误，不能跳过失败分诊继续发布。
 
