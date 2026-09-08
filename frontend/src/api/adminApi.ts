@@ -20,6 +20,27 @@ export interface AdminUser extends AuthUser {
   last_login_at: string | null;
 }
 
+export type RealWorldSplit = "development" | "regression" | "blind";
+
+export interface RealWorldReadiness {
+  manifest_version: string;
+  dataset_id: string;
+  total: number;
+  eligible_total: number;
+  private_real_eligible_total: number;
+  blocked_total: number;
+  split_counts: Record<RealWorldSplit, {
+    total: number;
+    eligible: number;
+  }>;
+  consent_status_counts: Record<string, number>;
+  annotation_status_counts: Record<string, number>;
+  blocker_counts: Record<string, number>;
+  minimum_required: number;
+  minimum_met: boolean;
+  checked_at: string;
+}
+
 async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!(init?.body instanceof FormData)) {
@@ -66,6 +87,12 @@ export async function fetchQualitySummary(
 ): Promise<QualitySummary> {
   return adminRequest<QualitySummary>(
     `/api/admin/quality/summary?window_days=${windowDays}`,
+  );
+}
+
+export async function fetchRealWorldReadiness(): Promise<RealWorldReadiness> {
+  return adminRequest<RealWorldReadiness>(
+    "/api/admin/quality/real-world-readiness",
   );
 }
 

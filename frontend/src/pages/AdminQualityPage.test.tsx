@@ -1,6 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { FailureTriageContent, QualitySummaryContent } from "./AdminQualityPage";
+import {
+  FailureTriageContent,
+  QualitySummaryContent,
+  RealWorldReadinessContent,
+} from "./AdminQualityPage";
+import type { RealWorldReadiness } from "@/api/adminApi";
 import type { FailureClusterListResponse } from "@/types/quality";
 import type { QualitySummary } from "@/types/quality";
 
@@ -189,5 +194,65 @@ describe("运营质量看板内容", () => {
     );
     expect(html).toContain("失败簇加载失败");
     expect(html).toContain("重试加载");
+  });
+
+  it("真实案例就绪度展示 20 例门槛、三组准入数和主要阻断项", () => {
+    const readiness: RealWorldReadiness = {
+      manifest_version: "1.0",
+      dataset_id: "private-real-2026-q3",
+      total: 4,
+      eligible_total: 0,
+      private_real_eligible_total: 0,
+      blocked_total: 4,
+      split_counts: {
+        development: { total: 2, eligible: 0 },
+        regression: { total: 1, eligible: 0 },
+        blind: { total: 1, eligible: 0 },
+      },
+      consent_status_counts: { pending: 4 },
+      annotation_status_counts: { pending: 4 },
+      blocker_counts: {
+        consent_not_granted: 4,
+        annotation_not_ready: 4,
+      },
+      minimum_required: 20,
+      minimum_met: false,
+      checked_at: "2026-09-08T12:00:00Z",
+    };
+    const html = renderToStaticMarkup(
+      <RealWorldReadinessContent
+        data={readiness}
+        loading={false}
+        error=""
+        onRetry={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("真实案例就绪度");
+    expect(html).toContain("0 / 20");
+    expect(html).toContain("尚缺 20 例");
+    expect(html).toContain("开发集");
+    expect(html).toContain("回归集");
+    expect(html).toContain("盲测集");
+    expect(html).toContain("未取得授权");
+    expect(html).toContain("人工标注未就绪");
+    expect(html).not.toContain("case_id");
+    expect(html).not.toContain("private-real-2026-q3");
+  });
+
+  it("真实案例就绪度加载失败时只显示错误和重试，不伪造零值", () => {
+    const html = renderToStaticMarkup(
+      <RealWorldReadinessContent
+        data={null}
+        loading={false}
+        error="真实案例就绪度加载失败"
+        onRetry={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("真实案例就绪度加载失败");
+    expect(html).toContain("重试");
+    expect(html).not.toContain("0 / 20");
+    expect(html).not.toContain("开发集 0");
   });
 });

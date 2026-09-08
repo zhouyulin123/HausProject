@@ -90,4 +90,35 @@ describe("运营质量汇总 API", () => {
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "POST" });
     expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: "PATCH" });
   });
+
+  it("通过管理员资源读取真实案例就绪度聚合", async () => {
+    const readiness = {
+      manifest_version: "1.0",
+      dataset_id: "private-real-2026-q3",
+      total: 4,
+      eligible_total: 0,
+      private_real_eligible_total: 0,
+      blocked_total: 4,
+      split_counts: {
+        development: { total: 2, eligible: 0 },
+        regression: { total: 1, eligible: 0 },
+        blind: { total: 1, eligible: 0 },
+      },
+      consent_status_counts: { pending: 4 },
+      annotation_status_counts: { pending: 4 },
+      blocker_counts: { consent_not_granted: 4, annotation_not_ready: 4 },
+      minimum_required: 20,
+      minimum_met: false,
+      checked_at: "2026-09-08T12:00:00Z",
+    };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(readiness));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchRealWorldReadiness } = await import("./adminApi");
+    await expect(fetchRealWorldReadiness()).resolves.toEqual(readiness);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/quality/real-world-readiness",
+      expect.any(Object),
+    );
+  });
 });

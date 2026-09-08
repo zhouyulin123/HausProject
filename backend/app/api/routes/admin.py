@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import require_admin
+from app.api.dependencies import require_admin, require_factory
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import FailureCluster, User
@@ -22,9 +22,14 @@ from app.schemas.failure_triage import (
     FailureTriageSyncResponse,
 )
 from app.schemas.quality import QualitySummaryResponse
+from app.schemas.real_world_readiness import RealWorldReadinessResponse
 from app.services import auth_service
 from app.services.quality_metrics_service import build_quality_summary
 from app.services import failure_triage_service
+from app.services.real_world_readiness_service import (
+    RealWorldReadinessError,
+    build_real_world_readiness,
+)
 
 router = APIRouter()
 
@@ -42,6 +47,20 @@ def get_quality_summary(
     return QualitySummaryResponse.model_validate(
         build_quality_summary(db, window_days=window_days)
     )
+
+
+@router.get(
+    "/quality/real-world-readiness",
+    response_model=RealWorldReadinessResponse,
+)
+def get_real_world_readiness(
+    _factory: User = Depends(require_factory),
+) -> RealWorldReadinessResponse:
+    try:
+        readiness = build_real_world_readiness()
+    except RealWorldReadinessError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return RealWorldReadinessResponse.model_validate(readiness)
 
 
 @router.post(

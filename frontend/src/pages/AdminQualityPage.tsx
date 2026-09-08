@@ -14,8 +14,10 @@ import {
 import {
   fetchFailureClusters,
   fetchQualitySummary,
+  fetchRealWorldReadiness,
   updateFailureCluster,
 } from "@/api/adminApi";
+import type { RealWorldReadiness, RealWorldSplit } from "@/api/adminApi";
 import Button from "@/components/common/Button";
 import EmptyState from "@/components/common/EmptyState";
 import PageTitle from "@/components/common/PageTitle";
@@ -56,6 +58,106 @@ const SEVERITY_LABELS: Record<FailureSeverity, string> = {
   high: "高",
   critical: "严重",
 };
+
+const REAL_WORLD_SPLIT_LABELS: Record<RealWorldSplit, string> = {
+  development: "开发集",
+  regression: "回归集",
+  blind: "盲测集",
+};
+
+const REAL_WORLD_BLOCKER_LABELS: Record<string, string> = {
+  consent_not_granted: "未取得授权",
+  consent_expired: "授权已过期",
+  annotation_not_ready: "人工标注未就绪",
+  purpose_not_allowed: "使用目的不在授权范围",
+  split_not_assigned: "未分配评测分组",
+  duplicate_case: "案例重复",
+  case_not_private_real: "不是真实私有案例",
+};
+
+export function RealWorldReadinessContent({
+  data,
+  loading,
+  error,
+  onRetry,
+}: {
+  data: RealWorldReadiness | null;
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+}) {
+  const blockers = data
+    ? Object.entries(data.blocker_counts)
+      .filter(([, count]) => count > 0)
+      .sort(([, left], [, right]) => right - left)
+      .slice(0, 5)
+    : [];
+  return (
+    <section className="mt-9 border-t border-cream-300 pt-7" aria-label="真实案例就绪度">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-stone-800">真实案例就绪度</h2>
+          <p className="mt-1 text-xs text-stone-400">仅展示授权、标注与分组的聚合准入结果</p>
+        </div>
+        <Button variant="outline" size="sm" disabled={loading} onClick={onRetry}>
+          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> 刷新
+        </Button>
+      </div>
+
+      {loading && !data ? (
+        <div className="mt-4 h-32 animate-pulse border-y border-cream-200 bg-white/70" />
+      ) : error ? (
+        <div role="alert" className="mt-4 flex flex-col items-start gap-3 border border-red-200 bg-red-50 p-4 text-sm text-red-700 sm:flex-row sm:items-center sm:justify-between">
+          <span className="flex items-center gap-2"><AlertTriangle className="h-4 w-4 shrink-0" />{error}</span>
+          <button type="button" className="font-medium underline" onClick={onRetry}>重试</button>
+        </div>
+      ) : data ? (
+        <>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="border border-cream-200 bg-white/80 p-4 sm:col-span-2">
+              <p className="text-xs text-stone-400">发布门槛</p>
+              <p className={`mt-2 text-2xl font-semibold ${data.minimum_met ? "text-sage-700" : "text-terra-700"}`}>
+                {data.private_real_eligible_total} / {data.minimum_required}
+              </p>
+              <p className="mt-1 text-xs text-stone-500">
+                {data.minimum_met
+                  ? "真实案例数量和三组分配均达到最低要求"
+                  : data.private_real_eligible_total < data.minimum_required
+                    ? `尚缺 ${data.minimum_required - data.private_real_eligible_total} 例`
+                    : "数量已满足，但仍有评测分组无准入案例"}
+              </p>
+            </div>
+            {(Object.entries(REAL_WORLD_SPLIT_LABELS) as Array<[RealWorldSplit, string]>).map(([split, label]) => {
+              const counts = data.split_counts[split];
+              return (
+                <div key={split} className="border border-cream-200 bg-white/80 p-4">
+                  <p className="text-xs text-stone-400">{label}</p>
+                  <p className="mt-2 text-xl font-semibold text-stone-800">{counts.eligible}</p>
+                  <p className="mt-1 text-xs text-stone-500">准入 / 候选 {counts.total}</p>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-4 border-y border-cream-200 bg-white/60 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-stone-500">
+              <span>候选 {data.total} · 阻断 {data.blocked_total}</span>
+              <span>检查于 {new Date(data.checked_at).toLocaleString("zh-CN", { hour12: false })}</span>
+            </div>
+            {blockers.length ? (
+              <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 border-t border-cream-100 pt-3 text-xs text-terra-700">
+                {blockers.map(([code, count]) => (
+                  <span key={code}>{REAL_WORLD_BLOCKER_LABELS[code] ?? code} <strong>{count}</strong></span>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 border-t border-cream-100 pt-3 text-xs text-sage-700">当前没有案例准入阻断项</p>
+            )}
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
 
 function FailureClusterRow({
   cluster,
@@ -451,6 +553,10 @@ export default function AdminQualityPage() {
   const [failureActionError, setFailureActionError] = useState("");
   const [busyClusterId, setBusyClusterId] = useState<number | null>(null);
   const [failureReloadKey, setFailureReloadKey] = useState(0);
+  const [realWorldReadiness, setRealWorldReadiness] = useState<RealWorldReadiness | null>(null);
+  const [realWorldLoading, setRealWorldLoading] = useState(true);
+  const [realWorldError, setRealWorldError] = useState("");
+  const [realWorldReloadKey, setRealWorldReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -491,6 +597,29 @@ export default function AdminQualityPage() {
   useEffect(() => {
     void loadFailureClusters();
   }, [failureReloadKey, loadFailureClusters]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRealWorldLoading(true);
+    setRealWorldError("");
+    void fetchRealWorldReadiness()
+      .then((data) => {
+        if (!cancelled) setRealWorldReadiness(data);
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setRealWorldReadiness(null);
+        setRealWorldError(
+          reason instanceof Error ? reason.message : "真实案例就绪度加载失败",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setRealWorldLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [realWorldReloadKey]);
 
   const handleFailureUpdate = useCallback(async (
     clusterId: number,
@@ -561,6 +690,12 @@ export default function AdminQualityPage() {
           />
         </div>
       ) : summary ? <QualitySummaryContent summary={summary} /> : null}
+      <RealWorldReadinessContent
+        data={realWorldReadiness}
+        loading={realWorldLoading}
+        error={realWorldError}
+        onRetry={() => setRealWorldReloadKey((value) => value + 1)}
+      />
       <FailureTriageContent
         data={failureClusters}
         loading={failureClustersLoading}
