@@ -257,6 +257,8 @@ flowchart TD
 
 用户满意度、人工修改率和单任务成本应先测当前基线，再确定业务目标，避免为了好看而凭空设数字。
 
+发布证明约束：模型、Prompt、布局规则、商品数据或评测门禁代码发生敏感变更时，普通 PR 必须校验受保护评测环境针对同一目标提交 SHA 产出的脱敏签名证明。PR runner 不得读取 blind 资产、原始评测证据或签名私钥；缺少对应成功 run、artifact、公开验证密钥、SHA 绑定或签名无效时必须失败关闭。受保护 workflow 必须显式输入目标 SHA，基于该提交运行 development/regression/blind 三组评测，全部通过后才上传只含 proof 的 artifact。proof 不能提交回同一仓库提交。GitHub 分支保护仍需管理员将 `real-world-proof-requirement` 配置为 required check，代码无法替代该外部配置。
+
 ### 阶段 5：安全、合规与封闭试点（第 9–16 周）
 
 目标：在真实客户场景中小范围运行，并能安全止损。

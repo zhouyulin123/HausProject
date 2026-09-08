@@ -42,6 +42,7 @@ from evals.real_world import (
 )
 from evals.release_change_detection import (
     SensitiveChanges,
+    build_signed_release_proof,
     changed_paths_between,
     classify_release_sensitive_paths,
 )
@@ -114,7 +115,7 @@ def validate_release_dataset(
 def validate_release_cohort(
     datasets: Mapping[EvaluationSplit, RealWorldDataset],
 ) -> int:
-    """验证三组发布案例构成，并按物理资产摘要跨清单去重。"""
+    """验证三组发布案例构成，并按案例 ID 与物理资产摘要去重。"""
     missing_splits = [split for split in REQUIRED_SPLITS if split not in datasets]
     if missing_splits:
         raise EvaluationInputError(
@@ -122,12 +123,17 @@ def validate_release_cohort(
         )
 
     seen_assets: set[str] = set()
+    seen_case_ids: set[str] = set()
     for split in REQUIRED_SPLITS:
-        dataset = datasets[split]
+        eligible_cases = datasets[split].eligible_cases(split)
+        for case in eligible_cases:
+            if case.id in seen_case_ids:
+                raise EvaluationInputError(
+                    "发布案例队列包含重复案例 ID"
+                )
+            seen_case_ids.add(case.id)
         private_cases = [
-            case
-            for case in dataset.eligible_cases(split)
-            if case.origin == "private_real"
+            case for case in eligible_cases if case.origin == "private_real"
         ]
         if not private_cases:
             raise EvaluationInputError(
@@ -565,6 +571,26 @@ def _write_report(output_dir: Path, report: dict[str, Any]) -> None:
     markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _write_release_proof(output_dir: Path, report: dict[str, Any]) -> None:
+    proof = build_signed_release_proof(
+        report,
+        signing_key_b64=_required_environment("REAL_WORLD_RELEASE_PROOF_SIGNING_KEY_B64"),
+        key_id=_required_environment("REAL_WORLD_RELEASE_PROOF_KEY_ID"),
+    )
+    (output_dir / "real_world_release_proof.json").write_text(
+        json.dumps(proof, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _clear_release_proof(output_dir: Path) -> None:
+    proof_path = output_dir / "real_world_release_proof.json"
+    try:
+        proof_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise EvaluationInputError("无法清理旧发布证明") from exc
+
+
 def _change_summary(changes: SensitiveChanges) -> dict[str, Any]:
     return {
         "required": changes.required,
@@ -581,8 +607,13 @@ def _verify(args: argparse.Namespace) -> int:
     app_build_digest = ""
     changes: SensitiveChanges | None = None
     try:
+        _clear_release_proof(output_dir)
         _clear_failure_triage_artifacts(output_dir)
-        commit_sha = _required_environment("GITHUB_SHA").lower()
+        commit_sha = _required_environment(
+            "REAL_WORLD_TARGET_SHA"
+            if os.environ.get("REAL_WORLD_TARGET_SHA")
+            else "GITHUB_SHA"
+        ).lower()
         base_ref = _required_environment("REAL_WORLD_BASE_REF")
         event_name = _required_environment("GITHUB_EVENT_NAME")
         if not _COMMIT_PATTERN.fullmatch(commit_sha):
@@ -680,6 +711,8 @@ def _verify(args: argparse.Namespace) -> int:
             "splits": split_reports,
         }
         _write_report(output_dir, report)
+        if passed:
+            _write_release_proof(output_dir, report)
         print(f"REAL_WORLD_RELEASE_GATE={'PASS' if passed else 'FAIL'}")
         return 0 if passed else 1
     except (EvaluationInputError, OSError, ValueError):
@@ -711,7 +744,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return _verify(args)
-    except (EvaluationInputError, ValueError):
+    except (EvaluationInputError, OSError, ValueError):
         print("REAL_WORLD_RELEASE_GATE_ERROR=release_gate_input_invalid")
         return 2
 

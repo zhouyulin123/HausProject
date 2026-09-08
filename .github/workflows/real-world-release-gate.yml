@@ -2,6 +2,11 @@ name: real-world-release-gate
 
 on:
   workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "要验证的目标提交完整 SHA（proof 将绑定该提交）"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,6 +21,7 @@ jobs:
       APP_ENV: test
       PYTHONPATH: backend
       GITHUB_EVENT_NAME: ${{ github.event_name }}
+      REAL_WORLD_TARGET_SHA: ${{ inputs.target_sha }}
       REAL_WORLD_BASE_REF: origin/${{ github.event.repository.default_branch }}
       REAL_WORLD_RELEASE_GATE_CONFIG_PATH: ${{ secrets.REAL_WORLD_RELEASE_GATE_CONFIG_PATH }}
       APP_BUILD_DIGEST: ${{ secrets.APP_BUILD_DIGEST }}
@@ -27,12 +33,21 @@ jobs:
       EVAL_CASE_ID_SALT_ID: ${{ secrets.EVAL_CASE_ID_SALT_ID }}
       EVAL_REPORT_SIGNING_KEY: ${{ secrets.EVAL_REPORT_SIGNING_KEY }}
       EVAL_REPORT_SIGNING_KEY_ID: ${{ secrets.EVAL_REPORT_SIGNING_KEY_ID }}
+      REAL_WORLD_RELEASE_PROOF_SIGNING_KEY_B64: ${{ secrets.REAL_WORLD_RELEASE_PROOF_SIGNING_KEY_B64 }}
+      REAL_WORLD_RELEASE_PROOF_KEY_ID: ${{ vars.REAL_WORLD_RELEASE_PROOF_KEY_ID }}
       DATABASE_URL: ${{ secrets.REAL_WORLD_EVAL_DATABASE_URL }}
       LLM_MODEL: ${{ secrets.REAL_WORLD_EVAL_LLM_MODEL }}
       REAL_WORLD_RELEASE_GATE_OUTPUT_DIR: .test_artifacts/real-world-release-gate/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: 校验目标提交 SHA
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_SHA" =~ ^[0-9a-fA-F]{40,64}$ ]]
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.target_sha }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
@@ -56,5 +71,13 @@ jobs:
             ${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}/real_world_release_gate.md
             ${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}/failure-triage/*.failure_triage.json
             ${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}/failure-triage/*.failure_triage.md
+          if-no-files-found: error
+          retention-days: 30
+      - name: 上传当前提交的脱敏发布证明
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-world-release-proof-${{ inputs.target_sha }}
+          path: ${{ env.REAL_WORLD_RELEASE_GATE_OUTPUT_DIR }}/real_world_release_proof.json
           if-no-files-found: error
           retention-days: 30

@@ -189,9 +189,19 @@ python -m evals.run_real_world_eval `
 
 受控 Environment 还必须分别配置 `EVAL_CASE_ID_SALT`、`EVAL_CASE_ID_SALT_ID`、`EVAL_REPORT_SIGNING_KEY` 与 `EVAL_REPORT_SIGNING_KEY_ID`。评测签名、安全签名、分诊签名及 case 别名四个用途的密钥和值标识不得复用；缺少任一项时门禁返回输入错误，不能跳过失败分诊继续发布。
 
+发布 proof 另外使用 `REAL_WORLD_RELEASE_PROOF_SIGNING_KEY_B64`（仅受保护
+Environment Secret）和 `REAL_WORLD_RELEASE_PROOF_KEY_ID`（Environment
+Variable），算法为 Ed25519。普通 CI 只配置公开的
+`REAL_WORLD_RELEASE_PROOF_PUBLIC_KEY_B64` Repository Variable；它按目标 SHA
+从成功的 `workflow_dispatch` run 获取只含
+`real_world_release_proof.json` 的 artifact，并在本地验签。proof 是独立
+artifact，不能提交回目标 commit；否则 proof 自身会改变它要证明的 SHA。
+
 候选必须绑定 `APP_BUILD_DIGEST` 指定的当前受控部署，模型名必须匹配 `REAL_WORLD_EVAL_LLM_MODEL` Secret 注入的 `LLM_MODEL`，Prompt 与规则摘要必须能从目标提交现场复算一致；证据签发还会用当前数据库重新构建完整商品上下文和动态输入，任一版本变化都要求重新执行候选，防止旧运行冒充当前结果。基线允许绑定其历史构建，但必须通过原评测签名和独立安全签名。被测商品数据版本可以在候选与基线之间变化，评测数据集指纹与匿名案例集合必须保持相同，报告会并列保留模型、Prompt、规则、数据四类基线/候选版本。
 
-普通 `.github/workflows/quality.yml` 运行无依赖的 `evals.release_change_detection`，只输出 `proof_required` 或 `not_required`，不会生成 PASS。受控工作流无论路径检测结果如何都会执行三组，以覆盖部署环境中的模型或商品版本变更。模型/Prompt/布局规则/商品数据契约命中后，仓库分支保护或发布环境必须要求目标提交上的 `real-world-release-proof` 成功；否则仅有仓库代码无法强制 GitHub 的外部保护规则。
+普通 `.github/workflows/quality.yml` 运行无依赖真实资产的 `evals.release_change_detection`。敏感路径命中时，它只接受受保护环境 `workflow_dispatch` 针对同一目标提交 SHA 生成的独立 `real-world-release-proof-${SHA}` artifact；该 artifact 只含脱敏 Ed25519 proof，PR runner 不会下载 blind 清单、图片、原始 evidence 或任何私钥。缺少成功的受保护 run、artifact、公开验证密钥、SHA 绑定或签名校验失败，检查均返回非零并阻断普通 CI。受控工作流必须显式输入 `target_sha`，checkout 该提交并在三组门禁通过后才签发 proof；proof 不能提交回仓库，因为提交 proof 会改变其绑定 SHA。
+
+GitHub 分支保护中的 required check 仍需仓库管理员在外部配置，必须把 `real-world-proof-requirement` 设为目标分支的 required status check，并限制受保护 Environment、self-hosted runner 和 workflow 权限；代码本身无法替代这些 GitHub 配置。fork PR 没有受保护 Environment secrets，也不能自行签发 proof，只能在缺失 proof 时失败关闭。
 
 报告和签名证据会绑定准入案例的资产 SHA-256、标签版本、来源和分组。只要实际资产、标签或分组发生变化，就会拒绝伪装成同一案例集比较。
 

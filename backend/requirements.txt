@@ -12,5 +12,6 @@ python-dotenv>=1.0.0
 reportlab>=4.0.0 # 品牌提案 PDF
 openpyxl>=3.1.0 # 商品 Excel 模板与导入
 PyJWT>=2.8.0 # 登录态 JWT 签发与校验
+cryptography>=42.0.0 # 受保护发布证明的 Ed25519 签名验签
 
 # GPU 效果图能力是可选运行层，使用 requirements-gpu.txt 安装。

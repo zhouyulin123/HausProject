@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -117,6 +118,7 @@ def _cohort_datasets(
         ("backend/app/services/layout_repair.py", "rules"),
         ("backend/data/public_products_ikea_cn_2026-08-30.json", "data"),
         ("backend/app/services/catalog_service.py", "data"),
+        ("backend/evals/release_change_detection.py", "release"),
     ],
 )
 def test_sensitive_path_changes_require_real_world_regression(path, category):
@@ -175,6 +177,21 @@ def test_release_cohort_requires_twenty_unique_private_real_cases(tmp_path):
         counts={"development": 7, "regression": 7, "blind": 6},
     )
     validate_release_cohort(valid)
+
+    duplicated_case_id = dict(valid)
+    duplicated_case_id["regression"] = type(valid["regression"])(
+        schema_version=valid["regression"].schema_version,
+        dataset_version=valid["regression"].dataset_version,
+        cases=(
+            replace(
+                valid["regression"].cases[0],
+                id=valid["development"].cases[0].id,
+            ),
+            *valid["regression"].cases[1:],
+        ),
+    )
+    with pytest.raises(EvaluationInputError, match="重复案例 ID"):
+        validate_release_cohort(duplicated_case_id)
 
 
 def test_candidate_requires_nonzero_execution_review_coverage():
@@ -317,6 +334,8 @@ def test_controlled_workflow_contract_is_fail_closed():
     ).read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
+    assert "target_sha:" in workflow
+    assert "ref: ${{ inputs.target_sha }}" in workflow
     assert "pull_request:" not in workflow
     assert "runs-on: [self-hosted" in workflow
     assert "environment: real-world-evaluation" in workflow
@@ -326,6 +345,8 @@ def test_controlled_workflow_contract_is_fail_closed():
     assert "EVAL_CASE_ID_SALT_ID: ${{ secrets." in workflow
     assert "EVAL_REPORT_SIGNING_KEY: ${{ secrets." in workflow
     assert "EVAL_REPORT_SIGNING_KEY_ID: ${{ secrets." in workflow
+    assert "REAL_WORLD_RELEASE_PROOF_SIGNING_KEY_B64: ${{ secrets." in workflow
+    assert "REAL_WORLD_RELEASE_PROOF_KEY_ID: ${{ vars." in workflow
     assert "python -m evals.real_world_release_gate" in workflow
     run_output_dir = (
         ".test_artifacts/real-world-release-gate/"
@@ -348,6 +369,29 @@ def test_controlled_workflow_contract_is_fail_closed():
     assert "real_world_release_gate.json" in workflow
     assert "failure-triage/*.failure_triage.json" in workflow
     assert "failure-triage/*.failure_triage.md" in workflow
+    assert "name: real-world-release-proof-${{ inputs.target_sha }}" in workflow
+    assert "real_world_release_proof.json" in workflow
+
+
+def test_quality_workflow_fetches_only_sha_bound_proof_artifact():
+    repo_root = Path(__file__).resolve().parents[3]
+    workflow = (repo_root / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+
+    assert "actions: read" in workflow
+    assert "pull-requests: read" in workflow
+    assert 'pip install "cryptography>=42.0.0"' in workflow
+    assert "actions/workflows/real-world-release-gate.yml/runs" in workflow
+    assert "head_sha=${TARGET_SHA}" in workflow
+    assert "select(.head_sha == $sha" in workflow
+    assert "workflow_dispatch" in workflow
+    assert "real-world-release-proof-${TARGET_SHA}" in workflow
+    assert "actions/runs/${run_id}/artifacts" in workflow
+    assert "REAL_WORLD_RELEASE_PROOF_PUBLIC_KEY_B64: ${{ vars." in workflow
+    assert "--proof-file \"$RUNNER_TEMP/real-world-release-proof.json\"" in workflow
+    assert "--detect-only" in workflow
+    assert "steps.classify.outputs.required == 'true'" in workflow
+    assert "if: github.event_name == 'pull_request'\n    runs-on:" in workflow
+    assert "blind" not in workflow
 
 
 def _candidate_evidence(dataset, *, signature_verified: bool = True):
@@ -569,6 +613,23 @@ def test_missing_controlled_environment_fails_closed_with_redacted_report(
     assert report["overall_passed"] is False
     assert report["error_code"] == "release_gate_input_invalid"
     assert "error" not in report
+
+
+def test_release_gate_entrypoint_hides_unexpected_os_errors(monkeypatch, tmp_path, capsys):
+    from evals import real_world_release_gate
+
+    monkeypatch.setattr(
+        real_world_release_gate,
+        "_verify",
+        lambda _args: (_ for _ in ()).throw(OSError("private runner path")),
+    )
+
+    exit_code = release_gate_main(
+        ["--repo-root", str(tmp_path), "--output-dir", str(tmp_path / "out")]
+    )
+
+    assert exit_code == 2
+    assert "private runner path" not in capsys.readouterr().out
 
 
 def test_triage_generation_failure_fails_release_gate_with_redacted_report(
