@@ -165,3 +165,50 @@ def test_refine_plan_version_inherits_3d_scene(db, monkeypatch):
     db.refresh(scene)
     assert scene.plan_version_id == new_plan_version_id
     assert scene.id is not None
+
+
+@pytest.mark.unit
+def test_refine_plan_without_commit_rolls_back_revision_and_scene(db, monkeypatch):
+    task = DesignTask(
+        status="completed",
+        confirmed_requirement_json={"rooms": ["客厅"]},
+    )
+    db.add(task)
+    db.commit()
+    revision = design_version_service.persist_generation(
+        db,
+        task=task,
+        plans=_initial_plans(),
+        generator="llm",
+    )
+    db.commit()
+    old_plan = next(plan for plan in revision.plans if plan.plan_key == "plan-a")
+    scene = DesignScene(plan_version_id=old_plan.id, current_version=1)
+    db.add(scene)
+    db.commit()
+
+    monkeypatch.setattr(
+        llm_service,
+        "refine_plan",
+        lambda plan, instruction, catalog: (dict(plan), "已调整方案"),
+    )
+    monkeypatch.setattr(
+        catalog_service,
+        "verify_and_enrich_plans",
+        lambda _db, _plans: None,
+    )
+    monkeypatch.setattr(catalog_service, "build_catalog_context", lambda _db: "")
+
+    plan_refine_service.refine_plan_version(
+        db,
+        task=task,
+        plan_id="plan-a",
+        instruction="换成浅灰色",
+        commit=False,
+    )
+    db.rollback()
+
+    latest = design_version_service.get_latest_revision(db, task_id=task.id)
+    db.refresh(scene)
+    assert latest.version == 1
+    assert scene.plan_version_id == old_plan.id

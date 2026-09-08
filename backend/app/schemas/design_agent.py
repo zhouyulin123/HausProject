@@ -65,6 +65,7 @@ class AgentTurnRequest(BaseModel):
     scene_id: int | None = Field(default=None, ge=1)
     base_scene_version: int | None = Field(default=None, ge=1)
     selected_instance_id: str | None = Field(default=None, max_length=100)
+    plan_id: str | None = Field(default=None, min_length=1, max_length=100)
     answers: AgentFactsPatch | None = None
     custom_furniture_spec: CustomFurnitureSpecPatch | None = None
 

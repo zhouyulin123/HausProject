@@ -25,6 +25,7 @@ class DesignAgentToolRegistry:
         "catalog_search",
         "design_generation",
         "scene_edit",
+        "plan_refine",
         "custom_furniture_preview",
     }
 
@@ -60,6 +61,7 @@ class DesignAgentState(TypedDict, total=False):
     facts: dict[str, Any]
     fact_evidence: dict[str, dict[str, Any]]
     scene_context: dict[str, Any]
+    plan_id: str | None
     custom_furniture_spec: dict[str, Any]
     custom_spec_invalid: bool
     status: str
@@ -369,6 +371,7 @@ class DesignAgentWorkflow:
         retrieve_catalog: AgentTool,
         execute_design: AgentTool,
         execute_scene: AgentTool,
+        execute_plan_refine: AgentTool | None = None,
         execute_custom: AgentTool | None = None,
         max_steps: int = 12,
         max_retries: int = 2,
@@ -378,6 +381,7 @@ class DesignAgentWorkflow:
         self._retrieve_catalog = retrieve_catalog
         self._execute_design = execute_design
         self._execute_scene = execute_scene
+        self._execute_plan_refine = execute_plan_refine
         self._execute_custom = execute_custom
         self._max_steps = max_steps
         self._max_retries = max_retries
@@ -603,6 +607,9 @@ class DesignAgentWorkflow:
         if state["intent"] == "scene_edit":
             tool_name = "scene_edit"
             callback = self._execute_scene
+        elif state["intent"] == "plan_refine":
+            tool_name = "plan_refine"
+            callback = self._execute_plan_refine
         elif state["intent"] == "custom_furniture":
             tool_name = "custom_furniture_preview"
             callback = self._execute_custom
@@ -710,6 +717,12 @@ class DesignAgentWorkflow:
                 or quote.get("status") != "estimated"
             ):
                 errors.append("invalid_custom_furniture_preview")
+        elif state["intent"] == "plan_refine" and (
+            not isinstance(result, dict)
+            or not isinstance(result.get("plan"), dict)
+            or not isinstance(result.get("version"), int)
+        ):
+            errors.append("invalid_plan_refine_result")
 
         errors = list(dict.fromkeys(errors))
         if not errors:
@@ -830,6 +843,7 @@ class DesignAgentWorkflow:
         fact_evidence: dict[str, dict[str, Any]] | None = None,
         scene_context: dict[str, Any] | None = None,
         custom_furniture_spec: dict[str, Any] | None = None,
+        plan_id: str | None = None,
         initial_step_count: int = 0,
         initial_retry_count: int = 0,
         initial_hard_errors: list[str] | None = None,
@@ -868,6 +882,7 @@ class DesignAgentWorkflow:
             "fact_evidence": deepcopy(fact_evidence or {}),
             "scene_context": deepcopy(scene_context or {}),
             "custom_furniture_spec": deepcopy(custom_furniture_spec or {}),
+            "plan_id": plan_id,
             "custom_spec_invalid": False,
             "status": "running",
             "current_node": "start",

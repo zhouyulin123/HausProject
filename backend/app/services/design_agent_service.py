@@ -49,6 +49,7 @@ from app.services import (
     generation_request_service,
     generation_run_service,
     llm_service,
+    plan_refine_service,
     scene_service,
     scene_tools,
     task_timeline_service,
@@ -104,6 +105,8 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _intent_for(payload: AgentTurnRequest) -> str:
+    if payload.plan_id is not None:
+        return "plan_refine"
     if payload.scene_id is not None:
         return "scene_edit"
     if (
@@ -556,6 +559,37 @@ def _custom_furniture_tool(db: Session):
     return execute
 
 
+def _plan_refine_tool(
+    db: Session,
+    task: DesignTask,
+    payload: AgentTurnRequest,
+    *,
+    on_model_attempt: Callable[[], None],
+):
+    def execute(_state: dict[str, Any]) -> dict[str, Any]:
+        if payload.plan_id is None:
+            raise AgentToolRejected(
+                "方案精修缺少方案标识",
+                codes=["plan_context_missing"],
+            )
+        on_model_attempt()
+        try:
+            return plan_refine_service.refine_plan_version(
+                db,
+                task=task,
+                plan_id=payload.plan_id,
+                instruction=payload.message,
+                commit=False,
+            )
+        except plan_refine_service.PlanRefineError as exc:
+            raise AgentToolRejected(
+                str(exc),
+                codes=["plan_refine_failed"],
+            ) from exc
+
+    return execute
+
+
 def _load_task_scene(
     db: Session,
     *,
@@ -744,6 +778,8 @@ def _reply(state: dict[str, Any]) -> str:
         return f"已找到 {result.get('candidate_count', 0)} 件符合当前硬约束的商品。"
     if state["intent"] == "scene_edit":
         return str(result.get("message") or "已完成场景修改。")
+    if state["intent"] == "plan_refine":
+        return str(result.get("message") or "已按要求调整方案。")
     if state["intent"] == "custom_furniture":
         return "已生成通过参数校验且报价可复算的定制家具预览。"
     contains_drafts = any(
@@ -922,6 +958,7 @@ _PUBLIC_EVENT_NODES = {
     "execute_tool",
     "design_generation",
     "scene_edit",
+    "plan_refine",
     "custom_furniture_preview",
     "safety_intent_gate",
     "checkpoint_commit",
@@ -948,6 +985,7 @@ _PUBLIC_NODE_LABELS = {
     "catalog_search": "商品检索",
     "design_generation": "方案生成",
     "scene_edit": "3D 场景调整",
+    "plan_refine": "方案精修",
     "custom_furniture_preview": "定制家具预览",
     "safety_intent_gate": "安全意图检查",
 }
@@ -1468,11 +1506,23 @@ def _run_turn(
             )
         ),
     )
+    registry.register(
+        "plan_refine",
+        defer_after_side_effect(
+            _plan_refine_tool(
+                db,
+                task,
+                payload,
+                on_model_attempt=mark_model_attempted,
+            )
+        ),
+    )
     registry.register("custom_furniture_preview", _custom_furniture_tool(db))
     workflow = DesignAgentWorkflow(
         retrieve_catalog=registry.get("catalog_search"),
         execute_design=registry.get("design_generation"),
         execute_scene=registry.get("scene_edit"),
+        execute_plan_refine=registry.get("plan_refine"),
         execute_custom=registry.get("custom_furniture_preview"),
         max_steps=max_steps,
         max_retries=max_retries,
@@ -1505,6 +1555,7 @@ def _run_turn(
         fact_evidence=fact_evidence,
         scene_context=scene_context,
         custom_furniture_spec=custom_furniture_spec,
+        plan_id=payload.plan_id,
         initial_step_count=initial_step_count,
         initial_retry_count=initial_retry_count,
         initial_hard_errors=initial_hard_errors,

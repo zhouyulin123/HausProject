@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -35,6 +35,7 @@ def refine_plan_version(
     task: DesignTask,
     plan_id: str,
     instruction: str,
+    commit: bool = True,
 ) -> dict[str, Any]:
     """在最新版本上按指令修改 plan_id 对应方案，写入新的不可变版本。
 
@@ -91,10 +92,13 @@ def refine_plan_version(
         image_context=deepcopy(revision.image_context_snapshot or []),
         workflow_trace=[{"node": "plan_refine", "status": "completed"}],
     )
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
     # 登录用户：从修改指令中学习偏好（如预算敏感、材质偏好），不阻断主流程
-    if task.user_id:
+    if commit and task.user_id:
         try:
             profile_service.extract_and_merge(
                 db,
@@ -116,7 +120,10 @@ def refine_plan_version(
     old_scene = scene_service.get_scene_by_plan_version(db, target.id)
     if old_scene is not None:
         old_scene.plan_version_id = new_target.id
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
 
     plan_payload = design_version_service.plan_version_payload(new_target)
     plan_payload["task_id"] = task.id
