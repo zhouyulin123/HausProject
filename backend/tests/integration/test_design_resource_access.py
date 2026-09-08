@@ -9,7 +9,13 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes import chat, proposal, render
 from app.db.database import Base, get_db
-from app.db.models import DesignTask, EffectRenderJob, RenderedImage
+from app.db.models import (
+    DesignScene,
+    DesignSceneVersion,
+    DesignTask,
+    EffectRenderJob,
+    RenderedImage,
+)
 from app.services import design_version_service, sd_service
 from app.services.anonymous_session_service import (
     attach_task,
@@ -83,7 +89,12 @@ def design_access_context(monkeypatch):
         ),
         (
             "/api/design/render",
-            {"plan_version_id": 1, "task_id": 1},
+            {
+                "plan_version_id": 1,
+                "task_id": 1,
+                "scene_id": 1,
+                "scene_version": 1,
+            },
         ),
         (
             "/api/design/proposal-pdf",
@@ -261,10 +272,40 @@ def test_render_and_proposal_require_exact_plan_version(monkeypatch):
             ],
             generator="test",
         )
+        plan_version = revision.plans[0]
+        scene = DesignScene(plan_version_id=plan_version.id, current_version=1)
+        db.add(scene)
+        db.flush()
+        db.add(
+            DesignSceneVersion(
+                scene_id=scene.id,
+                version=1,
+                scene_json={
+                    "schemaVersion": "1.0",
+                    "unit": "m",
+                    "coordinateSystem": "right-handed-y-up",
+                    "room": {
+                        "id": "living-room",
+                        "name": "客厅",
+                        "floorPolygon": [
+                            {"x": 0, "z": 0},
+                            {"x": 5, "z": 0},
+                            {"x": 5, "z": 4},
+                            {"x": 0, "z": 4},
+                        ],
+                        "ceilingHeight": 2.8,
+                        "wallThickness": 0.12,
+                    },
+                    "items": [],
+                },
+                validation_json={"valid": True},
+            )
+        )
         db.commit()
         owner_id = owner.id
         task_id = task.id
         plan_version_id = revision.plans[0].id
+        scene_id = scene.id
 
     artifact_dir = (
         Path(__file__).resolve().parents[2] / ".test_artifacts" / "delivery-version"
@@ -317,6 +358,8 @@ def test_render_and_proposal_require_exact_plan_version(monkeypatch):
                 json={
                     "task_id": task_id,
                     "plan_version_id": plan_version_id,
+                    "scene_id": scene_id,
+                    "scene_version": 1,
                 },
         )
 

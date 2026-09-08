@@ -367,6 +367,22 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "cancel_requested_at",
             "dead_lettered_at",
         } <= render_job_columns
+        effect_render_job_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("effect_render_jobs")
+        }
+        assert {
+            "scene_id",
+            "scene_version_id",
+            "scene_version",
+            "scene_snapshot_json",
+            "scene_digest",
+        } <= effect_render_job_columns
+        rendered_image_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("rendered_images")
+        }
+        assert "scene_version_id" in rendered_image_columns
         generation_run_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns("generation_runs")

@@ -6,10 +6,46 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes import render
 from app.db.database import Base, get_db
-from app.db.models import DesignTask, EffectRenderJob
+from app.db.models import (
+    DesignScene,
+    DesignSceneVersion,
+    DesignTask,
+    EffectRenderJob,
+)
 from app.services import design_version_service
 from app.services import sd_service
 from app.services.anonymous_session_service import attach_task, create_anonymous_session
+
+
+def _scene_payload(*, sku: str | None = None) -> dict:
+    items = []
+    if sku is not None:
+        items.append(
+            {
+                "instanceId": "item-main",
+                "sku": sku,
+                "dimensions": {"x": 2.0, "y": 0.8, "z": 1.0},
+                "transform": {"position": {"x": 2.5, "y": 0.4, "z": 2.0}},
+            }
+        )
+    return {
+        "schemaVersion": "1.0",
+        "unit": "m",
+        "coordinateSystem": "right-handed-y-up",
+        "room": {
+            "id": "living-room",
+            "name": "客厅",
+            "floorPolygon": [
+                {"x": 0, "z": 0},
+                {"x": 5, "z": 0},
+                {"x": 5, "z": 4},
+                {"x": 0, "z": 4},
+            ],
+            "ceilingHeight": 2.8,
+            "wallThickness": 0.12,
+        },
+        "items": items,
+    }
 
 
 def _context(monkeypatch):
@@ -32,10 +68,23 @@ def _context(monkeypatch):
             plans=[{"id": "plan-a", "name": "方案 A", "style": "原木风"}],
             generator="test",
         )
+        plan = revision.plans[0]
+        scene = DesignScene(plan_version_id=plan.id, current_version=1)
+        db.add(scene)
+        db.flush()
+        db.add(
+            DesignSceneVersion(
+                scene_id=scene.id,
+                version=1,
+                scene_json=_scene_payload(sku="SOFA-001"),
+                validation_json={"valid": True},
+            )
+        )
         db.commit()
         owner_id = owner.id
         task_id = task.id
         plan_version_id = revision.plans[0].id
+        scene_id = scene.id
 
     monkeypatch.setattr(
         sd_service,
@@ -50,13 +99,18 @@ def _context(monkeypatch):
             yield db
 
     app.dependency_overrides[get_db] = override_db
-    return engine, factory, TestClient(app), owner_id, task_id, plan_version_id
+    return engine, factory, TestClient(app), owner_id, task_id, plan_version_id, scene_id
 
 
 def test_render_api_requires_key_is_idempotent_and_supports_restore(monkeypatch):
-    engine, factory, client, owner_id, task_id, plan_version_id = _context(monkeypatch)
+    engine, factory, client, owner_id, task_id, plan_version_id, scene_id = _context(monkeypatch)
     try:
-        body = {"task_id": task_id, "plan_version_id": plan_version_id}
+        body = {
+            "task_id": task_id,
+            "plan_version_id": plan_version_id,
+            "scene_id": scene_id,
+            "scene_version": 1,
+        }
         missing = client.post(
             "/api/design/render", headers={"X-Session-ID": owner_id}, json=body
         )
@@ -83,7 +137,8 @@ def test_render_api_requires_key_is_idempotent_and_supports_restore(monkeypatch)
             f"/api/design/render/{job_id}", headers={"X-Session-ID": owner_id}
         )
         restored = client.get(
-            f"/api/design/render?plan_version_id={plan_version_id}",
+            "/api/design/render"
+            f"?plan_version_id={plan_version_id}&scene_id={scene_id}&scene_version=1",
             headers={"X-Session-ID": owner_id},
         )
         assert detail.status_code == 200
@@ -95,18 +150,18 @@ def test_render_api_requires_key_is_idempotent_and_supports_restore(monkeypatch)
 
 
 def test_render_api_same_key_changed_plan_conflicts_and_cancel_is_idempotent(monkeypatch):
-    engine, _, client, owner_id, task_id, plan_version_id = _context(monkeypatch)
+    engine, _, client, owner_id, task_id, plan_version_id, scene_id = _context(monkeypatch)
     try:
         headers = {"X-Session-ID": owner_id, "Idempotency-Key": "effect-2"}
         first = client.post(
             "/api/design/render",
             headers=headers,
-            json={"task_id": task_id, "plan_version_id": plan_version_id},
+            json={"task_id": task_id, "plan_version_id": plan_version_id, "scene_id": scene_id, "scene_version": 1},
         )
         conflict = client.post(
             "/api/design/render",
             headers=headers,
-            json={"task_id": task_id, "plan_version_id": plan_version_id + 99},
+            json={"task_id": task_id, "plan_version_id": plan_version_id + 99, "scene_id": scene_id, "scene_version": 1},
         )
         job_id = first.json()["job_id"]
         cancelled = client.post(
@@ -122,6 +177,128 @@ def test_render_api_same_key_changed_plan_conflicts_and_cancel_is_idempotent(mon
         assert cancelled.status_code == 200
         assert cancelled.json()["status"] == "cancelled"
         assert cancelled_again.json()["status"] == "cancelled"
+    finally:
+        client.close()
+        engine.dispose()
+
+
+def test_render_api_binds_exact_scene_snapshot_and_rejects_changed_scene_for_same_key(
+    monkeypatch,
+):
+    engine, factory, client, owner_id, task_id, plan_version_id, scene_id = _context(monkeypatch)
+    try:
+        with factory() as db:
+            scene = db.get(DesignScene, scene_id)
+            scene.current_version = 2
+            db.add(
+                DesignSceneVersion(
+                    scene_id=scene.id,
+                    version=2,
+                    scene_json=_scene_payload(sku="NEW-001"),
+                    validation_json={"valid": True},
+                )
+            )
+            db.commit()
+
+        headers = {
+            "X-Session-ID": owner_id,
+            "Idempotency-Key": "effect-scene-1",
+        }
+        first = client.post(
+            "/api/design/render",
+            headers=headers,
+            json={
+                "task_id": task_id,
+                "plan_version_id": plan_version_id,
+                "scene_id": scene_id,
+                "scene_version": 1,
+            },
+        )
+        changed = client.post(
+            "/api/design/render",
+            headers=headers,
+            json={
+                "task_id": task_id,
+                "plan_version_id": plan_version_id,
+                "scene_id": scene_id,
+                "scene_version": 2,
+            },
+        )
+        partial = client.post(
+            "/api/design/render",
+            headers={
+                "X-Session-ID": owner_id,
+                "Idempotency-Key": "effect-scene-partial",
+            },
+            json={
+                "task_id": task_id,
+                "plan_version_id": plan_version_id,
+                "scene_id": scene_id,
+            },
+        )
+
+        assert first.status_code == 202
+        assert first.json()["scene_id"] == scene_id
+        assert first.json()["scene_version"] == 1
+        assert first.json()["scene_version_id"] > 0
+        assert first.json()["scene_digest"].startswith("sha256:")
+        assert changed.status_code == 409
+        assert changed.json()["detail"]["code"] == "idempotency_conflict"
+        assert partial.status_code == 422
+        with factory() as db:
+            job = db.query(EffectRenderJob).one()
+            assert job.scene_id == scene_id
+            assert job.scene_version == 1
+            assert job.scene_version_id == first.json()["scene_version_id"]
+            assert job.scene_snapshot_json == _scene_payload(sku="SOFA-001")
+            assert job.scene_digest == first.json()["scene_digest"]
+    finally:
+        client.close()
+        engine.dispose()
+
+
+def test_render_api_rejects_scene_from_a_different_plan(monkeypatch):
+    engine, factory, client, owner_id, task_id, plan_version_id, _ = _context(monkeypatch)
+    try:
+        with factory() as db:
+            task = db.get(DesignTask, task_id)
+            revision = design_version_service.persist_generation(
+                db,
+                task=task,
+                plans=[{"id": "plan-b", "name": "方案 B", "style": "现代"}],
+                generator="test",
+            )
+            foreign_plan = revision.plans[0]
+            scene = DesignScene(plan_version_id=foreign_plan.id, current_version=1)
+            db.add(scene)
+            db.flush()
+            db.add(
+                DesignSceneVersion(
+                    scene_id=scene.id,
+                    version=1,
+                    scene_json=_scene_payload(),
+                    validation_json={"valid": True},
+                )
+            )
+            db.commit()
+            scene_id = scene.id
+
+        response = client.post(
+            "/api/design/render",
+            headers={
+                "X-Session-ID": owner_id,
+                "Idempotency-Key": "effect-wrong-plan",
+            },
+            json={
+                "task_id": task_id,
+                "plan_version_id": plan_version_id,
+                "scene_id": scene_id,
+                "scene_version": 1,
+            },
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "scene_snapshot_not_found"
     finally:
         client.close()
         engine.dispose()
