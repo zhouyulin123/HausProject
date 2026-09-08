@@ -685,6 +685,7 @@ export type EffectRenderStatus =
 
 export interface EffectRenderJob {
   jobId: number;
+  requestId: string | null;
   taskId: number;
   planVersionId: number;
   sceneId: number;
@@ -700,6 +701,7 @@ export interface EffectRenderJob {
 
 interface EffectRenderJobWire {
   job_id: number;
+  request_id?: string | null;
   task_id: number;
   plan_version_id: number;
   scene_id: number;
@@ -716,6 +718,7 @@ interface EffectRenderJobWire {
 function mapEffectRenderJob(data: EffectRenderJobWire): EffectRenderJob {
   return {
     jobId: data.job_id,
+    requestId: data.request_id ?? null,
     taskId: data.task_id,
     planVersionId: data.plan_version_id,
     sceneId: data.scene_id,

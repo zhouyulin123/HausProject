@@ -165,10 +165,13 @@ export type BlenderRenderStatus =
   | "queued"
   | "running"
   | "completed"
-  | "failed";
+  | "failed"
+  | "dead_letter"
+  | "cancelled";
 
 export interface BlenderRenderJob {
   id: number;
+  request_id: string | null;
   scene_id: number;
   scene_version: number;
   profile: BlenderRenderProfile;

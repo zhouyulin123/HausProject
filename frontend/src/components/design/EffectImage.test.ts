@@ -16,6 +16,7 @@ import { mockDesigns } from "@/data/mockDesigns";
 function job(status: EffectRenderJob["status"], imageUrl: string | null = null): EffectRenderJob {
   return {
     jobId: 1,
+    requestId: "effect-test-request-001",
     taskId: 1,
     planVersionId: 1,
     sceneId: 9,

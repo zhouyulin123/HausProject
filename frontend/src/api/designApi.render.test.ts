@@ -37,6 +37,7 @@ describe("异步效果图 API", () => {
       .mockResolvedValueOnce(response({ session_id: "session-a" }))
       .mockResolvedValueOnce(response({
         job_id: 12,
+        request_id: "effect-trace-001",
         status: "queued",
         progress: 0,
         scene_id: 9,
@@ -50,6 +51,7 @@ describe("异步效果图 API", () => {
     const job = await queueEffectRender(42, 9, 3, "render-key-1");
 
     expect(job.jobId).toBe(12);
+    expect(job.requestId).toBe("effect-trace-001");
     expect(job).toMatchObject({ sceneId: 9, sceneVersion: 3 });
     const [, request] = fetchMock.mock.calls.at(-1)!;
     expect(new Headers(request.headers).get("Idempotency-Key")).toBe("render-key-1");
