@@ -42,3 +42,44 @@ export function agentExecutionFromCheckpoint(
 ): AgentExecutionState {
   return mapExecution(checkpoint, recentEvents);
 }
+
+function eventKey(event: AgentExecutionEvent): string {
+  return event.event_id !== undefined
+    ? `id:${event.event_id}`
+    : [
+        "legacy",
+        event.turn_id ?? "unknown-turn",
+        event.sequence,
+        event.type,
+        event.node,
+        event.created_at ?? "unknown-time",
+      ].join(":");
+}
+
+function eventOrder(event: AgentExecutionEvent): [number, string, number] {
+  return [
+    event.event_id ?? Number.MAX_SAFE_INTEGER,
+    event.created_at ?? "",
+    event.sequence,
+  ];
+}
+
+export function mergeAgentExecutionEvents(
+  current: AgentExecutionEvent[],
+  incoming: AgentExecutionEvent[],
+  limit = 50,
+): AgentExecutionEvent[] {
+  const boundedLimit = Math.max(1, Math.min(limit, 100));
+  const merged = new Map<string, AgentExecutionEvent>();
+  for (const event of current) merged.set(eventKey(event), event);
+  for (const event of incoming) merged.set(eventKey(event), event);
+  return [...merged.values()]
+    .sort((left, right) => {
+      const leftOrder = eventOrder(left);
+      const rightOrder = eventOrder(right);
+      return leftOrder[0] - rightOrder[0]
+        || leftOrder[1].localeCompare(rightOrder[1])
+        || leftOrder[2] - rightOrder[2];
+    })
+    .slice(-boundedLimit);
+}

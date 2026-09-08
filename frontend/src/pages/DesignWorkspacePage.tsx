@@ -20,6 +20,7 @@ import {
   decideAgentApproval,
   fetchAgentApprovals,
   fetchDesignAgentState,
+  fetchDesignAgentEvents,
   fetchDesignScene,
   fetchDesignTaskPlans,
   fetchFurnitureCatalog,
@@ -32,6 +33,7 @@ import { parseCustomFurniturePreview } from "@/lib/customFurnitureWorkspace";
 import {
   agentExecutionFromCheckpoint,
   agentExecutionFromTurn,
+  mergeAgentExecutionEvents,
 } from "@/lib/agentExecution";
 import { useFeedbackDelivery } from "@/hooks/useFeedbackDelivery";
 import {
@@ -165,8 +167,12 @@ export default function DesignWorkspacePage() {
   useEffect(() => {
     if (!project) return;
     let cancelled = false;
-    void fetchDesignAgentState(project.id)
-      .then((checkpoint) => {
+    void Promise.all([
+      fetchDesignAgentState(project.id),
+      fetchDesignAgentEvents(project.id, { limit: 50 })
+        .catch(() => ({ events: [], has_more: false, next_before_id: null })),
+    ])
+      .then(([checkpoint, eventFeed]) => {
         if (cancelled) return;
         applyAgentState(project.id, {
           stateVersion: checkpoint.state_version,
@@ -183,7 +189,10 @@ export default function DesignWorkspacePage() {
           generationRunId: checkpoint.run_id,
           execution: agentExecutionFromCheckpoint(
             checkpoint,
-            useDesignProjectStore.getState().projects[project.id]?.execution.events,
+            mergeAgentExecutionEvents(
+              useDesignProjectStore.getState().projects[project.id]?.execution.events ?? [],
+              eventFeed.events,
+            ),
           ),
         });
         setMessages(
@@ -216,7 +225,10 @@ export default function DesignWorkspacePage() {
     ) return;
     let cancelled = false;
     void resumeAgentGeneration(project.id, project.generationRunId)
-      .then(({ checkpoint, plans }) => {
+      .then(async ({ checkpoint, plans }) => {
+        if (cancelled) return;
+        const eventFeed = await fetchDesignAgentEvents(project.id, { limit: 50 })
+          .catch(() => ({ events: [], has_more: false, next_before_id: null }));
         if (cancelled) return;
         applyAgentState(project.id, {
           stateVersion: checkpoint.state_version,
@@ -233,7 +245,10 @@ export default function DesignWorkspacePage() {
           generationRunId: checkpoint.run_id,
           execution: agentExecutionFromCheckpoint(
             checkpoint,
-            useDesignProjectStore.getState().projects[project.id]?.execution.events,
+            mergeAgentExecutionEvents(
+              useDesignProjectStore.getState().projects[project.id]?.execution.events ?? [],
+              eventFeed.events,
+            ),
           ),
         });
         setMessages(

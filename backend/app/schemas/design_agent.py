@@ -86,6 +86,8 @@ class AgentPendingQuestion(BaseModel):
 
 
 class AgentToolEventResponse(BaseModel):
+    event_id: int | None = None
+    turn_id: int | None = None
     sequence: int
     type: str
     node: str
@@ -94,6 +96,12 @@ class AgentToolEventResponse(BaseModel):
     summary: str
     details: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime | None = None
+
+
+class AgentEventFeedResponse(BaseModel):
+    events: list[AgentToolEventResponse] = Field(default_factory=list)
+    has_more: bool = False
+    next_before_id: int | None = None
 
 
 class AgentMessageResponse(BaseModel):

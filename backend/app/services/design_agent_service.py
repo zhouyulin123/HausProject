@@ -853,6 +853,8 @@ def _events_from_state(
 
 def _event_payload(event: DesignAgentEvent) -> dict[str, Any]:
     return {
+        "event_id": event.id,
+        "turn_id": event.turn_id,
         "sequence": event.sequence,
         "type": event.event_type,
         "node": event.node,
@@ -861,6 +863,137 @@ def _event_payload(event: DesignAgentEvent) -> dict[str, Any]:
         "summary": event.summary,
         "details": event.details_json or {},
         "created_at": event.created_at.isoformat() if event.created_at else None,
+    }
+
+
+_PUBLIC_EVENT_TYPES = {
+    "state_changed",
+    "question_created",
+    "tool_started",
+    "tool_completed",
+    "validation_failed",
+    "scene_committed",
+    "generation_queued",
+    "fallback_used",
+    "human_handoff",
+    "failed",
+    "turn_recovered",
+    "state_conflict",
+}
+_PUBLIC_EVENT_NODES = {
+    "start",
+    "validate_facts",
+    "request_clarification",
+    "retrieve_catalog",
+    "catalog_search",
+    "plan_design",
+    "verify_plan",
+    "verify_result",
+    "replan_or_escalate",
+    "execute_tool",
+    "design_generation",
+    "scene_edit",
+    "custom_furniture_preview",
+    "safety_intent_gate",
+    "checkpoint_commit",
+    "turn_recovery",
+    "failed",
+}
+_PUBLIC_EVENT_STATUSES = {
+    "draft",
+    "analyzing",
+    "waiting_user",
+    "ready",
+    "running",
+    "queued",
+    "completed",
+    "rejected",
+    "conflict",
+    "waiting_approval",
+    "needs_human",
+    "failed",
+    "cancelled",
+}
+_PUBLIC_EVENT_SOURCES = {"deterministic", "agent", "orchestrator"}
+_PUBLIC_NODE_LABELS = {
+    "catalog_search": "商品检索",
+    "design_generation": "方案生成",
+    "scene_edit": "3D 场景调整",
+    "custom_furniture_preview": "定制家具预览",
+    "safety_intent_gate": "安全意图检查",
+}
+
+
+def _public_event_payload(event: DesignAgentEvent) -> dict[str, Any]:
+    event_type = (
+        event.event_type
+        if event.event_type in _PUBLIC_EVENT_TYPES
+        else "state_changed"
+    )
+    node = event.node if event.node in _PUBLIC_EVENT_NODES else "execute_tool"
+    status = event.status if event.status in _PUBLIC_EVENT_STATUSES else "running"
+    source = event.source if event.source in _PUBLIC_EVENT_SOURCES else "orchestrator"
+    if event_type == "question_created":
+        summary = "需要确认关键事实"
+    elif event_type == "generation_queued":
+        summary = "方案生成已进入队列"
+    elif event_type == "human_handoff":
+        summary = "任务已转入人工处理"
+    elif event_type == "turn_recovered":
+        summary = "中断任务已转入人工恢复"
+    elif event_type == "state_conflict":
+        summary = "任务状态发生并发冲突"
+    elif event_type == "failed":
+        summary = "本轮执行已安全停止"
+    elif event_type == "validation_failed":
+        summary = f"{_PUBLIC_NODE_LABELS.get(node, '质量门禁')}未通过"
+    elif event_type == "tool_started":
+        summary = f"{_PUBLIC_NODE_LABELS.get(node, '受控工具')}正在执行"
+    elif event_type == "tool_completed":
+        summary = f"{_PUBLIC_NODE_LABELS.get(node, '受控工具')}已完成"
+    elif event_type == "scene_committed":
+        summary = "3D 场景版本已保存"
+    elif event_type == "fallback_used":
+        summary = "已使用受控降级路径"
+    else:
+        summary = "任务状态已更新"
+    return {
+        "event_id": event.id,
+        "turn_id": event.turn_id,
+        "sequence": event.sequence,
+        "type": event_type,
+        "node": node,
+        "status": status,
+        "source": source,
+        "summary": summary,
+        "details": {},
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+    }
+
+
+def list_public_events(
+    db: Session,
+    *,
+    task_id: int,
+    limit: int,
+    before_id: int | None = None,
+) -> dict[str, Any]:
+    filters = [DesignAgentEvent.task_id == task_id]
+    if before_id is not None:
+        filters.append(DesignAgentEvent.id < before_id)
+    rows = db.scalars(
+        select(DesignAgentEvent)
+        .where(*filters)
+        .order_by(DesignAgentEvent.id.desc())
+        .limit(limit + 1)
+    ).all()
+    has_more = len(rows) > limit
+    selected = rows[:limit]
+    selected.reverse()
+    return {
+        "events": [_public_event_payload(event) for event in selected],
+        "has_more": has_more,
+        "next_before_id": selected[0].id if has_more and selected else None,
     }
 
 

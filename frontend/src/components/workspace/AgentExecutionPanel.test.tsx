@@ -85,4 +85,25 @@ describe("Agent 执行状态区", () => {
     expect(html).toContain("暂无工具执行记录");
     expect(html).not.toContain("¥0.00");
   });
+
+  it("跨轮次相同序号的事件使用服务端事件 ID 并全部展示", () => {
+    const html = renderToStaticMarkup(
+      <AgentExecutionPanel
+        status="running"
+        exitReason={null}
+        execution={{
+          ...execution,
+          events: [
+            { ...execution.events[0]!, event_id: 21, turn_id: 7, summary: "第一轮工具" },
+            { ...execution.events[0]!, event_id: 25, turn_id: 8, summary: "第二轮工具" },
+          ],
+        }}
+      />,
+    );
+
+    expect(html).toContain('data-event-id="21"');
+    expect(html).toContain('data-event-id="25"');
+    expect(html).toContain("第一轮工具");
+    expect(html).toContain("第二轮工具");
+  });
 });

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
@@ -11,6 +11,7 @@ from app.db.database import get_db
 from app.db.models import User
 from app.schemas.design_agent import (
     AgentCheckpointResponse,
+    AgentEventFeedResponse,
     AgentTurnRequest,
     AgentTurnResponse,
     CustomFurnitureDraftRequest,
@@ -48,6 +49,27 @@ def _approval_response(approval) -> AgentApprovalResponse:
         decided_by_type=approval.decided_by_type,
         decided_by_id=approval.decided_by_id,
         decided_at=approval.decided_at,
+    )
+
+
+@router.get("/{task_id}/agent-events", response_model=AgentEventFeedResponse)
+def list_agent_events(
+    task_id: int,
+    x_session_id: SessionIdHeader,
+    limit: int = Query(default=50, ge=1, le=100),
+    before_id: int | None = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+):
+    task = require_owned_design_task(
+        db,
+        session_id=x_session_id,
+        task_id=task_id,
+    )
+    return design_agent_service.list_public_events(
+        db,
+        task_id=task.id,
+        limit=limit,
+        before_id=before_id,
     )
 
 

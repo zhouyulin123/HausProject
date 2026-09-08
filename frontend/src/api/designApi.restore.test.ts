@@ -23,8 +23,11 @@ function jsonResponse(body: unknown): Response {
 
 describe("方案结果恢复", () => {
   it("按有界参数读取任务级 Agent 事件", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({ "haus-anonymous-session-id": sessionId });
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(jsonResponse({
         events: [{
           event_id: 12,
           turn_id: 5,
@@ -39,17 +42,17 @@ describe("方案结果恢复", () => {
         }],
         has_more: false,
         next_before_id: null,
-      }), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
+      }));
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
     const { fetchDesignAgentEvents } = await import("./designApi");
 
     const result = await fetchDesignAgentEvents(42, { limit: 50 });
 
     expect(result.events[0]?.event_id).toBe(12);
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
       "/api/design/tasks/42/agent-events?limit=50",
     );
-    fetchMock.mockRestore();
   });
   afterEach(() => {
     vi.unstubAllGlobals();

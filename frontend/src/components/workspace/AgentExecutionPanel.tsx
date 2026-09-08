@@ -130,7 +130,11 @@ export default function AgentExecutionPanel({
           {recentEvents.length ? (
             <ol className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
               {recentEvents.map((event) => (
-                <li key={`${event.sequence}-${event.type}-${event.node}`} className="min-w-0 text-[10px] text-[#aeb7af]">
+                <li
+                  key={event.event_id ?? `${event.turn_id ?? "turn"}-${event.sequence}-${event.type}-${event.node}-${event.created_at ?? "time"}`}
+                  data-event-id={event.event_id}
+                  className="min-w-0 text-[10px] text-[#aeb7af]"
+                >
                   <span className="mr-1.5 font-mono text-[#6f7a71]">{String(event.sequence).padStart(2, "0")}</span>
                   {event.summary || readableNode(event.node)}
                 </li>

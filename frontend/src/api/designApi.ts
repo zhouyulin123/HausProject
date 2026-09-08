@@ -1291,6 +1291,12 @@ export interface AgentTurnRequest {
 
 export type AgentEvent = AgentExecutionEvent;
 
+export interface AgentEventFeedResponse {
+  events: AgentExecutionEvent[];
+  has_more: boolean;
+  next_before_id: number | null;
+}
+
 export interface AgentTurnResponse {
   task_id: number;
   turn_id: number;
@@ -1475,6 +1481,20 @@ export async function fetchDesignAgentState(
 ): Promise<DesignAgentStateResponse> {
   return request<DesignAgentStateResponse>(
     `/api/design/tasks/${taskId}/agent-state`,
+  );
+}
+
+export async function fetchDesignAgentEvents(
+  taskId: number,
+  options: { limit?: number; beforeId?: number } = {},
+): Promise<AgentEventFeedResponse> {
+  const params = new URLSearchParams();
+  params.set("limit", String(options.limit ?? 50));
+  if (options.beforeId !== undefined) {
+    params.set("before_id", String(options.beforeId));
+  }
+  return request<AgentEventFeedResponse>(
+    `/api/design/tasks/${taskId}/agent-events?${params.toString()}`,
   );
 }
 

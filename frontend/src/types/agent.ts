@@ -10,6 +10,8 @@ export interface AgentSceneReference {
 }
 
 export interface AgentExecutionEvent {
+  event_id?: number;
+  turn_id?: number;
   sequence: number;
   type:
     | "state_changed"
@@ -21,7 +23,9 @@ export interface AgentExecutionEvent {
     | "generation_queued"
     | "fallback_used"
     | "human_handoff"
-    | "failed";
+    | "failed"
+    | "turn_recovered"
+    | "state_conflict";
   node: string;
   status: string;
   source: string;
