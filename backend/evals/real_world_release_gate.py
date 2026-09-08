@@ -26,6 +26,12 @@ from app.services.generation_provenance import (
 from app.services.llm_service import generation_prompt_snapshot
 from evals.collect_real_world_evidence import main as collect_evidence_main
 from evals.collect_security_access_evidence import main as collect_security_main
+from evals.failure_triage import (
+    build_failure_triage_report,
+    build_failure_triage_sync_payload,
+    derive_failure_triage_evidence,
+    render_failure_triage_markdown,
+)
 from evals.real_world import (
     EvaluationInputError,
     EvaluationSplit,
@@ -291,6 +297,63 @@ def _collector_args(config: ReleaseSplitConfig, split: EvaluationSplit) -> list[
     ]
 
 
+def _generate_candidate_failure_triage_artifacts(
+    *,
+    dataset: RealWorldDataset,
+    evidence: VerifiedEvaluationEvidence,
+    split: EvaluationSplit,
+    output_dir: Path,
+    candidate_version: str,
+    anonymization_salt: str,
+    salt_id: str,
+    signing_key_id: str,
+    signing_key: str,
+) -> dict[str, Any]:
+    """从已验签候选证据生成脱敏且签名的受控发布制品。"""
+    if evidence.split != split:
+        raise EvaluationInputError("失败分诊候选证据与目标 split 不一致")
+    triage_evidence = derive_failure_triage_evidence(
+        evidence=evidence,
+        dataset=dataset,
+    )
+    report = build_failure_triage_report(
+        dataset=dataset,
+        evidence=triage_evidence,
+        anonymization_salt=anonymization_salt,
+        salt_id=salt_id,
+    )
+    report["sync_payload"] = build_failure_triage_sync_payload(
+        report,
+        report_id=f"release-{candidate_version}-{split}",
+        candidate_version=candidate_version,
+        signing_key_id=signing_key_id,
+        signing_key=signing_key,
+    )
+    markdown = render_failure_triage_markdown(report)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / f"{split}.failure_triage.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (output_dir / f"{split}.failure_triage.md").write_text(
+            markdown,
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise EvaluationInputError(
+            f"split={split} 失败分诊制品写入失败"
+        ) from exc
+    return {
+        "schema_version": report["schema_version"],
+        "taxonomy_version": report["input"]["taxonomy_version"],
+        "failure_count": report["summary"]["failure_count"],
+        "affected_case_count": report["summary"]["affected_case_count"],
+        "report_digest": canonical_digest(report),
+        "signature_key_id": signing_key_id,
+    }
+
+
 def _verify_split(
     config: ReleaseSplitConfig,
     *,
@@ -300,6 +363,12 @@ def _verify_split(
     app_build_digest: str,
     eval_keys: Mapping[str, str],
     security_keys: Mapping[str, str],
+    triage_output_dir: Path,
+    candidate_version: str,
+    anonymization_salt: str,
+    salt_id: str,
+    triage_signing_key_id: str,
+    triage_signing_key: str,
 ) -> dict[str, Any]:
     dataset = dataset or load_case_manifest(
         config.manifest,
@@ -375,6 +444,17 @@ def _verify_split(
     )
     if candidate.evidence_digest == baseline.evidence_digest:
         raise EvaluationInputError(f"split={split} 候选不得重放基线证据")
+    failure_triage = _generate_candidate_failure_triage_artifacts(
+        dataset=dataset,
+        evidence=candidate,
+        split=split,
+        output_dir=triage_output_dir,
+        candidate_version=candidate_version,
+        anonymization_salt=anonymization_salt,
+        salt_id=salt_id,
+        signing_key_id=triage_signing_key_id,
+        signing_key=triage_signing_key,
+    )
     candidate_report = build_evaluation_report(
         dataset=dataset,
         split=split,
@@ -400,6 +480,7 @@ def _verify_split(
         "absolute_gate_passed": candidate_report["gate_passed"],
         "regression_passed": comparison["passed"],
         "comparison_items": comparison["items"],
+        "failure_triage": failure_triage,
     }
 
 
@@ -426,6 +507,12 @@ def _write_report(output_dir: Path, report: dict[str, Any]) -> None:
             f"{'PASS' if item['regression_passed'] else 'FAIL'}，"
             f"真实案例={item['eligible_case_count']}"
         )
+        triage = item.get("failure_triage")
+        if isinstance(triage, dict):
+            lines.append(
+                f"  - 脱敏失败分诊：失败记录={triage['failure_count']}，"
+                f"受影响案例={triage['affected_case_count']}"
+            )
     markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -477,6 +564,14 @@ def _verify(args: argparse.Namespace) -> int:
         security_key = _required_environment("SECURITY_EVIDENCE_HMAC_KEY")
         if eval_key_id == security_key_id or eval_key == security_key:
             raise EvaluationInputError("评测证据与安全证据必须使用独立密钥域")
+        anonymization_salt = _required_environment("EVAL_CASE_ID_SALT")
+        salt_id = _required_environment("EVAL_CASE_ID_SALT_ID")
+        triage_signing_key_id = _required_environment("EVAL_REPORT_SIGNING_KEY_ID")
+        triage_signing_key = _required_environment("EVAL_REPORT_SIGNING_KEY")
+        if len({eval_key_id, security_key_id, triage_signing_key_id, salt_id}) != 4:
+            raise EvaluationInputError("评测、安全、分诊签名与脱敏必须使用独立密钥标识")
+        if len({eval_key, security_key, triage_signing_key, anonymization_salt}) != 4:
+            raise EvaluationInputError("评测、安全、分诊签名与脱敏必须使用独立密钥域")
         expected_model = settings.llm_model
         expected_prompt = canonical_digest(generation_prompt_snapshot())
         expected_rules = current_generation_rules_digest()
@@ -491,6 +586,12 @@ def _verify(args: argparse.Namespace) -> int:
                     app_build_digest=app_build_digest,
                     eval_keys={eval_key_id: eval_key},
                     security_keys={security_key_id: security_key},
+                    triage_output_dir=output_dir / "failure-triage",
+                    candidate_version=commit_sha,
+                    anonymization_salt=anonymization_salt,
+                    salt_id=salt_id,
+                    triage_signing_key_id=triage_signing_key_id,
+                    triage_signing_key=triage_signing_key,
                 )
                 for split in REQUIRED_SPLITS
             ]
@@ -525,7 +626,7 @@ def _verify(args: argparse.Namespace) -> int:
         _write_report(output_dir, report)
         print(f"REAL_WORLD_RELEASE_GATE={'PASS' if passed else 'FAIL'}")
         return 0 if passed else 1
-    except (EvaluationInputError, ValueError) as exc:
+    except (EvaluationInputError, ValueError):
         report = {
             "schema_version": RELEASE_GATE_SCHEMA_VERSION,
             "proof_type": "real_world_release_regression",
@@ -539,7 +640,7 @@ def _verify(args: argparse.Namespace) -> int:
             "splits": [],
         }
         _write_report(output_dir, report)
-        print(f"REAL_WORLD_RELEASE_GATE_ERROR: {exc}")
+        print("REAL_WORLD_RELEASE_GATE_ERROR=release_gate_input_invalid")
         return 2
 
 
@@ -550,8 +651,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return _verify(args)
-    except (EvaluationInputError, ValueError) as exc:
-        print(f"REAL_WORLD_RELEASE_GATE_ERROR: {exc}")
+    except (EvaluationInputError, ValueError):
+        print("REAL_WORLD_RELEASE_GATE_ERROR=release_gate_input_invalid")
         return 2
 
 

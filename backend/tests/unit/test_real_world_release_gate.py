@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from app.services.failure_triage_signature import verify_failure_triage_signature
+from evals.failure_triage import FailureTriageInputError
 from evals.real_world import (
     CaseResult,
     EvaluationInputError,
@@ -13,6 +16,7 @@ from evals.real_world import (
 )
 from evals.release_change_detection import classify_release_sensitive_paths
 from evals.real_world_release_gate import (
+    _generate_candidate_failure_triage_artifacts,
     load_release_gate_config,
     main as release_gate_main,
     validate_candidate_runtime_versions,
@@ -22,7 +26,11 @@ from evals.real_world_release_gate import (
     validate_release_evidence,
     validate_release_event,
 )
-from evals.trusted_evidence import VerifiedEvaluationEvidence
+from evals.trusted_evidence import (
+    ExecutionProvenance,
+    VerifiedEvaluationEvidence,
+    _case_fingerprint,
+)
 from tests.real_world_fixtures import write_v2_manifest
 
 
@@ -312,9 +320,110 @@ def test_controlled_workflow_contract_is_fail_closed():
     assert "environment: real-world-evaluation" in workflow
     assert "EVAL_EVIDENCE_HMAC_KEY: ${{ secrets." in workflow
     assert "SECURITY_EVIDENCE_HMAC_KEY: ${{ secrets." in workflow
+    assert "EVAL_CASE_ID_SALT: ${{ secrets." in workflow
+    assert "EVAL_CASE_ID_SALT_ID: ${{ secrets." in workflow
+    assert "EVAL_REPORT_SIGNING_KEY: ${{ secrets." in workflow
+    assert "EVAL_REPORT_SIGNING_KEY_ID: ${{ secrets." in workflow
     assert "python -m evals.real_world_release_gate" in workflow
     assert "if-no-files-found: error" in workflow
     assert "real_world_release_gate.json" in workflow
+    assert "failure-triage/*.failure_triage.json" in workflow
+    assert "failure-triage/*.failure_triage.md" in workflow
+
+
+def _candidate_evidence(dataset, *, signature_verified: bool = True):
+    manifest_digest = dataset.fingerprint
+    output_digest = "sha256:" + "a" * 64
+    return VerifiedEvaluationEvidence(
+        schema_version="6.0",
+        versions=EvaluationVersions(
+            "model-v1",
+            "sha256:" + "1" * 64,
+            "sha256:" + "2" * 64,
+            "sha256:" + "3" * 64,
+        ),
+        dataset_fingerprint=manifest_digest,
+        evidence_digest="sha256:" + "4" * 64,
+        split="regression",
+        results=(
+            CaseResult(
+                case_id="case-1",
+                recommended_skus=2,
+                valid_skus=1,
+                generation_succeeded=True,
+            ),
+        ),
+        executions=(
+            ExecutionProvenance(
+                case_fingerprint=_case_fingerprint(manifest_digest, "case-1"),
+                execution_ref="exec-hmac-sha256:" + "5" * 64,
+                source="generation_worker",
+                generator="llm",
+                status="completed",
+                model="model-v1",
+                prompt_digest="sha256:" + "1" * 64,
+                rules_digest="sha256:" + "2" * 64,
+                data_digest="sha256:" + "3" * 64,
+                input_digest="sha256:" + "6" * 64,
+                prediction_digest="sha256:" + "7" * 64,
+                output_digest=output_digest,
+                result_digest="sha256:" + "8" * 64,
+            ),
+        ),
+        key_id="eval-key-v1",
+        signature_verified=signature_verified,
+    )
+
+
+def test_verified_candidate_generates_signed_redacted_triage_artifacts(tmp_path):
+    dataset = _manifest(tmp_path)
+    output_dir = tmp_path / "artifacts"
+
+    summary = _generate_candidate_failure_triage_artifacts(
+        dataset=dataset,
+        evidence=_candidate_evidence(dataset),
+        split="regression",
+        output_dir=output_dir,
+        candidate_version="a" * 40,
+        anonymization_salt="case-alias-secret-at-least-16",
+        salt_id="case-alias-v1",
+        signing_key_id="triage-signing-v1",
+        signing_key="triage-signing-secret-at-least-32-bytes",
+    )
+
+    json_path = output_dir / "regression.failure_triage.json"
+    markdown_path = output_dir / "regression.failure_triage.md"
+    report = json.loads(json_path.read_text(encoding="utf-8"))
+    serialized = json.dumps(report, ensure_ascii=False)
+    assert summary["failure_count"] == 1
+    assert summary["report_digest"].startswith("sha256:")
+    assert report["summary"]["failure_count"] == 1
+    assert verify_failure_triage_signature(
+        report["sync_payload"],
+        signing_key="triage-signing-secret-at-least-32-bytes",
+    )
+    assert "case-1" not in serialized
+    assert "case-1" not in markdown_path.read_text(encoding="utf-8")
+
+
+def test_candidate_triage_fails_closed_before_writing_unverified_evidence(tmp_path):
+    dataset = _manifest(tmp_path)
+    output_dir = tmp_path / "artifacts"
+
+    with pytest.raises(FailureTriageInputError, match="已验签"):
+        _generate_candidate_failure_triage_artifacts(
+            dataset=dataset,
+            evidence=_candidate_evidence(dataset, signature_verified=False),
+            split="regression",
+            output_dir=output_dir,
+            candidate_version="a" * 40,
+            anonymization_salt="case-alias-secret-at-least-16",
+            salt_id="case-alias-v1",
+            signing_key_id="triage-signing-v1",
+            signing_key="triage-signing-secret-at-least-32-bytes",
+        )
+
+    assert not output_dir.exists()
 
 
 def test_missing_controlled_environment_fails_closed_with_redacted_report(
@@ -334,3 +443,84 @@ def test_missing_controlled_environment_fails_closed_with_redacted_report(
     assert report["overall_passed"] is False
     assert report["error_code"] == "release_gate_input_invalid"
     assert "error" not in report
+
+
+def test_triage_generation_failure_fails_release_gate_with_redacted_report(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from evals import real_world_release_gate
+
+    dataset = _manifest(tmp_path)
+    environment = {
+        "GITHUB_SHA": "a" * 40,
+        "REAL_WORLD_BASE_REF": "origin/main",
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "APP_BUILD_DIGEST": "sha256:" + "b" * 64,
+        "REAL_WORLD_RELEASE_GATE_CONFIG_PATH": str(tmp_path / "private.json"),
+        "EVAL_EVIDENCE_KEY_ID": "eval-v1",
+        "EVAL_EVIDENCE_HMAC_KEY": "eval-secret-at-least-thirty-two-bytes",
+        "SECURITY_EVIDENCE_KEY_ID": "security-v1",
+        "SECURITY_EVIDENCE_HMAC_KEY": "security-secret-at-least-thirty-two-bytes",
+        "EVAL_CASE_ID_SALT": "alias-secret-at-least-sixteen",
+        "EVAL_CASE_ID_SALT_ID": "alias-v1",
+        "EVAL_REPORT_SIGNING_KEY": "triage-secret-at-least-thirty-two-bytes",
+        "EVAL_REPORT_SIGNING_KEY_ID": "triage-v1",
+    }
+    monkeypatch.setattr(
+        real_world_release_gate,
+        "_required_environment",
+        lambda name: environment[name],
+    )
+    monkeypatch.setattr(
+        real_world_release_gate,
+        "changed_paths_between",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        real_world_release_gate,
+        "load_release_gate_config",
+        lambda _path: {
+            split: SimpleNamespace(manifest=tmp_path, asset_root=tmp_path)
+            for split in real_world_release_gate.REQUIRED_SPLITS
+        },
+    )
+    monkeypatch.setattr(
+        real_world_release_gate,
+        "load_case_manifest",
+        lambda *_args, **_kwargs: dataset,
+    )
+    monkeypatch.setattr(
+        real_world_release_gate,
+        "validate_release_dataset",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(real_world_release_gate, "validate_release_cohort", lambda _datasets: 20)
+
+    def fail_triage(*_args, **_kwargs):
+        raise FailureTriageInputError("sensitive-case-id must not leak")
+
+    monkeypatch.setattr(
+        real_world_release_gate,
+        "_verify_split",
+        fail_triage,
+    )
+    output_dir = tmp_path / "release-output"
+
+    exit_code = release_gate_main(
+        ["--repo-root", str(tmp_path), "--output-dir", str(output_dir)]
+    )
+    report_text = (output_dir / "real_world_release_gate.json").read_text(
+        encoding="utf-8"
+    )
+    report = json.loads(report_text)
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert report["status"] == "invalid_or_missing_evidence"
+    assert report["overall_passed"] is False
+    assert "sensitive-case-id" not in report_text
+    assert "sensitive-case-id" not in captured.out
+    assert str(tmp_path) not in captured.out
+    assert "REAL_WORLD_RELEASE_GATE_ERROR=release_gate_input_invalid" in captured.out

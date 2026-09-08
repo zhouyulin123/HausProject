@@ -23,6 +23,10 @@ jobs:
       EVAL_EVIDENCE_HMAC_KEY: ${{ secrets.EVAL_EVIDENCE_HMAC_KEY }}
       SECURITY_EVIDENCE_KEY_ID: ${{ secrets.SECURITY_EVIDENCE_KEY_ID }}
       SECURITY_EVIDENCE_HMAC_KEY: ${{ secrets.SECURITY_EVIDENCE_HMAC_KEY }}
+      EVAL_CASE_ID_SALT: ${{ secrets.EVAL_CASE_ID_SALT }}
+      EVAL_CASE_ID_SALT_ID: ${{ secrets.EVAL_CASE_ID_SALT_ID }}
+      EVAL_REPORT_SIGNING_KEY: ${{ secrets.EVAL_REPORT_SIGNING_KEY }}
+      EVAL_REPORT_SIGNING_KEY_ID: ${{ secrets.EVAL_REPORT_SIGNING_KEY_ID }}
       DATABASE_URL: ${{ secrets.REAL_WORLD_EVAL_DATABASE_URL }}
       LLM_MODEL: ${{ secrets.REAL_WORLD_EVAL_LLM_MODEL }}
     steps:
@@ -49,5 +53,7 @@ jobs:
           path: |
             .test_artifacts/real-world-release-gate/real_world_release_gate.json
             .test_artifacts/real-world-release-gate/real_world_release_gate.md
+            .test_artifacts/real-world-release-gate/failure-triage/*.failure_triage.json
+            .test_artifacts/real-world-release-gate/failure-triage/*.failure_triage.md
           if-no-files-found: error
           retention-days: 30

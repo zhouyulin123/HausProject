@@ -185,7 +185,11 @@ python -m evals.run_real_world_eval `
 }
 ```
 
-门禁在临时目录内现场签发候选安全证据和评测证据，不上传这些内部制品；仅上传脱敏的 `real_world_release_gate.json/.md`。候选必须绑定 `APP_BUILD_DIGEST` 指定的当前受控部署，模型名必须匹配 `REAL_WORLD_EVAL_LLM_MODEL` Secret 注入的 `LLM_MODEL`，Prompt 与规则摘要必须能从目标提交现场复算一致；证据签发还会用当前数据库重新构建完整商品上下文和动态输入，任一版本变化都要求重新执行候选，防止旧运行冒充当前结果。基线允许绑定其历史构建，但必须通过原评测签名和独立安全签名。被测商品数据版本可以在候选与基线之间变化，评测数据集指纹与匿名案例集合必须保持相同，报告会并列保留模型、Prompt、规则、数据四类基线/候选版本。
+门禁在临时目录内现场签发候选安全证据和评测证据，不上传这些内部制品；上传目录只包含脱敏的 `real_world_release_gate.json/.md`，以及从已验签候选证据自动派生的每个 split 的 `failure-triage/*.failure_triage.json/.md`。分诊 JSON 包含既有签名同步载荷，门禁总报告只记录其摘要与 digest。候选证据验签失败、分诊派生失败或制品写入失败都会让发布门禁失败关闭，不会把原始 evidence、case ID、用户输入或资产路径复制到 artifact。
+
+受控 Environment 还必须分别配置 `EVAL_CASE_ID_SALT`、`EVAL_CASE_ID_SALT_ID`、`EVAL_REPORT_SIGNING_KEY` 与 `EVAL_REPORT_SIGNING_KEY_ID`。评测签名、安全签名、分诊签名及 case 别名四个用途的密钥和值标识不得复用；缺少任一项时门禁返回输入错误，不能跳过失败分诊继续发布。
+
+候选必须绑定 `APP_BUILD_DIGEST` 指定的当前受控部署，模型名必须匹配 `REAL_WORLD_EVAL_LLM_MODEL` Secret 注入的 `LLM_MODEL`，Prompt 与规则摘要必须能从目标提交现场复算一致；证据签发还会用当前数据库重新构建完整商品上下文和动态输入，任一版本变化都要求重新执行候选，防止旧运行冒充当前结果。基线允许绑定其历史构建，但必须通过原评测签名和独立安全签名。被测商品数据版本可以在候选与基线之间变化，评测数据集指纹与匿名案例集合必须保持相同，报告会并列保留模型、Prompt、规则、数据四类基线/候选版本。
 
 普通 `.github/workflows/quality.yml` 运行无依赖的 `evals.release_change_detection`，只输出 `proof_required` 或 `not_required`，不会生成 PASS。受控工作流无论路径检测结果如何都会执行三组，以覆盖部署环境中的模型或商品版本变更。模型/Prompt/布局规则/商品数据契约命中后，仓库分支保护或发布环境必须要求目标提交上的 `real-world-release-proof` 成功；否则仅有仓库代码无法强制 GitHub 的外部保护规则。
 
