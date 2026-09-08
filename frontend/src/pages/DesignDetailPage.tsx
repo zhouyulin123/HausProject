@@ -20,8 +20,8 @@ import {
   exportProposalPdf,
   fetchPlanByVersion,
   getCurrentTaskId,
-  refinePlan,
   revokePlanShare,
+  sendAgentTurn,
 } from "@/api/designApi";
 import { createOrder } from "@/api/orderApi";
 import { useDesignStore } from "@/store/useDesignStore";
@@ -189,13 +189,26 @@ export default function DesignDetailPage() {
     setRefineState("doing");
     setRefineMessage("");
     try {
-      const result = await refinePlan(taskId, plan.id, instruction);
-      setRefinedPlan(result.plan);
+      const response = await sendAgentTurn(taskId, {
+        client_turn_id:
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `plan-refine-${taskId}-${Date.now()}`,
+        message: instruction,
+        active_mode: "catalog_design",
+        plan_id: plan.id,
+      });
+      const result = response.result as { plan?: DesignPlan; message?: string } | null;
+      if (!result?.plan || response.status !== "completed") {
+        throw new Error(response.reply || "方案精修未完成");
+      }
+      const refined = result.plan;
+      setRefinedPlan(refined);
       setGeneratedPlans(
-        generatedPlans.map((p) => (p.id === result.plan.id ? result.plan : p)),
+        generatedPlans.map((p) => (p.id === refined.id ? refined : p)),
       );
       setRefineInstruction("");
-      setRefineMessage(result.message || "已按你的要求调整方案");
+      setRefineMessage(result.message || response.reply || "已按你的要求调整方案");
     } catch (e) {
       setRefineMessage(e instanceof Error ? e.message : "修改失败，请稍后重试");
       setRefineState("fail");

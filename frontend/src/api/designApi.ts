@@ -1309,6 +1309,7 @@ export interface AgentTurnRequest {
   scene_id?: number | null;
   base_scene_version?: number | null;
   selected_instance_id?: string | null;
+  plan_id?: string | null;
   answers?: {
     space_type?: string;
     style?: string;

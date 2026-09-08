@@ -92,4 +92,41 @@ describe("项目级智能体轮次", () => {
       custom_furniture_spec: { family: "table", purpose: "dining_table" },
     });
   });
+
+  it("方案精修和场景调整上下文均可通过统一 agent-turns 提交", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(jsonResponse({ reply: "已调整方案" }))
+      .mockResolvedValueOnce(jsonResponse({ reply: "已调整场景" }));
+    vi.stubGlobal("window", { localStorage: createLocalStorage({}) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { sendAgentTurn } = await import("./designApi");
+    await sendAgentTurn(42, {
+      client_turn_id: "plan-refine-turn-001",
+      message: "把主沙发换成浅灰色",
+      active_mode: "catalog_design",
+      plan_id: "plan-a",
+    });
+    await sendAgentTurn(42, {
+      client_turn_id: "scene-edit-turn-001",
+      message: "把沙发向左移动",
+      active_mode: "catalog_design",
+      scene_id: 9,
+      base_scene_version: 3,
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+      plan_id: "plan-a",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toMatchObject({
+      scene_id: 9,
+      base_scene_version: 3,
+    });
+    for (const [path] of fetchMock.mock.calls.slice(1)) {
+      expect(String(path)).toBe("/api/design/tasks/42/agent-turns");
+    }
+  });
 });

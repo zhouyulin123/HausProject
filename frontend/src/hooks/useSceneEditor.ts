@@ -5,7 +5,7 @@ import {
   fetchDesignScene,
   fetchBlenderRenderJob,
   loadOrCreateDesignScene,
-  runSceneAgentCommand,
+  sendAgentTurn,
   updateDesignScene,
 } from "@/api/designApi";
 import {
@@ -454,7 +454,7 @@ export function useSceneEditor(
     async (instruction: string) => {
       if (!instruction.trim()) return;
       if (sceneAgentRunInFlightRef.current) return;
-      if (!sceneIdRef.current || !serverVersionRef.current) {
+      if (!plan.task_id || !sceneIdRef.current || !serverVersionRef.current) {
         setSceneAgentState("error");
         setSceneAgentMessage("演示方案暂不写入云端，请先生成一套正式方案");
         return;
@@ -476,10 +476,21 @@ export function useSceneEditor(
       const startingChangeId = historyRef.current.changeId;
       setSceneAgentMessage("正在理解指令并检查空间约束…");
       try {
-        const result = await runSceneAgentCommand(
-          sceneId,
-          baseVersion,
-          instruction.trim(),
+        const response = await sendAgentTurn(plan.task_id!, {
+          client_turn_id:
+            typeof crypto !== "undefined" && "randomUUID" in crypto
+              ? crypto.randomUUID()
+              : `scene-agent-${plan.task_id}-${Date.now()}`,
+          message: instruction.trim(),
+          active_mode: "catalog_design",
+          scene_id: sceneId,
+          base_scene_version: baseVersion,
+        });
+        if (response.status !== "completed" || !response.scene_ref) {
+          throw new Error(response.reply || "场景调整未完成");
+        }
+        const authoritativeScene = await fetchDesignScene(
+          response.scene_ref.scene_id,
         );
         if (historyRef.current.changeId !== startingChangeId) {
           syncStateRef.current = "conflict";
@@ -489,17 +500,17 @@ export function useSceneEditor(
           return;
         }
         publishSceneReference({
-          id: result.scene.id,
-          version: result.scene.current_version,
+          id: authoritativeScene.id,
+          version: authoritativeScene.current_version,
         });
         lastSavedChangeIdRef.current = 0;
-        setValidation(result.scene.validation);
+        setValidation(authoritativeScene.validation);
         setSelectedItemId(null);
-        setHistory((current) => replaceScene(current, result.scene.scene));
+        setHistory((current) => replaceScene(current, authoritativeScene.scene));
         syncStateRef.current = "saved";
         setSyncState("saved");
         setSceneAgentState("done");
-        setSceneAgentMessage(result.message);
+        setSceneAgentMessage(response.reply);
       } catch (error) {
         if (error instanceof ApiError && error.status === 409) {
           setSyncState("conflict");
@@ -520,7 +531,7 @@ export function useSceneEditor(
         sceneAgentStateRef.current = "idle";
       }
     },
-    [flushSave, publishSceneReference],
+    [flushSave, plan.task_id, publishSceneReference],
   );
 
   useEffect(() => {
