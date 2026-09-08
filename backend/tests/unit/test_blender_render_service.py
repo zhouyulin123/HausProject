@@ -49,6 +49,97 @@ def _scene() -> SceneDocument:
     )
 
 
+def _scene_with_asset_contract(
+    *,
+    asset_mode: str,
+    fallback_reason: str | None = None,
+    source_type: str = "catalog",
+) -> SceneDocument:
+    payload = _scene().model_dump(by_alias=True, mode="json")
+    item = payload["items"][0]
+    item["assetMode"] = asset_mode
+    item["fallbackReason"] = fallback_reason
+    item["sourceType"] = source_type
+    if source_type == "custom_furniture_draft":
+        item["sku"] = "CUSTOM-DRAFT-001"
+        item["customFurnitureRef"] = {
+            "taskId": 1,
+            "planVersionId": 1,
+            "introducedSceneVersion": 1,
+            "draftClientMutationId": "draft-0001",
+            "draftStateVersion": 1,
+            "specDigest": "sha256:" + "a" * 64,
+        }
+    payload["items"] = [item]
+    return SceneDocument.model_validate(payload)
+
+
+def test_manifest_marks_unresolvable_approved_glb_as_explicit_fallback(tmp_path):
+    manifest = build_render_manifest(
+        scene=_scene_with_asset_contract(asset_mode="approved_glb"),
+        product_model_urls={"SOFA-001": "/models/missing.glb"},
+        upload_root=tmp_path / "uploads",
+        frontend_public_root=tmp_path / "public",
+        profile="preview",
+    )
+
+    item = manifest["scene"]["items"][0]
+    assert item["modelPath"] is None
+    assert item["assetMode"] == "fallback"
+    assert item["fallbackReason"] == "glb_unavailable"
+
+
+def test_manifest_keeps_resolved_approved_glb_contract(tmp_path):
+    public_root = tmp_path / "public"
+    model = public_root / "models" / "sofa.glb"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"glTF")
+
+    manifest = build_render_manifest(
+        scene=_scene_with_asset_contract(asset_mode="approved_glb"),
+        product_model_urls={"SOFA-001": "/models/sofa.glb"},
+        upload_root=tmp_path / "uploads",
+        frontend_public_root=public_root,
+        profile="preview",
+    )
+
+    item = manifest["scene"]["items"][0]
+    assert item["modelPath"] == str(model.resolve())
+    assert item["assetMode"] == "approved_glb"
+    assert item["fallbackReason"] is None
+
+
+def test_manifest_preserves_specific_fallback_and_custom_parametric_contracts(tmp_path):
+    existing_fallback = build_render_manifest(
+        scene=_scene_with_asset_contract(
+            asset_mode="fallback",
+            fallback_reason="glb_pending_review",
+        ),
+        product_model_urls={"SOFA-001": None},
+        upload_root=tmp_path / "uploads",
+        frontend_public_root=tmp_path / "public",
+        profile="preview",
+    )["scene"]["items"][0]
+    custom_parametric = build_render_manifest(
+        scene=_scene_with_asset_contract(
+            asset_mode="parametric",
+            source_type="custom_furniture_draft",
+        ),
+        product_model_urls={},
+        upload_root=tmp_path / "uploads",
+        frontend_public_root=tmp_path / "public",
+        profile="preview",
+    )["scene"]["items"][0]
+
+    assert existing_fallback["modelPath"] is None
+    assert existing_fallback["assetMode"] == "fallback"
+    assert existing_fallback["fallbackReason"] == "glb_pending_review"
+    assert custom_parametric["modelPath"] is None
+    assert custom_parametric["sourceType"] == "custom_furniture_draft"
+    assert custom_parametric["assetMode"] == "parametric"
+    assert custom_parametric["fallbackReason"] is None
+
+
 def test_manifest_resolves_only_allowlisted_local_model_assets(tmp_path):
     upload_root = tmp_path / "uploads"
     public_root = tmp_path / "public"
