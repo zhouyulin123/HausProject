@@ -347,6 +347,9 @@ def test_controlled_workflow_contract_is_fail_closed():
     assert "EVAL_REPORT_SIGNING_KEY_ID: ${{ secrets." in workflow
     assert "REAL_WORLD_RELEASE_PROOF_SIGNING_KEY_B64: ${{ secrets." in workflow
     assert "REAL_WORLD_RELEASE_PROOF_KEY_ID: ${{ vars." in workflow
+    assert "FAILURE_VERIFICATION_SIGNING_KEY: ${{ secrets." in workflow
+    assert "FAILURE_VERIFICATION_SIGNING_KEY_ID: ${{ secrets." in workflow
+    assert "FAILURE_VERIFICATION_TARGETS_PATH: ${{ secrets." in workflow
     assert "python -m evals.real_world_release_gate" in workflow
     run_output_dir = (
         ".test_artifacts/real-world-release-gate/"
@@ -371,6 +374,15 @@ def test_controlled_workflow_contract_is_fail_closed():
     assert "failure-triage/*.failure_triage.md" in workflow
     assert "name: real-world-release-proof-${{ inputs.target_sha }}" in workflow
     assert "real_world_release_proof.json" in workflow
+    assert "python -m evals.failure_verification" in workflow
+    assert "failure_verification.json" in workflow
+    assert "name: real-world-failure-verification-${{ inputs.target_sha }}" in workflow
+    assert "--release-gate-report" in workflow
+    assert "--triage-dir" in workflow
+    assert "--targets ${{ env.FAILURE_VERIFICATION_TARGETS_PATH }}" in workflow
+    assert workflow.count(
+        "if: success() && env.FAILURE_VERIFICATION_TARGETS_PATH != ''"
+    ) == 2
 
 
 def test_quality_workflow_fetches_only_sha_bound_proof_artifact():

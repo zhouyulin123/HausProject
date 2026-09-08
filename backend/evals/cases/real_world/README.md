@@ -252,4 +252,6 @@ digest、完整 evidence digest 和涉及的 immutable output digest；聚类还
 准入、验签、结构、密钥或输出不合法。
 当前清单没有准入案例，CLI 会以 `2` 拒绝生成空洞的“成功”报告。
 
+失败簇复测由受保护 workflow 的 `evals.failure_verification` 生产。仅当受保护环境提供 `FAILURE_VERIFICATION_TARGETS_PATH` 时执行；没有待复测簇时跳过，不影响常规发布证明。它读取通过的三 split 门禁报告、三份候选 `failure-triage` JSON，以及受控路径中的目标文件（schema `1.0`，只列出 fingerprint 和 fixed_version）。目标不能根据本次候选“未出现”自动生成；只有所有 split 的 manifest/evidence/baseline/output 摘要完整、三份签名候选版本与门禁目标提交一致、目标 fingerprint 在三份候选聚类中均未复现时，才签发与 `FailureVerificationReportRequest` 对齐的 `failure_verification` HMAC 报告。报告 ID 同时绑定提交与目标集合摘要；报告只包含摘要、版本、明确目标和签名，不包含 case ID、用户输入、图片或原始分诊内容。提供目标后，任一 split 缺失、摘要不合法、版本错配、目标复现或输出失败都会返回 `2`。
+
 后端必须通过 `EVAL_REPORT_SIGNING_KEY` 配置同一签名密钥，未配置时同步接口返回 `503`。签名不匹配返回 `422`；同一 `report_id` 对应不同内容，或同一语义证据更换 ID 重放，返回 `409`。报告只包含匿名聚合，不包含原始案例 ID、用户文本或图片。
