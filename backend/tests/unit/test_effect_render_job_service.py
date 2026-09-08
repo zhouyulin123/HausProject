@@ -11,6 +11,7 @@ from app.db.models import (
     DesignTask,
     EffectRenderJob,
     RenderedImage,
+    TaskExecutionEvent,
 )
 from app.services import effect_render_job_service
 
@@ -151,6 +152,16 @@ def test_expired_lease_retries_then_dead_letters_and_stale_attempt_cannot_commit
             db.refresh(job)
             assert job.status == "dead_letter"
             assert job.dead_lettered_at is not None
+            events = db.query(TaskExecutionEvent).order_by(TaskExecutionEvent.id).all()
+            assert [event.event_code for event in events] == [
+                "effect.queued",
+                "effect.claimed",
+                "effect.retry_scheduled",
+                "effect.claimed",
+                "effect.dead_letter",
+            ]
+            assert not any(event.event_code == "effect.completed" for event in events)
+            assert events[-1].billing_status == "unknown"
     finally:
         engine.dispose()
 

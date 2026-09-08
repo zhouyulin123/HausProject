@@ -12,6 +12,7 @@ from app.db.models import (
     GenerationRun,
     GenerationRunEvent,
     LayoutRun,
+    TaskExecutionEvent,
 )
 from app.services import design_version_service, generation_run_service
 from tests.scene_fixtures import attach_scene_versions
@@ -208,6 +209,8 @@ def test_worker_claim_sets_lease_and_only_owner_can_renew_or_complete(db):
         worker_attempt=1,
         generator="llm",
     )
+    claimed.cost_cny = 1.5
+    db.commit()
     revision = _persist_run_output(db, task)
     assert generation_run_service.mark_completed(
         db,
@@ -221,6 +224,17 @@ def test_worker_claim_sets_lease_and_only_owner_can_renew_or_complete(db):
     assert claimed.status == "completed"
     assert claimed.worker_id is None
     assert claimed.lease_expires_at is None
+    timeline = db.scalars(
+        select(TaskExecutionEvent).where(TaskExecutionEvent.task_id == task.id)
+        .order_by(TaskExecutionEvent.id)
+    ).all()
+    assert [event.event_code for event in timeline] == [
+        "generation.queued",
+        "generation.claimed",
+        "generation.completed",
+    ]
+    assert timeline[-1].billing_status == "metered"
+    assert timeline[-1].cost_cny == 1.5
 
 
 @pytest.mark.unit

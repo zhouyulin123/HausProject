@@ -12,6 +12,7 @@ from app.db.models import (
     DesignSceneVersion,
     DesignTask,
     RenderedImage,
+    TaskExecutionEvent,
 )
 from app.services import blender_job_service
 
@@ -453,5 +454,17 @@ def test_stale_attempt_cannot_publish_and_current_attempt_binds_plan_version():
             rendered = db.query(RenderedImage).one()
             assert rendered.plan_version_id == plan.id
             assert rendered.task_id == task.id
+            events = db.query(TaskExecutionEvent).order_by(TaskExecutionEvent.id).all()
+            assert [event.event_code for event in events] == [
+                "blender.claimed",
+                "blender.retry_scheduled",
+                "blender.claimed",
+                "blender.completed",
+            ]
+            assert not any(
+                event.event_key.endswith(f"a{first_attempt}:completed")
+                for event in events
+            )
+            assert events[-1].billing_status == "unknown"
     finally:
         engine.dispose()
