@@ -1365,6 +1365,53 @@ export interface DesignAgentStateResponse {
   messages: { id: number; role: "user" | "ai"; content: string; created_at: string | null }[];
 }
 
+export interface AgentApproval {
+  id: number;
+  task_id: number;
+  turn_id: number;
+  approval_type: "quote_review" | "construction_risk" | "quality_gate";
+  status: "pending" | "approved" | "rejected";
+  request_reason: string;
+  reason_code: string;
+  request_context: Record<string, unknown>;
+  requested_at: string;
+  client_decision_id: string | null;
+  decision: "approve" | "reject" | null;
+  conclusion: string | null;
+  decided_by_type: string | null;
+  decided_by_id: string | null;
+  decided_at: string | null;
+}
+
+export async function fetchAgentApprovals(taskId: number): Promise<AgentApproval[]> {
+  const response = await request<{ approvals: AgentApproval[] }>(
+    `/api/design/tasks/${taskId}/agent-approvals`,
+  );
+  return response.approvals;
+}
+
+export async function decideAgentApproval(
+  taskId: number,
+  approvalId: number,
+  payload: {
+    clientDecisionId: string;
+    decision: "approve" | "reject";
+    conclusion: string;
+  },
+): Promise<AgentApproval> {
+  return request<AgentApproval>(
+    `/api/design/tasks/${taskId}/agent-approvals/${approvalId}/decision`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        client_decision_id: payload.clientDecisionId,
+        decision: payload.decision,
+        conclusion: payload.conclusion,
+      }),
+    },
+  );
+}
+
 export async function saveCustomFurnitureDraft(
   taskId: number,
   payload: {

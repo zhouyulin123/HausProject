@@ -15,7 +15,10 @@ import CustomFurniturePanel from "@/components/workspace/CustomFurniturePanel";
 import DesignWorkspaceInspector from "@/components/workspace/DesignWorkspaceInspector";
 import WorkspaceFeedbackControls from "@/components/workspace/WorkspaceFeedbackControls";
 import AgentExecutionPanel from "@/components/workspace/AgentExecutionPanel";
+import AgentApprovalPanel from "@/components/workspace/AgentApprovalPanel";
 import {
+  decideAgentApproval,
+  fetchAgentApprovals,
   fetchDesignAgentState,
   fetchDesignScene,
   fetchDesignTaskPlans,
@@ -23,6 +26,7 @@ import {
   mutateWorkspacePlan,
   resumeAgentGeneration,
   type AgentTurnResponse,
+  type AgentApproval,
 } from "@/api/designApi";
 import { parseCustomFurniturePreview } from "@/lib/customFurnitureWorkspace";
 import {
@@ -72,8 +76,25 @@ export default function DesignWorkspacePage() {
   const [agentConnection, setAgentConnection] = useState<AgentConnection>("checking");
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("conversation");
   const [satisfaction, setSatisfaction] = useState<1 | 2 | 3 | 4 | 5 | null>(null);
+  const [approvals, setApprovals] = useState<AgentApproval[]>([]);
+  const [approvalsLoading, setApprovalsLoading] = useState(false);
+  const [approvalsError, setApprovalsError] = useState("");
+  const [decidingApprovalId, setDecidingApprovalId] = useState<number | null>(null);
   const finalSelectRef = useRef<{ signature: string; clientEventId: string } | null>(null);
   const feedback = useFeedbackDelivery(projectId ?? 0);
+
+  const refreshApprovals = useCallback(async () => {
+    if (!projectId) return;
+    setApprovalsLoading(true);
+    setApprovalsError("");
+    try {
+      setApprovals(await fetchAgentApprovals(projectId));
+    } catch {
+      setApprovalsError("审批记录读取失败，请稍后重试。");
+    } finally {
+      setApprovalsLoading(false);
+    }
+  }, [projectId]);
 
   const restoreServerPlans = useCallback(async (taskId: number) => {
     try {
@@ -119,7 +140,8 @@ export default function DesignWorkspacePage() {
     if (response.status === "completed" && response.intent === "design") {
       void restoreServerPlans(projectId);
     }
-  }, [applyAgentState, projectId, restoreServerPlans]);
+    if (response.approval_required) void refreshApprovals();
+  }, [applyAgentState, projectId, refreshApprovals, restoreServerPlans]);
 
   const appendConversationTurn = useCallback((message: string, reply: string) => {
     if (!projectId) return;
@@ -135,6 +157,10 @@ export default function DesignWorkspacePage() {
   useEffect(() => {
     if (project) selectProject(project.id);
   }, [project, selectProject]);
+
+  useEffect(() => {
+    if (project) void refreshApprovals();
+  }, [project?.id, refreshApprovals]);
 
   useEffect(() => {
     if (!project) return;
@@ -308,6 +334,31 @@ export default function DesignWorkspacePage() {
     [activeRoomId, feedback.submit, planVersionId, projectId],
   );
 
+  const handleApprovalDecision = useCallback(async (
+    approval: AgentApproval,
+    decision: "approve" | "reject",
+    conclusion: string,
+  ) => {
+    if (!projectId) return;
+    setDecidingApprovalId(approval.id);
+    setApprovalsError("");
+    try {
+      const decided = await decideAgentApproval(projectId, approval.id, {
+        clientDecisionId: `approval-${projectId}-${approval.id}-${decision}`,
+        decision,
+        conclusion,
+      });
+      setApprovals((current) => current.map((item) => (
+        item.id === decided.id ? decided : item
+      )));
+    } catch {
+      setApprovalsError("审批决定提交失败，请刷新记录后重试。");
+      void refreshApprovals();
+    } finally {
+      setDecidingApprovalId(null);
+    }
+  }, [projectId, refreshApprovals]);
+
   useEffect(() => {
     if (!project || !activePlan || !catalog.length) return;
     const selectedSkus = new Set(
@@ -463,6 +514,16 @@ export default function DesignWorkspacePage() {
           status={project.status}
           exitReason={project.exitReason}
           execution={project.execution}
+        />
+
+        <AgentApprovalPanel
+          approvals={approvals}
+          loading={approvalsLoading}
+          error={approvalsError}
+          decidingId={decidingApprovalId}
+          onDecision={(approval, decision, conclusion) => {
+            void handleApprovalDecision(approval, decision, conclusion);
+          }}
         />
 
         <WorkspaceFeedbackControls
