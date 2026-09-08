@@ -13,6 +13,7 @@ from app.db.models import (
     DesignRevision,
     DesignScene,
     DesignTask,
+    GenerationRun,
     GenerationRunSceneEvidence,
     Product,
 )
@@ -300,6 +301,72 @@ def test_agent_generation_run_disables_template_fallback_in_default_worker(
         start_heartbeat=False,
     )
     assert allow_template_values == [False]
+
+
+def test_worker_commits_known_model_cost_before_later_execution_failure(
+    monkeypatch,
+):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(status="confirmed", progress=50)
+        db.add(task)
+        db.commit()
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            idempotency_key="worker-paid-then-failed",
+            request_digest="sha256:" + "d" * 64,
+        )
+        run_id = run.id
+
+    def executor(
+        _db,
+        *,
+        task,
+        on_step,
+        on_meta,
+        before_persist,
+        on_success,
+    ):
+        on_meta(
+            {
+                "meta": {
+                    "model": "provider/model",
+                    "prompt_snapshot": "prompt",
+                    "prompt_digest": "sha256:" + "1" * 64,
+                    "rules_digest": "sha256:" + "2" * 64,
+                    "data_digest": "sha256:" + "3" * 64,
+                    "input_snapshot": {"task_id": task.id},
+                    "input_digest": "sha256:" + "4" * 64,
+                    "provenance_schema_version": 4,
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 25,
+                        "total_tokens": 125,
+                    },
+                    "cost_cny": 0.0004,
+                },
+                "output_snapshot": {"accepted": False},
+            }
+        )
+        raise RuntimeError("模型输出结构校验失败")
+
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+
+    assert generation_worker.process_one_run(
+        worker_id="worker-paid-then-failed",
+        executor=executor,
+        start_heartbeat=False,
+    )
+
+    with factory() as db:
+        failed = db.get(GenerationRun, run_id)
+        assert failed is not None
+        assert failed.status == "queued"
+        assert failed.usage_json["total_tokens"] == 125
+        assert failed.cost_cny == pytest.approx(0.0004)
 
 
 def test_worker_budget_replan_exhaustion_moves_agent_to_explicit_needs_human(
