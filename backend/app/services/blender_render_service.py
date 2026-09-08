@@ -78,6 +78,9 @@ def build_render_manifest(
             frontend_public_root=frontend_public_root,
         )
         item["modelPath"] = str(model_path) if model_path else None
+        if item["assetMode"] == "approved_glb" and model_path is None:
+            item["assetMode"] = "fallback"
+            item["fallbackReason"] = "glb_unavailable"
     return {
         "schemaVersion": "1.0",
         "profile": deepcopy(_RENDER_PROFILES[profile]),
