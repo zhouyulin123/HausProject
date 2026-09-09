@@ -14,7 +14,6 @@ import {
   ShoppingBag,
   Wand2,
 } from "lucide-react";
-import { mockDesigns } from "@/data/mockDesigns";
 import {
   createPlanShare,
   exportProposalPdf,
@@ -109,10 +108,7 @@ export default function DesignDetailPage() {
       );
       if (byVersion) return byVersion;
     }
-    return (
-      generatedPlans.find((p) => p.id === id) ??
-      mockDesigns.find((p) => p.id === id)
-    );
+    return generatedPlans.find((p) => p.id === id);
   }, [generatedPlans, id]);
 
   // 本地无缓存且 id 是版本号时，向后端按版本兜底拉取

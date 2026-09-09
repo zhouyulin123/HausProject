@@ -19,4 +19,11 @@ describe("方案推荐分数证据边界", () => {
     expect(source).not.toContain(".score");
     expect(source).not.toContain("风格最匹配");
   });
+
+  it("方案详情页不通过 URL 静默加载 Mock 方案", () => {
+    const source = readFileSync(new URL("./DesignDetailPage.tsx", import.meta.url), "utf-8");
+
+    expect(source).not.toContain('from "@/data/mockDesigns"');
+    expect(source).not.toContain("mockDesigns.find");
+  });
 });
