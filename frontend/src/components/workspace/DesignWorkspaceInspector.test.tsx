@@ -5,6 +5,7 @@ import { emptyRequirement } from "@/types/requirement";
 import type { FurnitureItem } from "@/types/furniture";
 import type { DesignPlan } from "@/types/design";
 import DesignWorkspaceInspector, {
+  workspaceFactRows,
   workspaceQuotePresentation,
 } from "./DesignWorkspaceInspector";
 
@@ -81,6 +82,32 @@ const plan = {
 } satisfies DesignPlan;
 
 describe("工作台家具替换入口", () => {
+  it("只展示白名单 Agent 事实并标明证据状态", () => {
+    const project = createDesignProject(
+      "room_reconstruction",
+      { requirement: emptyRequirement, roomModel: null },
+      { id: 42 },
+    );
+    project.facts = {
+      space_type: "客厅",
+      room_width_m: 4.2,
+      private_note: "不应展示",
+    };
+    project.factEvidence = {
+      space_type: { confidence: 0.91, accepted: true },
+      room_width_m: { confidence: 0.42, confirmation_required: true },
+    };
+
+    expect(workspaceFactRows(project)).toEqual([
+      expect.objectContaining({ key: "space_type", value: "客厅", confidence: 91 }),
+      expect.objectContaining({
+        key: "room_width_m",
+        value: "4.2 m",
+        confirmationRequired: true,
+      }),
+    ]);
+  });
+
   it("为已选家具提供明确替换动作，并保留目录加入/移除语义", () => {
     const project = createDesignProject(
       "catalog_design",

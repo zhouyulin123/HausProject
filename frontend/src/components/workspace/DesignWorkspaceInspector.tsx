@@ -22,6 +22,43 @@ import { getFurnitureDataOriginLabel } from "@/lib/furnitureDataOrigin";
 
 type InspectorTab = "room" | "catalog" | "budget";
 
+const FACT_LABELS: Record<string, string> = {
+  space_type: "空间类型",
+  room_width_m: "房间宽度",
+  room_depth_m: "房间深度",
+  style: "设计风格",
+  budget_max: "预算上限",
+  delivery_region: "交付地区",
+};
+
+function formatFactValue(key: string, value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (key === "room_width_m" || key === "room_depth_m") return `${value} m`;
+  if (key === "budget_max") return `¥${value.toLocaleString("zh-CN")}`;
+  return String(value);
+}
+
+export function workspaceFactRows(project: DesignProject) {
+  return Object.entries(FACT_LABELS).flatMap(([key, label]) => {
+    const value = formatFactValue(key, project.facts[key]);
+    if (!value) return [];
+    const evidence = project.factEvidence[key] ?? {};
+    const confidence = typeof evidence.confidence === "number"
+      && Number.isFinite(evidence.confidence)
+      ? Math.round(Math.min(1, Math.max(0, evidence.confidence)) * 100)
+      : null;
+    return [{
+      key,
+      label,
+      value,
+      confidence,
+      confirmationRequired: evidence.confirmation_required === true,
+      accepted: evidence.accepted !== false,
+    }];
+  });
+}
+
 export function workspaceQuotePresentation(plan: DesignPlan) {
   const quote = plan.shopQuote;
   return {
@@ -64,6 +101,7 @@ export default function DesignWorkspaceInspector({
   const selectedItems = catalog.filter((item) =>
     project.selectedFurnitureIds.includes(item.id),
   );
+  const factRows = workspaceFactRows(project);
   const quote = workspaceQuotePresentation(plan);
   const filteredCatalog = catalog
     .filter((item) =>
@@ -209,6 +247,30 @@ export default function DesignWorkspaceInspector({
                 <p className="mt-1 text-[10px] leading-4 text-[#7f8b81]">{question.reason}</p>
               </div>
             ))}
+            {factRows.length > 0 && (
+              <section className="mt-5 border-t border-white/10 pt-4" aria-label="已确认设计事实">
+                <p className="font-mono text-[10px] tracking-[0.14em] text-[#7f8b81] uppercase">
+                  Agent facts
+                </p>
+                <dl className="mt-2 space-y-2">
+                  {factRows.map((fact) => (
+                    <div key={fact.key} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-xs">
+                      <dt className="text-[#7f8b81]">{fact.label}</dt>
+                      <dd className="text-right text-[#dce2da]">
+                        <span>{fact.value}</span>
+                        <span className={`ml-2 text-[10px] ${fact.confirmationRequired || !fact.accepted ? "text-[#f1c08b]" : "text-[#829084]"}`}>
+                          {fact.confirmationRequired || !fact.accepted
+                            ? "待确认"
+                            : fact.confidence === null
+                              ? "已确认"
+                              : `${fact.confidence}%`}
+                        </span>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </section>
+            )}
           </div>
         )}
 

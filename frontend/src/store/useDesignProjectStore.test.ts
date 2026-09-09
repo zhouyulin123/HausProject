@@ -90,6 +90,10 @@ describe("useDesignProjectStore", () => {
       pendingQuestions: [
         { field: "room.width", prompt: "客厅实际宽度是多少？", reason: "空间尺度置信度不足" },
       ],
+      facts: { space_type: "客厅", room_width_m: 4.2 },
+      factEvidence: {
+        room_width_m: { confidence: 0.42, confirmation_required: true },
+      },
       sceneRef: { scene_id: 12, version: 4 },
       exitReason: "missing_facts",
     });
@@ -99,7 +103,11 @@ describe("useDesignProjectStore", () => {
       stateVersion: 7,
       sceneRef: { scene_id: 12, version: 4 },
       exitReason: "missing_facts",
+      facts: { space_type: "客厅", room_width_m: 4.2 },
     });
+    expect(
+      useDesignProjectStore.getState().projects[42]?.factEvidence.room_width_m,
+    ).toMatchObject({ confidence: 0.42, confirmation_required: true });
     expect(
       useDesignProjectStore.getState().projects[42]?.pendingQuestions[0]?.prompt,
     ).toBe("客厅实际宽度是多少？");
@@ -362,7 +370,7 @@ describe("useDesignProjectStore", () => {
     });
   });
 
-  it("把旧本地项目迁移为 v4 并补齐执行与定制草稿引用", async () => {
+  it("把旧本地项目迁移为 v5 并补齐执行、事实与定制草稿引用", async () => {
     const legacyProject = useDesignProjectStore
       .getState()
       .registerProject(47, "catalog_design", {
@@ -372,6 +380,8 @@ describe("useDesignProjectStore", () => {
     const project = { ...useDesignProjectStore.getState().projects[legacyProject] };
     project.generationRunId = 9;
     Reflect.deleteProperty(project, "execution");
+    Reflect.deleteProperty(project, "facts");
+    Reflect.deleteProperty(project, "factEvidence");
     const migrated = migrateDesignProjectState({
       projects: { 47: project },
       currentProjectId: 47,
@@ -380,6 +390,8 @@ describe("useDesignProjectStore", () => {
         execution?: unknown;
         generationRunId?: number | null;
         customFurnitureDraftReference?: unknown;
+        facts?: unknown;
+        factEvidence?: unknown;
       }>;
     };
 
@@ -391,6 +403,8 @@ describe("useDesignProjectStore", () => {
     expect(migrated.projects[47]?.generationRunId).toBe(9);
     expect(migrated.projects[47]).toMatchObject({
       customFurnitureDraftReference: null,
+      facts: {},
+      factEvidence: {},
     });
   });
 });

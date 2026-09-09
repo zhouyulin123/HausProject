@@ -63,6 +63,8 @@ interface DesignProjectState {
       status: DesignProject["status"];
       activeMode: DesignProjectMode;
       pendingQuestions: AgentPendingQuestion[];
+      facts?: Record<string, unknown>;
+      factEvidence?: Record<string, Record<string, unknown>>;
       sceneRef: AgentSceneReference | null;
       exitReason: AgentExitReason | null;
       activeRoomId?: string | null;
@@ -87,6 +89,8 @@ export function migrateDesignProjectState(persisted: unknown, _version?: number)
         {
           ...project,
           messages: [],
+          facts: project.facts ?? {},
+          factEvidence: project.factEvidence ?? {},
           customFurnitureSpec: null,
           customFurnitureResult: null,
           authoritativeScene: null,
@@ -257,6 +261,12 @@ export const useDesignProjectStore = create<DesignProjectState>()(
             mode: checkpoint.activeMode,
             stateVersion: checkpoint.stateVersion,
             pendingQuestions: checkpoint.pendingQuestions,
+            facts: checkpoint.facts
+              ? structuredClone(checkpoint.facts)
+              : project.facts,
+            factEvidence: checkpoint.factEvidence
+              ? structuredClone(checkpoint.factEvidence)
+              : project.factEvidence,
             sceneRef:
               project.sceneRef
               && checkpoint.sceneRef
@@ -289,7 +299,7 @@ export const useDesignProjectStore = create<DesignProjectState>()(
     }),
     {
       name: "ai-home-design-projects",
-      version: 4,
+      version: 5,
       migrate: migrateDesignProjectState,
       partialize: (state) => ({
         projects: Object.fromEntries(

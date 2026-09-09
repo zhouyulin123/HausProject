@@ -52,6 +52,8 @@ export interface DesignProject {
   activeRoomId: string | null;
   stateVersion: number;
   pendingQuestions: AgentPendingQuestion[];
+  facts: Record<string, unknown>;
+  factEvidence: Record<string, Record<string, unknown>>;
   sceneRef: AgentSceneReference | null;
   authoritativeScene: DesignScene | null;
   exitReason: AgentExitReason | null;
@@ -228,6 +230,8 @@ export function createDesignProject(
     activeRoomId: seed.roomModel?.rooms[0]?.id ?? null,
     stateVersion: 0,
     pendingQuestions: [],
+    facts: {},
+    factEvidence: {},
     sceneRef: null,
     authoritativeScene: null,
     exitReason: null,
