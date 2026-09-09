@@ -1,8 +1,9 @@
 from pathlib import Path
 
 
-STARTUP_SCRIPT = Path(__file__).resolve().parents[3] / "startHaus.bat"
-VITE_CONFIG = Path(__file__).resolve().parents[3] / "frontend" / "vite.config.ts"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+STARTUP_SCRIPT = REPO_ROOT / "startHaus.bat"
+VITE_CONFIG = REPO_ROOT / "frontend" / "vite.config.ts"
 
 
 def test_startup_script_discovers_python_without_machine_specific_path():

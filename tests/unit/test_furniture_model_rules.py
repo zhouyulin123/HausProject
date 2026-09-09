@@ -13,8 +13,9 @@ from app.services.furniture_model_rules import (
 )
 
 
-SPEC_FILE = Path(__file__).resolve().parents[2] / "furniture_3d_specs.json"
-SPEC_40_FILE = Path(__file__).resolve().parents[2] / "furniture_3d_specs_40.json"
+BACKEND_ROOT = Path(__file__).resolve().parents[2] / "backend"
+SPEC_FILE = BACKEND_ROOT / "furniture_3d_specs.json"
+SPEC_40_FILE = BACKEND_ROOT / "furniture_3d_specs_40.json"
 
 
 def _lounge_chair_spec() -> dict:

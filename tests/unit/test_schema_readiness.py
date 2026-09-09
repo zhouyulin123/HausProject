@@ -34,7 +34,7 @@ class _Session:
 
 
 def test_expected_migration_heads_match_alembic_repository():
-    backend_root = Path(__file__).resolve().parents[2]
+    backend_root = Path(__file__).resolve().parents[2] / "backend"
     config = Config(str(backend_root / "alembic.ini"))
     expected = tuple(sorted(ScriptDirectory.from_config(config).get_heads()))
 

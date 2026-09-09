@@ -328,7 +328,7 @@ def test_gate_config_requires_all_splits_and_never_accepts_inline_secrets(tmp_pa
 
 
 def test_controlled_workflow_contract_is_fail_closed():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     workflow = (
         repo_root / ".github/workflows/real-world-release-gate.yml"
     ).read_text(encoding="utf-8")
@@ -386,7 +386,7 @@ def test_controlled_workflow_contract_is_fail_closed():
 
 
 def test_quality_workflow_fetches_only_sha_bound_proof_artifact():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     workflow = (repo_root / ".github/workflows/quality.yml").read_text(encoding="utf-8")
 
     assert "actions: read" in workflow

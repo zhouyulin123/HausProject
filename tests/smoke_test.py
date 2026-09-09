@@ -1,6 +1,6 @@
 """端到端 smoke test：需要后端已在 8010 端口运行。
 
-    python smoke_test.py
+    python tests/smoke_test.py
 
 覆盖：健康检查 → 图片上传 → 创建任务（结构化需求）→ LLM 对话 →
 方案生成（legacy 同步兼容验证，LLM 失败自动降级模板）→ 状态 / 结果 / 导出。
