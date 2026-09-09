@@ -158,6 +158,8 @@ class AgentTurnResponse(BaseModel):
 class AgentCheckpointResponse(BaseModel):
     task_id: int
     state_version: int
+    confirmed_requirement: dict[str, Any] = Field(default_factory=dict)
+    room_model: dict[str, Any] | None = None
     status: str
     active_mode: ActiveMode
     active_room_id: str | None = None

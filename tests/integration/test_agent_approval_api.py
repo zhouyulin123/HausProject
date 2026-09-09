@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -153,6 +151,19 @@ def test_owner_can_list_and_idempotently_decide_approval(approval_api):
     assert first.json()["decided_by_type"] == "session"
     assert first.json()["decided_by_id"] == owner_id
     assert first.json()["decided_at"] is not None
+    assert first.json()["resolution_code"] == "quality_revision_required"
+    assert first.json()["agent_status"] == "waiting_user"
+    assert first.json()["task_status"] == "waiting_input"
+    assert first.json()["next_action"] == "revise_user_request"
+
+    checkpoint = client.get(
+        f"/api/design/tasks/{task_id}/agent-state",
+        headers={"X-Session-ID": owner_id},
+    )
+    assert checkpoint.status_code == 200
+    assert checkpoint.json()["status"] == "waiting_user"
+    assert checkpoint.json()["exit_reason"] == "quality_revision_required"
+    assert checkpoint.json()["approval_required"] is False
 
     conflict = client.post(
         f"/api/design/tasks/{task_id}/agent-approvals/{approval_id}/decision",
@@ -225,6 +236,10 @@ def test_construction_risk_requires_controlled_admin_review(approval_api):
     assert controlled_review.json()["decided_by_type"] == "admin_controlled_review"
     assert controlled_review.json()["decided_by_id"] == "user:9001"
     assert "不代表施工资质" in controlled_review.json()["conclusion"]
+    assert controlled_review.json()["resolution_code"] == (
+        "safety_user_revision_required"
+    )
+    assert controlled_review.json()["task_status"] == "waiting_input"
 
 
 @pytest.mark.parametrize(

@@ -1493,6 +1493,8 @@ export interface AgentTurnResponse {
 export interface DesignAgentStateResponse {
   task_id: number;
   state_version: number;
+  confirmed_requirement: Record<string, unknown>;
+  room_model: RoomModel | null;
   status: AgentTaskStatus;
   active_mode: AgentActiveMode;
   active_room_id: string | null;
@@ -1543,6 +1545,11 @@ export interface AgentApproval {
   decided_by_type: string | null;
   decided_by_id: string | null;
   decided_at: string | null;
+  resolution_code: string | null;
+  agent_status: AgentTaskStatus | null;
+  task_status: string | null;
+  exit_reason: AgentExitReason | null;
+  next_action: "new_agent_turn" | "revise_user_request" | null;
 }
 
 export async function fetchAgentApprovals(taskId: number): Promise<AgentApproval[]> {

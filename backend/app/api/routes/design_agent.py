@@ -33,6 +33,9 @@ router = APIRouter()
 
 
 def _approval_response(approval) -> AgentApprovalResponse:
+    resolution = (approval.request_context_json or {}).get("resolution", {})
+    if not isinstance(resolution, dict):
+        resolution = {}
     return AgentApprovalResponse(
         id=approval.id,
         task_id=approval.task_id,
@@ -49,6 +52,11 @@ def _approval_response(approval) -> AgentApprovalResponse:
         decided_by_type=approval.decided_by_type,
         decided_by_id=approval.decided_by_id,
         decided_at=approval.decided_at,
+        resolution_code=resolution.get("resolution_code"),
+        agent_status=resolution.get("agent_status"),
+        task_status=resolution.get("task_status"),
+        exit_reason=resolution.get("exit_reason"),
+        next_action=resolution.get("next_action"),
     )
 
 

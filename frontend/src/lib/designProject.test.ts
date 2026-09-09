@@ -6,6 +6,7 @@ import {
   buildWorkspacePlan,
   createDesignProject,
   designWorkspacePath,
+  restoreDesignProjectSeed,
 } from "./designProject";
 
 describe("设计项目契约", () => {
@@ -56,5 +57,30 @@ describe("设计项目契约", () => {
       selected.map((item) => item.id),
     );
     expect(plan.tags).toContain("商品搭配");
+  });
+
+  it("从服务端事实恢复丢失的本地项目骨架", () => {
+    const seed = restoreDesignProjectSeed({
+      confirmedRequirement: {
+        rooms: "历史坏值",
+        city: "上海",
+        budgetRange: "8-15 万",
+        hasPets: true,
+        familySize: 3,
+      },
+      facts: { space_type: "客厅", style: "现代简约" },
+      roomModel: null,
+    });
+
+    expect(seed.requirement).toMatchObject({
+      rooms: ["客厅"],
+      styles: ["现代简约"],
+      city: "上海",
+      budgetRange: "8-15 万",
+      hasPets: true,
+      familySize: 3,
+    });
+    expect(seed.requirement.colors).toEqual([]);
+    expect(seed.roomModel).toBeNull();
   });
 });

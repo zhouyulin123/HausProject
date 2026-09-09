@@ -26,6 +26,7 @@ EVENT_SUMMARIES = {
     "agent.turn.completed": "智能体本轮已完成",
     "agent.turn.failed": "智能体本轮失败",
     "agent.turn.waiting_user": "智能体等待用户确认",
+    "agent.approval.decided": "人工审批已作出决定",
     "agent.turn.recovered": "智能体执行已恢复",
     "agent.turn.conflict": "智能体状态提交冲突",
     "requirement.completed": "AI 需求解析已完成",

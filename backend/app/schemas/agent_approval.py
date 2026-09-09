@@ -34,6 +34,11 @@ class AgentApprovalResponse(BaseModel):
     decided_by_type: str | None = None
     decided_by_id: str | None = None
     decided_at: datetime | None = None
+    resolution_code: str | None = None
+    agent_status: str | None = None
+    task_status: str | None = None
+    exit_reason: str | None = None
+    next_action: str | None = None
 
 
 class AgentApprovalListResponse(BaseModel):

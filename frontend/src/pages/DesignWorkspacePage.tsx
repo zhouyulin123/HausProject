@@ -47,7 +47,11 @@ import {
   createFeedbackClientEventId,
   createPlanMutationEventIdResolver,
 } from "@/lib/workspaceFeedback";
-import { buildWorkspacePlan, DESIGN_ENTRY_MODES } from "@/lib/designProject";
+import {
+  buildWorkspacePlan,
+  DESIGN_ENTRY_MODES,
+  restoreDesignProjectSeed,
+} from "@/lib/designProject";
 import {
   parseDesignProjectId,
   WORKSPACE_CATALOG_OPTIONS,
@@ -57,6 +61,7 @@ import { useDesignStore } from "@/store/useDesignStore";
 import type { FurnitureItem } from "@/types/furniture";
 
 type AgentConnection = "checking" | "connected" | "unavailable";
+type ProjectRecovery = "checking" | "ready" | "missing";
 type MobilePanel = "conversation" | "scene" | "context";
 
 const FurnitureModelViewer = lazy(
@@ -70,6 +75,7 @@ export default function DesignWorkspacePage() {
     projectId ? state.projects[projectId] : undefined,
   );
   const selectProject = useDesignProjectStore((state) => state.selectProject);
+  const registerProject = useDesignProjectStore((state) => state.registerProject);
   const setMessages = useDesignProjectStore((state) => state.setMessages);
   const applyAgentState = useDesignProjectStore((state) => state.applyAgentState);
   const attachPlan = useDesignProjectStore((state) => state.attachPlan);
@@ -85,6 +91,9 @@ export default function DesignWorkspacePage() {
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
   const [agentConnection, setAgentConnection] = useState<AgentConnection>("checking");
+  const [projectRecovery, setProjectRecovery] = useState<ProjectRecovery>(
+    project ? "ready" : projectId ? "checking" : "missing",
+  );
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("conversation");
   const [satisfaction, setSatisfaction] = useState<1 | 2 | 3 | 4 | 5 | null>(null);
   const [approvals, setApprovals] = useState<AgentApproval[]>([]);
@@ -210,6 +219,39 @@ export default function DesignWorkspacePage() {
   useEffect(() => {
     if (project) selectProject(project.id);
   }, [project, selectProject]);
+
+  useEffect(() => {
+    if (project) {
+      setProjectRecovery("ready");
+      return;
+    }
+    if (!projectId) {
+      setProjectRecovery("missing");
+      return;
+    }
+    let cancelled = false;
+    setProjectRecovery("checking");
+    void fetchDesignAgentState(projectId)
+      .then((checkpoint) => {
+        if (cancelled) return;
+        registerProject(
+          checkpoint.task_id,
+          checkpoint.active_mode,
+          restoreDesignProjectSeed({
+            confirmedRequirement: checkpoint.confirmed_requirement,
+            facts: checkpoint.facts,
+            roomModel: checkpoint.room_model,
+          }),
+        );
+        setProjectRecovery("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setProjectRecovery("missing");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project, projectId, registerProject]);
 
   useEffect(() => {
     if (project) void refreshApprovals();
@@ -452,6 +494,25 @@ export default function DesignWorkspacePage() {
       setApprovals((current) => current.map((item) => (
         item.id === decided.id ? decided : item
       )));
+      const checkpoint = await fetchDesignAgentState(projectId);
+      applyAgentState(projectId, {
+        stateVersion: checkpoint.state_version,
+        status: checkpoint.status,
+        activeMode: checkpoint.active_mode,
+        pendingQuestions: checkpoint.pending_questions,
+        sceneRef: checkpoint.scene_ref,
+        exitReason: checkpoint.exit_reason,
+        activeRoomId: checkpoint.active_room_id,
+        customFurnitureSpec:
+          checkpoint.custom_furniture_draft ?? checkpoint.custom_furniture_spec,
+        customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
+        approvalRequired: checkpoint.approval_required,
+        generationRunId: checkpoint.run_id,
+        execution: agentExecutionFromCheckpoint(
+          checkpoint,
+          useDesignProjectStore.getState().projects[projectId]?.execution.events ?? [],
+        ),
+      });
       await refreshApprovals();
       await refreshTimeline("newer");
     } catch {
@@ -460,7 +521,7 @@ export default function DesignWorkspacePage() {
     } finally {
       setDecidingApprovalId(null);
     }
-  }, [projectId, refreshApprovals, refreshTimeline]);
+  }, [applyAgentState, projectId, refreshApprovals, refreshTimeline]);
 
   useEffect(() => {
     if (!project || !activePlan || !catalog.length) return;
@@ -584,6 +645,14 @@ export default function DesignWorkspacePage() {
     if (!projectId || !reference) return;
     setCustomFurnitureDraftReference(projectId, reference);
   }, [projectId, setCustomFurnitureDraftReference]);
+
+  if (!project && projectRecovery === "checking") {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center bg-[#111713] px-5 text-center text-[#e5e8e1]">
+        <p className="text-sm text-[#9ca69d]">正在从服务端恢复设计项目...</p>
+      </div>
+    );
+  }
 
   if (!project || !plan || !entry) {
     return (

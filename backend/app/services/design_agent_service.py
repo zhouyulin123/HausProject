@@ -1865,6 +1865,24 @@ def run_turn(
 def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
     generation_run_service.synchronize_agent_checkpoint(db, task=task)
     state = _checkpoint_state(task)
+    room_model = None
+    images = db.scalars(
+        select(UploadedImage)
+        .where(UploadedImage.task_id == task.id)
+        .order_by(UploadedImage.id.desc())
+    ).all()
+    for image in images:
+        raw_room_model = (image.analysis_json or {}).get("room_model")
+        if not isinstance(raw_room_model, dict):
+            continue
+        try:
+            room_model = RoomModel.model_validate(raw_room_model).model_dump(
+                by_alias=True,
+                mode="json",
+            )
+        except (TypeError, ValueError):
+            continue
+        break
     messages = db.scalars(
         select(ChatLog)
         .where(ChatLog.task_id == task.id)
@@ -1891,6 +1909,8 @@ def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
     return {
         "task_id": task.id,
         "state_version": task.agent_state_version or 0,
+        "confirmed_requirement": deepcopy(task.confirmed_requirement_json or {}),
+        "room_model": room_model,
         **state,
         "custom_furniture_draft_ref": draft_ref,
         "messages": [

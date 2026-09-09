@@ -20,6 +20,11 @@ function approval(overrides: Partial<AgentApproval>): AgentApproval {
     decided_by_type: null,
     decided_by_id: null,
     decided_at: null,
+    resolution_code: null,
+    agent_status: null,
+    task_status: null,
+    exit_reason: null,
+    next_action: null,
     ...overrides,
   };
 }

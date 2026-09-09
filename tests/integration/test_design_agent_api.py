@@ -797,6 +797,57 @@ def test_agent_turn_is_idempotent_by_client_turn_id(agent_api_context):
 
 
 @pytest.mark.integration
+def test_agent_checkpoint_contains_cold_start_project_seed(agent_api_context):
+    client, factory, owner_id, _, task_id = agent_api_context
+    room_model = {
+        "schemaVersion": "1.0",
+        "imageKind": "floor_plan",
+        "spaceType": "客厅",
+        "rooms": [
+            {
+                "id": "living",
+                "name": "客厅",
+                "floorPolygon": [
+                    {"x": 0, "z": 0},
+                    {"x": 1, "z": 0},
+                    {"x": 1, "z": 1},
+                    {"x": 0, "z": 1},
+                ],
+                "confidence": 0.88,
+            }
+        ],
+        "confidence": 0.88,
+    }
+    requirement = {
+        "rooms": ["客厅"],
+        "styles": ["现代简约"],
+        "budgetRange": "8-15 万",
+    }
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        task.confirmed_requirement_json = requirement
+        db.add(
+            UploadedImage(
+                task_id=task_id,
+                file_url="/uploads/cold-start-room.png",
+                analysis_json={"room_model": room_model},
+            )
+        )
+        db.commit()
+
+    response = client.get(
+        f"/api/design/tasks/{task_id}/agent-state",
+        headers={"X-Session-ID": owner_id},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["confirmed_requirement"] == requirement
+    assert payload["room_model"]["spaceType"] == "客厅"
+    assert payload["room_model"]["rooms"][0]["id"] == "living"
+
+
+@pytest.mark.integration
 def test_plan_refine_runs_as_metering_aware_agent_tool(
     agent_api_context,
     monkeypatch,

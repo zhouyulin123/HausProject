@@ -29,6 +29,7 @@ vi.mock("@/store/useDesignProjectStore", () => {
   const getState = () => ({
     projects: testState.project ? { 42: testState.project } : {},
     currentProjectId: testState.project?.id ?? null,
+    registerProject: vi.fn(),
     selectProject: vi.fn(),
     setMessages: vi.fn(),
     applyAgentState: vi.fn(),
@@ -75,5 +76,20 @@ describe("统一设计工作台", () => {
     expect(html).toContain("ROOM VIEW");
     expect(testState.moveHandler).toBeUndefined();
     expect(testState.submit).not.toHaveBeenCalled();
+  });
+
+  it("本地项目缺失时先恢复服务端检查点，不提前宣告项目不存在", () => {
+    testState.project = undefined;
+
+    const html = renderToStaticMarkup(
+      <MemoryRouter initialEntries={["/design/42/workspace"]}>
+        <Routes>
+          <Route path="/design/:projectId/workspace" element={<DesignWorkspacePage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(html).toContain("正在从服务端恢复设计项目");
+    expect(html).not.toContain("找不到这个设计项目");
   });
 });

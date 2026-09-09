@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
-from app.db.models import AgentApproval, DesignAgentTurn, DesignTask
+from app.db.models import AgentApproval, DesignAgentTurn, DesignTask, TaskExecutionEvent
 from app.services import agent_approval_service
 
 
@@ -242,3 +242,142 @@ def test_decision_id_cannot_be_reused_for_another_approval_in_same_task():
                 decided_by_type="session",
                 decided_by_id="owner",
             )
+
+
+@pytest.mark.parametrize(
+    (
+        "approval_type",
+        "decision",
+        "expected_status",
+        "expected_task_status",
+        "expected_exit",
+    ),
+    [
+        (
+            "quote_review",
+            "approve",
+            "waiting_user",
+            "waiting_input",
+            "approval_recorded",
+        ),
+        (
+            "quality_gate",
+            "reject",
+            "waiting_user",
+            "waiting_input",
+            "quality_revision_required",
+        ),
+        (
+            "construction_risk",
+            "approve",
+            "waiting_user",
+            "waiting_input",
+            "safety_user_revision_required",
+        ),
+    ],
+)
+def test_decision_converges_agent_checkpoint_without_bypassing_hard_gates(
+    approval_type,
+    decision,
+    expected_status,
+    expected_task_status,
+    expected_exit,
+):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task, turn = _task_and_turn(db)
+        state_by_type = {
+            "quote_review": {
+                "exit_reason": "approval_required",
+                "hard_errors": ["quote_rule_missing"],
+            },
+            "quality_gate": {
+                "exit_reason": "retry_exhausted",
+                "hard_errors": ["layout_hard_conflict"],
+            },
+            "construction_risk": {
+                "exit_reason": "safety_blocked",
+                "hard_errors": ["load_bearing_structure_change"],
+            },
+        }
+        task.agent_state_json = {
+            "status": "needs_human",
+            "current_node": "request_approval",
+            "approval_required": True,
+            **state_by_type[approval_type],
+            "step_count": 4,
+            "retry_count": 1,
+        }
+        original_turn_status = turn.status
+        turn.response_json = {
+            "task_id": task.id,
+            "turn_id": turn.id,
+            "state_version": 0,
+            "status": "needs_human",
+            "approval_required": True,
+            "exit_reason": "approval_required",
+            "state": task.agent_state_json,
+            "pending_questions": [],
+        }
+        original_turn_response = turn.response_json.copy()
+        approval = agent_approval_service.ensure_for_agent_handoff(
+            db,
+            task=task,
+            turn=turn,
+            state=task.agent_state_json,
+        )
+        db.commit()
+
+        decided = agent_approval_service.decide_approval(
+            db,
+            task_id=task.id,
+            approval_id=approval.id,
+            decision=decision,
+            conclusion="人工复核结论",
+            client_decision_id=f"resolution-{approval_type}-001",
+            decided_by_type="session",
+            decided_by_id="owner",
+        )
+        db.commit()
+        db.refresh(task)
+        db.refresh(turn)
+        decided_state_version = task.agent_state_version
+
+        replayed = agent_approval_service.decide_approval(
+            db,
+            task_id=task.id,
+            approval_id=approval.id,
+            decision=decision,
+            conclusion="人工复核结论",
+            client_decision_id=f"resolution-{approval_type}-001",
+            decided_by_type="session",
+            decided_by_id="owner",
+        )
+        db.commit()
+        db.refresh(task)
+
+        assert decided.status == (
+            "approved" if decision == "approve" else "rejected"
+        )
+        assert replayed.id == decided.id
+        assert task.agent_state_version == decided_state_version
+        assert task.status == expected_task_status
+        assert task.agent_state_json["status"] == expected_status
+        assert task.agent_state_json["exit_reason"] == expected_exit
+        assert task.agent_state_json["approval_required"] is False
+        assert task.agent_state_json["current_node"] == "approval_decision"
+        assert task.agent_state_json["step_count"] == 0
+        assert task.agent_state_json["retry_count"] == 0
+        assert task.agent_state_json["hard_errors"] == []
+        assert turn.status == original_turn_status
+        assert turn.response_json == original_turn_response
+        assert db.scalar(select(func.count()).select_from(TaskExecutionEvent)) == 1
+        timeline_event = db.scalar(select(TaskExecutionEvent))
+        assert timeline_event.event_code == "agent.approval.decided"
+        assert task.agent_state_json["approval_resolution"]["decision"] == decision
+        assert task.agent_state_json["approval_resolution"]["next_action"] in {
+            "new_agent_turn",
+            "revise_user_request",
+        }
