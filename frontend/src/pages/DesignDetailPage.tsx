@@ -39,6 +39,7 @@ import ShopQuoteCard from "@/components/design/ShopQuoteCard";
 import EmptyState from "@/components/common/EmptyState";
 import Button from "@/components/common/Button";
 import Tag from "@/components/common/Tag";
+import { getDesignSourceLabel } from "@/lib/designProvenance";
 
 const tabs = ["总览", "3D 布局", "布局", "家具", "色彩材质", "预算", "AI 建议"] as const;
 type Tab = (typeof tabs)[number];
@@ -355,7 +356,7 @@ export default function DesignDetailPage() {
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-xl font-semibold text-stone-800">方案控制台</h2>
             <Tag tone="sage">
-              AI 方案候选
+              {getDesignSourceLabel(plan.generationSource)}
             </Tag>
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-2">

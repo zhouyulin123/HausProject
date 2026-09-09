@@ -216,6 +216,7 @@ def _plan_version_payload(plan_version) -> dict:
     return {
         **(plan_version.plan_json or {}),
         "planVersionId": plan_version.id,
+        "generationSource": plan_version.revision.generator,
     }
 
 

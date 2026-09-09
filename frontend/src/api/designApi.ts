@@ -188,13 +188,18 @@ const furnitureGradients = [
   "bg-gradient-to-br from-[#e6e2d6] via-[#d3ccba] to-[#b5ab93]",
 ];
 
-function decoratePlan(plan: DesignPlan, index: number): DesignPlan {
+function decoratePlan(
+  plan: DesignPlan,
+  index: number,
+  generationSource?: string,
+): DesignPlan {
   const style = plan.style ?? "";
   const cover =
     coverGradients.find(([keyword]) => style.includes(keyword))?.[1] ??
     fallbackCovers[index % fallbackCovers.length];
   return {
     ...plan,
+    generationSource: plan.generationSource || generationSource || "unknown",
     coverGradient: plan.coverGradient || cover,
     furnitureSuggestions: (plan.furnitureSuggestions ?? []).map(
       (item: FurnitureItem, i: number) => ({
@@ -253,7 +258,9 @@ export async function restoreCurrentDesigns(): Promise<DesignPlan[] | null> {
     const result = await request<{ plans: DesignPlan[]; generator: string }>(
       `/api/design/tasks/${currentTaskId}/result`,
     );
-    return result.plans.map(decoratePlan);
+    return result.plans.map((plan, index) =>
+      decoratePlan(plan, index, result.generator),
+    );
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) {
       currentTaskId = null;
@@ -274,7 +281,9 @@ async function doGenerateDesigns(
     if (!demoFallbackEnabled) throw error;
     console.warn("[designApi] 后端不可用，降级到本地 mock 方案", error);
     await delay(2200);
-    const plans = [...mockDesigns];
+    const plans = mockDesigns.map((plan, index) =>
+      decoratePlan(plan, index, "demo"),
+    );
     if (requirement.budgetRange === "3 万以下" || requirement.budgetRange === "3-8 万") {
       plans.sort((a, b) => a.budget - b.budget);
     }
@@ -948,7 +957,7 @@ export async function fetchMyDesigns(): Promise<MyDesignItem[]> {
   }>("/api/design/tasks/mine");
   return data.designs.map((item) => ({
     ...item,
-    plans: item.plans.map(decoratePlan),
+    plans: item.plans.map((plan, index) => decoratePlan(plan, index)),
   }));
 }
 
@@ -1318,7 +1327,7 @@ export async function fetchDesignTaskPlans(taskId: number): Promise<DesignPlan[]
     `/api/design/tasks/${taskId}/result`,
   );
   return result.plans.map((plan, index) => ({
-    ...decoratePlan(plan, index),
+    ...decoratePlan(plan, index, result.generator),
     revisionVersion: result.revision_version,
   }));
 }

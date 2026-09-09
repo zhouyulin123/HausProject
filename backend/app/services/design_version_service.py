@@ -196,6 +196,7 @@ def list_user_designs(db: Session, *, user_id: int) -> list[dict[str, Any]]:
             plan["planVersionId"] = plan_version.id
             plan["planKey"] = plan_version.plan_key
             plan["task_id"] = task.id
+            plan["generationSource"] = revision.generator
             plans.append(plan)
         result.append(
             {
@@ -240,4 +241,5 @@ def plan_version_payload(plan_version: DesignPlanVersion) -> dict[str, Any]:
     plan = deepcopy(plan_version.plan_json or {})
     plan["planVersionId"] = plan_version.id
     plan["planKey"] = plan_version.plan_key
+    plan["generationSource"] = plan_version.revision.generator
     return plan

@@ -103,6 +103,7 @@ describe("方案结果恢复", () => {
     const plans = await restoreCurrentDesigns();
 
     expect(plans?.map((plan) => plan.id)).toEqual(["plan-a"]);
+    expect(plans?.[0]?.generationSource).toBe("deepseek");
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "/api/design/tasks/42/result",

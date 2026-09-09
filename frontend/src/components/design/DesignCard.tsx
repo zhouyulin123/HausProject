@@ -6,6 +6,7 @@ import { useDesignStore } from "@/store/useDesignStore";
 import { useRequirementStore } from "@/store/useRequirementStore";
 import Tag from "@/components/common/Tag";
 import Button from "@/components/common/Button";
+import { getDesignSourceLabel } from "@/lib/designProvenance";
 
 export default function DesignCard({ plan, index = 0 }: { plan: DesignPlan; index?: number }) {
   const navigate = useNavigate();
@@ -35,6 +36,9 @@ export default function DesignCard({ plan, index = 0 }: { plan: DesignPlan; inde
             ¥{plan.budget.toLocaleString()}
           </span>
         </div>
+        <p className="mt-1 text-[11px] text-stone-500">
+          {getDesignSourceLabel(plan.generationSource)}
+        </p>
         <p className="mt-1 text-xs text-stone-400">适合：{plan.suitableFor.join(" / ")}</p>
         <p className="mt-2.5 line-clamp-2 text-sm leading-relaxed text-stone-500">
           {plan.description}

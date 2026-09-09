@@ -142,6 +142,7 @@ def test_list_user_designs_returns_latest_plans_for_owner(db):
     assert len(designs[0]["plans"]) == 2
     assert designs[0]["plans"][0]["planKey"] == "plan-a"
     assert designs[0]["plans"][0]["planVersionId"] is not None
+    assert designs[0]["plans"][0]["generationSource"] == "llm"
 
     # 其他用户看不到
     assert list_user_designs(db, user_id=999) == []
