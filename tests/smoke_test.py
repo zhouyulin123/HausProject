@@ -1,11 +1,10 @@
-"""端到端 smoke test：需要后端已在 8010 端口运行。
+"""端到端 smoke test：需要 API 和 Generation Worker 已在运行。
 
     python tests/smoke_test.py
 
 覆盖：健康检查 → 图片上传 → 创建任务（结构化需求）→ LLM 对话 →
-方案生成（legacy 同步兼容验证，LLM 失败自动降级模板）→ 状态 / 结果 / 导出。
+持久化异步方案生成 → 状态 / 结果 / 导出。
 注意：会产生 1 次 DeepSeek 方案生成调用和 1 次对话调用。
-主产品新客户端必须使用 generate-async，并由独立 Generation Worker 执行。
 """
 
 import io
@@ -14,12 +13,13 @@ import sys
 import time
 import urllib.request
 
-BASE = "http://localhost:8081"
+BASE = "http://127.0.0.1:8081"
 SESSION_ID = None
 
 
-def post_json(path, data):
+def post_json(path, data, *, extra_headers=None):
     headers = {"Content-Type": "application/json"}
+    headers.update(extra_headers or {})
     if SESSION_ID:
         headers["X-Session-ID"] = SESSION_ID
     req = urllib.request.Request(
@@ -58,6 +58,27 @@ def upload_image():
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
+
+
+def wait_for_generation(task_id, *, timeout_seconds=600):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        run = get_json(f"/api/design/tasks/{task_id}/generation")
+        status = run["status"]
+        if status == "completed":
+            return run
+        if status in {
+            "failed",
+            "dead_letter",
+            "cancelled",
+            "provider_unavailable",
+            "cost_limit_exceeded",
+        }:
+            raise RuntimeError(
+                f"generation stopped: status={status}, error={run.get('error_message')}"
+            )
+        time.sleep(2)
+    raise TimeoutError(f"generation did not finish within {timeout_seconds}s")
 
 
 def main():
@@ -104,11 +125,22 @@ def main():
     )
     passed &= ok("chat", len(chat.get("reply", "")) > 10)
 
-    # 仅验证旧客户端兼容性；主产品流程使用 generate-async + Generation Worker。
     t0 = time.time()
-    gen = post_json(f"/api/design/tasks/{tid}/generate", {})
-    print(f"     generator={gen['generator']}, {time.time() - t0:.0f}s")
-    passed &= ok("generate", gen["status"] == "completed")
+    queued = post_json(
+        f"/api/design/tasks/{tid}/generate-async",
+        {},
+        extra_headers={"Idempotency-Key": f"smoke-generation-{tid}"},
+    )
+    passed &= ok(
+        "generation queued",
+        queued["status"] in {"queued", "running", "completed"},
+    )
+    generation = wait_for_generation(tid)
+    print(
+        f"     generator={generation.get('generator')}, "
+        f"attempts={generation.get('attempt_count')}, {time.time() - t0:.0f}s"
+    )
+    passed &= ok("generation completed", generation["status"] == "completed")
 
     status = get_json(f"/api/design/tasks/{tid}")
     passed &= ok("status", status["progress"] == 100)

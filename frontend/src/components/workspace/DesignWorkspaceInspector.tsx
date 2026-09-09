@@ -15,28 +15,34 @@ import { analyzeRoomImage } from "@/api/designApi";
 import type { PlanMutationAction } from "@/api/designApi";
 import type { DesignProject } from "@/lib/designProject";
 import { useDesignProjectStore } from "@/store/useDesignProjectStore";
+import type { DesignPlan } from "@/types/design";
 import { useRoomModelStore } from "@/store/useRoomModelStore";
 import type { FurnitureItem } from "@/types/furniture";
 import { getFurnitureDataOriginLabel } from "@/lib/furnitureDataOrigin";
 
 type InspectorTab = "room" | "catalog" | "budget";
 
-function amountFromPrice(text: string): number {
-  const values = text.replace(/,/g, "").match(/\d+(?:\.\d+)?/g);
-  return values?.length ? Number(values[0]) : 0;
+export function workspaceQuotePresentation(plan: DesignPlan) {
+  const quote = plan.shopQuote;
+  return {
+    available: Boolean(quote),
+    total: quote?.total ?? null,
+    furnitureTotal: quote?.furnitureTotal ?? null,
+    customTotal: quote?.customTotal ?? null,
+  };
 }
 
 export default function DesignWorkspaceInspector({
   project,
   catalog,
   catalogLoading,
-  budget,
+  plan,
   onPlanMutation,
 }: {
   project: DesignProject;
   catalog: FurnitureItem[];
   catalogLoading: boolean;
-  budget: number;
+  plan: DesignPlan;
   onPlanMutation: (mutation: {
     action: PlanMutationAction;
     sourceSku?: string;
@@ -58,10 +64,7 @@ export default function DesignWorkspaceInspector({
   const selectedItems = catalog.filter((item) =>
     project.selectedFurnitureIds.includes(item.id),
   );
-  const furnitureSubtotal = selectedItems.reduce(
-    (sum, item) => sum + amountFromPrice(item.priceRange),
-    0,
-  );
+  const quote = workspaceQuotePresentation(plan);
   const filteredCatalog = catalog
     .filter((item) =>
       `${item.name}${item.category}${item.room}${item.material}`
@@ -326,15 +329,28 @@ export default function DesignWorkspaceInspector({
 
         {tab === "budget" && (
           <div>
-            <p className="font-mono text-[10px] tracking-[0.16em] text-[#7f8b81] uppercase">Live estimate</p>
+            <p className="font-mono text-[10px] tracking-[0.16em] text-[#7f8b81] uppercase">Server quote</p>
             <div className="mt-5 border-y border-white/10 py-5">
-              <p className="text-xs text-[#7f8b81]">当前家具小计</p>
-              <p className="mt-2 font-mono text-3xl">¥{furnitureSubtotal.toLocaleString("zh-CN")}</p>
-              <p className="mt-1 text-[10px] text-[#6f7a71]">按商品区间最低价暂估</p>
+              <p className="text-xs text-[#7f8b81]">服务端确定性报价</p>
+              <p className="mt-2 font-mono text-3xl">
+                {quote.available && quote.total !== null
+                  ? `¥${quote.total.toLocaleString("zh-CN")}`
+                  : "待核价"}
+              </p>
+              <p className="mt-1 text-[10px] text-[#6f7a71]">
+                {quote.available
+                  ? "商品与定制项目均来自方案报价快照"
+                  : "生成正式方案后展示，不使用商品展示价推算"}
+              </p>
             </div>
             <dl className="mt-4 divide-y divide-white/10 text-xs">
               <div className="flex justify-between gap-4 py-3"><dt className="text-[#7f8b81]">需求预算</dt><dd>{project.requirement.budgetRange || "待确认"}</dd></div>
-              <div className="flex justify-between gap-4 py-3"><dt className="text-[#7f8b81]">方案估算</dt><dd>{budget > 0 ? `¥${budget.toLocaleString("zh-CN")}` : "待生成"}</dd></div>
+              <div className="flex justify-between gap-4 py-3"><dt className="text-[#7f8b81]">家具</dt><dd>{quote.furnitureTotal !== null
+                ? `¥${quote.furnitureTotal.toLocaleString("zh-CN")}`
+                : "--"}</dd></div>
+              <div className="flex justify-between gap-4 py-3"><dt className="text-[#7f8b81]">定制</dt><dd>{quote.customTotal !== null
+                ? `¥${quote.customTotal.toLocaleString("zh-CN")}`
+                : "--"}</dd></div>
               <div className="flex justify-between gap-4 py-3"><dt className="text-[#7f8b81]">已选家具</dt><dd>{selectedItems.length} 件</dd></div>
             </dl>
           </div>

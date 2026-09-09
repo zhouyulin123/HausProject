@@ -452,13 +452,15 @@ export default function DesignWorkspacePage() {
       setApprovals((current) => current.map((item) => (
         item.id === decided.id ? decided : item
       )));
+      await refreshApprovals();
+      await refreshTimeline("newer");
     } catch {
       setApprovalsError("审批决定提交失败，请刷新记录后重试。");
       void refreshApprovals();
     } finally {
       setDecidingApprovalId(null);
     }
-  }, [projectId, refreshApprovals]);
+  }, [projectId, refreshApprovals, refreshTimeline]);
 
   useEffect(() => {
     if (!project || !activePlan || !catalog.length) return;
@@ -786,7 +788,7 @@ export default function DesignWorkspacePage() {
                 project={project}
                 catalog={catalog}
                 catalogLoading={catalogLoading}
-                budget={plan.budget}
+                plan={plan}
                 onPlanMutation={handlePlanMutation}
               />
             )}

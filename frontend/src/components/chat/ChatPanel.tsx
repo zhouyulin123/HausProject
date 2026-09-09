@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Send, Sparkles } from "lucide-react";
+import { RotateCcw, Send, Sparkles } from "lucide-react";
 import type { ChatMessage as ChatMessageType } from "@/types/chat";
 import { quickCommands, quickReplies } from "@/data/mockChat";
 import {
@@ -33,6 +33,28 @@ interface ChatPanelProps {
   workspace?: boolean;
 }
 
+export interface PendingSend {
+  text: string;
+  clientTurnId: string;
+  messagesWithUser: ChatMessageType[];
+}
+
+export function createPendingSend(
+  text: string,
+  currentMessages: ChatMessageType[],
+  clientTurnId: string,
+  stamp: number,
+): PendingSend {
+  return {
+    text,
+    clientTurnId,
+    messagesWithUser: [
+      ...currentMessages,
+      { id: `u-${stamp}`, role: "user", content: text },
+    ],
+  };
+}
+
 export default function ChatPanel({
   projectId,
   activeMode,
@@ -62,7 +84,9 @@ export default function ChatPanel({
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sendError, setSendError] = useState("");
+  const [failedSend, setFailedSend] = useState<PendingSend | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sendingRef = useRef(false);
 
   const aiReplyCount = messages.filter((m) => m.role === "ai").length;
   const showQuickReplies = messages.length === 1;
@@ -79,29 +103,17 @@ export default function ChatPanel({
     if (initialMessages !== undefined) setMessages(initialMessages);
   }, [initialMessages]);
 
-  const send = async (text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed || loading) return;
-    setInput("");
-    const userMessage: ChatMessageType = {
-      id: `u-${Date.now()}`,
-      role: "user",
-      content: trimmed,
-    };
-    const nextWithUser = [...messages, userMessage];
-    setMessages(nextWithUser);
-    onMessagesChange?.(nextWithUser);
+  const executeSend = async (pending: PendingSend) => {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
     setLoading(true);
     setSendError("");
     try {
       let reply: string;
       if (projectId && activeMode) {
         const response = await sendAgentTurn(projectId, {
-          client_turn_id:
-            typeof crypto !== "undefined" && "randomUUID" in crypto
-              ? crypto.randomUUID()
-              : `turn-${projectId}-${Date.now()}`,
-          message: trimmed,
+          client_turn_id: pending.clientTurnId,
+          message: pending.text,
           active_mode: activeMode,
           active_room_id: activeRoomId,
           ...agentTurnSceneContext(sceneId, baseSceneVersion),
@@ -109,23 +121,47 @@ export default function ChatPanel({
         reply = response.reply;
         onAgentResponse?.(response);
       } else {
-        reply = await sendChatMessage(trimmed);
+        reply = await sendChatMessage(pending.text);
       }
       const nextWithReply = [
-        ...nextWithUser,
+        ...pending.messagesWithUser,
         { id: `a-${Date.now()}`, role: "ai" as const, content: reply },
       ];
       setMessages(nextWithReply);
       onMessagesChange?.(nextWithReply);
+      setFailedSend(null);
     } catch {
+      setFailedSend(pending);
       setSendError(
         workspace
           ? "智能体服务暂未连接，本轮没有执行任何设计操作。"
           : "消息发送失败，请稍后重试。",
       );
     } finally {
+      sendingRef.current = false;
       setLoading(false);
     }
+  };
+
+  const send = async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || loading) return;
+    setInput("");
+    setFailedSend(null);
+    const stamp = Date.now();
+    const pending = createPendingSend(
+      trimmed,
+      messages,
+      (
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `turn-${projectId ?? "chat"}-${stamp}`
+      ),
+      stamp,
+    );
+    setMessages(pending.messagesWithUser);
+    onMessagesChange?.(pending.messagesWithUser);
+    await executeSend(pending);
   };
 
   return (
@@ -178,9 +214,20 @@ export default function ChatPanel({
         )}
 
         {sendError && (
-          <p role="alert" className="ml-12 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">
-            {sendError}
-          </p>
+          <div role="alert" className="ml-12 flex items-center justify-between gap-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">
+            <span>{sendError}</span>
+            {failedSend && (
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void executeSend(failedSend)}
+                className="inline-flex min-h-8 shrink-0 items-center gap-1.5 px-2 font-semibold hover:bg-red-100 disabled:opacity-50"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                重试本轮
+              </button>
+            )}
+          </div>
         )}
 
         {showGenerate && !loading && (

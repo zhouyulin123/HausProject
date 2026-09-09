@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { createDesignProject } from "@/lib/designProject";
 import { emptyRequirement } from "@/types/requirement";
 import type { FurnitureItem } from "@/types/furniture";
-import DesignWorkspaceInspector from "./DesignWorkspaceInspector";
+import type { DesignPlan } from "@/types/design";
+import DesignWorkspaceInspector, {
+  workspaceQuotePresentation,
+} from "./DesignWorkspaceInspector";
 
 const catalog: FurnitureItem[] = [
   {
@@ -59,6 +62,24 @@ const catalog: FurnitureItem[] = [
   },
 ];
 
+const plan = {
+  id: "plan-1",
+  name: "正式方案",
+  style: "现代",
+  coverGradient: "",
+  budget: 999999,
+  tags: [],
+  suitableFor: [],
+  description: "",
+  layoutSuggestions: [],
+  furnitureSuggestions: [],
+  colorPalette: [],
+  materials: [],
+  lightingSuggestions: [],
+  budgetBreakdown: [],
+  aiTips: [],
+} satisfies DesignPlan;
+
 describe("工作台家具替换入口", () => {
   it("为已选家具提供明确替换动作，并保留目录加入/移除语义", () => {
     const project = createDesignProject(
@@ -73,7 +94,7 @@ describe("工作台家具替换入口", () => {
         project={project}
         catalog={catalog}
         catalogLoading={false}
-        budget={0}
+        plan={plan}
         onPlanMutation={vi.fn()}
       />,
     );
@@ -84,5 +105,25 @@ describe("工作台家具替换入口", () => {
     expect(html).toContain('aria-label="加入弧形沙发"');
     expect(html).toContain('aria-label="草稿单椅商业信息待核验"');
     expect(html).toContain("商业信息待核验，暂不可用于方案");
+  });
+
+  it("只接受服务端确定性报价，不解析商品展示价格或方案预算", () => {
+    expect(workspaceQuotePresentation(plan)).toEqual({
+      available: false,
+      total: null,
+      furnitureTotal: null,
+      customTotal: null,
+    });
+    expect(
+      workspaceQuotePresentation({
+        ...plan,
+        shopQuote: { furnitureTotal: 8800, customTotal: 1200, total: 10000 },
+      }),
+    ).toEqual({
+      available: true,
+      total: 10000,
+      furnitureTotal: 8800,
+      customTotal: 1200,
+    });
   });
 });
