@@ -354,3 +354,43 @@ def test_independent_cli_reads_credentials_from_environment_and_writes_no_secret
     assert payload["attestation"]["key_id"] == SECURITY_KEY_ID
     assert all(value not in serialized for value in credentials.values())
     assert all(case.id not in serialized for case in dataset.cases)
+
+
+def test_security_collector_cli_requires_exactly_one_dataset_source():
+    with pytest.raises(SystemExit) as missing:
+        collect_security_access_evidence.main(
+            [
+                "--split",
+                "regression",
+                "--targets",
+                "targets.json",
+                "--base-url",
+                "https://controlled.example",
+                "--app-build-digest",
+                BUILD_DIGEST,
+                "--output",
+                "evidence.json",
+            ]
+        )
+    assert missing.value.code == 2
+
+    with pytest.raises(SystemExit) as duplicate:
+        collect_security_access_evidence.main(
+            [
+                "--manifest",
+                "manifest.json",
+                "--dataset-version",
+                "governance-1",
+                "--split",
+                "regression",
+                "--targets",
+                "targets.json",
+                "--base-url",
+                "https://controlled.example",
+                "--app-build-digest",
+                BUILD_DIGEST,
+                "--output",
+                "evidence.json",
+            ]
+        )
+    assert duplicate.value.code == 2

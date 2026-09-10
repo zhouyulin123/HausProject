@@ -8,8 +8,8 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import case, select, update as sql_update
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -53,6 +53,22 @@ _NEXT_STATUS = {
     "open": "in_progress",
     "in_progress": "resolved",
 }
+_REPORT_SYNC_MAX_ATTEMPTS = 3
+
+
+def _is_retryable_database_concurrency_error(exc: OperationalError) -> bool:
+    original = exc.orig
+    sqlstate = (
+        getattr(original, "sqlstate", None)
+        or getattr(original, "pgcode", None)
+    )
+    if sqlstate in {"40001", "40P01"}:
+        return True
+    arguments = getattr(original, "args", ())
+    if arguments and arguments[0] in {1205, 1213}:
+        return True
+    message = str(original).lower()
+    return "database is locked" in message or "database table is locked" in message
 
 
 def _payload_hash(report: FailureTriageReportRequest) -> str:
@@ -109,6 +125,38 @@ def _verification_coverage_digest(report: FailureVerificationReportRequest) -> s
             },
         )
     )
+
+
+def _existing_verification_result(
+    db: Session,
+    report: FailureVerificationReportRequest,
+    *,
+    report_digest: str,
+    semantic_digest: str,
+    lock: bool,
+) -> FailureVerificationSyncResult | None:
+    report_query = select(FailureVerificationImport).where(
+        FailureVerificationImport.report_id == report.report_id
+    )
+    semantic_query = select(FailureVerificationImport).where(
+        FailureVerificationImport.semantic_digest == semantic_digest
+    )
+    if lock:
+        report_query = report_query.with_for_update()
+        semantic_query = semantic_query.with_for_update()
+    existing = db.scalar(report_query)
+    if existing is not None:
+        if existing.report_digest != report_digest:
+            raise FailureTriageConflict("report_id 已用于不同复测证明")
+        return FailureVerificationSyncResult(
+            imported=False,
+            report_digest=existing.report_digest,
+            coverage_digest=existing.coverage_digest,
+            clusters=_clusters_for_verification_report(db, report.report_id),
+        )
+    if db.scalar(semantic_query) is not None:
+        raise FailureTriageConflict("相同语义证据已使用其他 report_id 导入")
+    return None
 
 
 def _semantic_hash(report: FailureTriageReportRequest) -> str:
@@ -181,14 +229,6 @@ def failure_fingerprint(
     return hashlib.sha256(payload).hexdigest()
 
 
-def _aware(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-
-
-def _later(left: datetime, right: datetime) -> datetime:
-    return max(_aware(left), _aware(right))
-
-
 def _upsert_cluster(
     db: Session,
     report: FailureTriageReportRequest,
@@ -200,10 +240,66 @@ def _upsert_cluster(
         failure_type=failure.failure_type,
         code=failure.code,
     )
-    cluster = db.scalar(
-        select(FailureCluster).where(FailureCluster.fingerprint == fingerprint)
+    reopened = FailureCluster.status.in_(("resolved", "verified"))
+    observed_at_or_after_current = FailureCluster.last_seen_at <= report.generated_at
+    lower_severities = [
+        severity
+        for severity, rank in _SEVERITY_RANK.items()
+        if rank < _SEVERITY_RANK[failure.severity]
+    ]
+    severity = (
+        case(
+            (FailureCluster.severity.in_(lower_severities), failure.severity),
+            else_=FailureCluster.severity,
+        )
+        if lower_severities
+        else FailureCluster.severity
     )
-    if cluster is None:
+    result = db.execute(
+        sql_update(FailureCluster)
+        .where(FailureCluster.fingerprint == fingerprint)
+        .values(
+            occurrence_count=(
+                FailureCluster.occurrence_count + failure.occurrence_count
+            ),
+            affected_count=FailureCluster.affected_count + failure.affected_count,
+            record_version=FailureCluster.record_version + 1,
+            first_seen_at=case(
+                (FailureCluster.first_seen_at > report.generated_at, report.generated_at),
+                else_=FailureCluster.first_seen_at,
+            ),
+            last_seen_at=case(
+                (observed_at_or_after_current, report.generated_at),
+                else_=FailureCluster.last_seen_at,
+            ),
+            detected_version=case(
+                (observed_at_or_after_current, report.candidate_version),
+                else_=FailureCluster.detected_version,
+            ),
+            severity=severity,
+            status=case((reopened, "open"), else_=FailureCluster.status),
+            fixed_version=case((reopened, None), else_=FailureCluster.fixed_version),
+            verified_version=case(
+                (reopened, None),
+                else_=FailureCluster.verified_version,
+            ),
+            verification_report_id=case(
+                (reopened, None),
+                else_=FailureCluster.verification_report_id,
+            ),
+            report_digest=case(
+                (reopened, None),
+                else_=FailureCluster.report_digest,
+            ),
+            coverage_digest=case(
+                (reopened, None),
+                else_=FailureCluster.coverage_digest,
+            ),
+            updated_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount == 0:
         cluster = FailureCluster(
             fingerprint=fingerprint,
             taxonomy_version=report.taxonomy_version,
@@ -219,21 +315,15 @@ def _upsert_cluster(
             detected_version=report.candidate_version,
         )
         db.add(cluster)
+        db.flush()
         return cluster
-
-    cluster.occurrence_count += failure.occurrence_count
-    cluster.affected_count += failure.affected_count
-    cluster.last_seen_at = _later(cluster.last_seen_at, report.generated_at)
-    cluster.detected_version = report.candidate_version
-    if _SEVERITY_RANK[failure.severity] > _SEVERITY_RANK[cluster.severity]:
-        cluster.severity = failure.severity
-    if cluster.status in {"resolved", "verified"}:
-        cluster.status = "open"
-        cluster.fixed_version = None
-        cluster.verified_version = None
-        cluster.verification_report_id = None
-        cluster.report_digest = None
-        cluster.coverage_digest = None
+    cluster = db.scalar(
+        select(FailureCluster)
+        .where(FailureCluster.fingerprint == fingerprint)
+        .execution_options(populate_existing=True)
+    )
+    if cluster is None:
+        raise FailureTriageConflict("失败簇原子更新后无法读取")
     return cluster
 
 
@@ -251,45 +341,15 @@ def sync_verified_report(
         raise FailureTriageSignatureError("失败分诊报告签名无效")
     digest = _payload_hash(report)
     semantic_digest = _semantic_hash(report)
-    existing = db.scalar(
-        select(FailureTriageImport).where(
-            FailureTriageImport.report_id == report.report_id
-        )
-    )
-    if existing is not None:
-        if existing.payload_hash != digest:
-            raise FailureTriageConflict("report_id 已用于不同报告")
-        return FailureTriageSyncResult(
-            imported=False,
-            clusters=_clusters_for_report(db, report),
-        )
-
-    replay = db.scalar(
-        select(FailureTriageImport).where(
-            FailureTriageImport.semantic_hash == semantic_digest
-        )
-    )
-    if replay is not None:
-        raise FailureTriageConflict("相同语义证据已使用其他 report_id 导入")
-
-    clusters = tuple(_upsert_cluster(db, report, item) for item in report.failures)
-    db.add(
-        FailureTriageImport(
-            report_id=report.report_id,
-            payload_hash=digest,
-            semantic_hash=semantic_digest,
-        )
-    )
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
+    for attempt in range(_REPORT_SYNC_MAX_ATTEMPTS):
         existing = db.scalar(
             select(FailureTriageImport).where(
                 FailureTriageImport.report_id == report.report_id
             )
         )
-        if existing is not None and existing.payload_hash == digest:
+        if existing is not None:
+            if existing.payload_hash != digest:
+                raise FailureTriageConflict("report_id 已用于不同报告")
             return FailureTriageSyncResult(
                 imported=False,
                 clusters=_clusters_for_report(db, report),
@@ -302,8 +362,41 @@ def sync_verified_report(
         if replay is not None:
             raise FailureTriageConflict(
                 "相同语义证据已使用其他 report_id 导入"
-            ) from exc
-        raise FailureTriageConflict("报告同步冲突，请重试") from exc
+            )
+
+        failures = sorted(
+            report.failures,
+            key=lambda item: failure_fingerprint(
+                taxonomy_version=report.taxonomy_version,
+                data_version=report.data_version,
+                failure_type=item.failure_type,
+                code=item.code,
+            ),
+        )
+        try:
+            for item in failures:
+                _upsert_cluster(db, report, item)
+            db.add(
+                FailureTriageImport(
+                    report_id=report.report_id,
+                    payload_hash=digest,
+                    semantic_hash=semantic_digest,
+                )
+            )
+            db.commit()
+            break
+        except (IntegrityError, OperationalError) as exc:
+            db.rollback()
+            if isinstance(exc, OperationalError) and not (
+                _is_retryable_database_concurrency_error(exc)
+            ):
+                raise
+            if attempt + 1 >= _REPORT_SYNC_MAX_ATTEMPTS:
+                raise FailureTriageConflict("报告同步冲突，请重试") from exc
+    else:  # pragma: no cover - 循环只会通过 break 或异常退出
+        raise FailureTriageConflict("报告同步冲突，请重试")
+
+    clusters = _clusters_for_report(db, report)
     for cluster in clusters:
         db.refresh(cluster)
     return FailureTriageSyncResult(imported=True, clusters=clusters)
@@ -323,37 +416,35 @@ def sync_failure_verification(
     report_digest = _verification_report_digest(report)
     semantic_digest = _verification_semantic_digest(report)
     coverage_digest = _verification_coverage_digest(report)
-    existing = db.scalar(
-        select(FailureVerificationImport).where(
-            FailureVerificationImport.report_id == report.report_id
-        )
+    existing_result = _existing_verification_result(
+        db,
+        report,
+        report_digest=report_digest,
+        semantic_digest=semantic_digest,
+        lock=False,
     )
-    if existing is not None:
-        if existing.report_digest != report_digest:
-            raise FailureTriageConflict("report_id 已用于不同复测证明")
-        return FailureVerificationSyncResult(
-            imported=False,
-            report_digest=existing.report_digest,
-            coverage_digest=existing.coverage_digest,
-            clusters=_clusters_for_verification_report(db, report.report_id),
-        )
-    replay = db.scalar(
-        select(FailureVerificationImport).where(
-            FailureVerificationImport.semantic_digest == semantic_digest
-        )
-    )
-    if replay is not None:
-        raise FailureTriageConflict("相同语义证据已使用其他 report_id 导入")
+    if existing_result is not None:
+        return existing_result
 
     claims = {item.fingerprint: item for item in report.verified_clusters}
     clusters = tuple(
         db.scalars(
             select(FailureCluster)
             .where(FailureCluster.fingerprint.in_(sorted(claims)))
-            .order_by(FailureCluster.id)
+            .order_by(FailureCluster.fingerprint)
             .with_for_update()
         ).all()
     )
+    # 另一个事务可能在等待失败簇锁期间完成相同导入；锁后必须重新判定幂等。
+    existing_result = _existing_verification_result(
+        db,
+        report,
+        report_digest=report_digest,
+        semantic_digest=semantic_digest,
+        lock=True,
+    )
+    if existing_result is not None:
+        return existing_result
     found = {cluster.fingerprint: cluster for cluster in clusters}
     if set(found) != set(claims):
         raise FailureTriageConflict("复测证明包含不存在的失败簇")
@@ -380,6 +471,7 @@ def sync_failure_verification(
         db.flush()
         for cluster in clusters:
             cluster.status = "verified"
+            cluster.record_version += 1
             cluster.verified_version = report.candidate_version
             cluster.verification_report_id = report.report_id
             cluster.report_digest = report_digest
@@ -452,6 +544,8 @@ def update_failure_cluster(
 ) -> FailureCluster:
     # v2 分诊报告只列出现存失败，没有完整覆盖声明；“未列出”不能证明已修复。
     # verified 必须留给未来校验 manifest/evidence/output 摘要与覆盖范围的专用流程。
+    if cluster.record_version != update.expected_version:
+        raise FailureTriageConflict("失败簇版本已变化，请刷新后重试")
     if cluster.status == "verified":
         raise FailureTriageConflict("已验证失败簇不能通过管理员 PATCH 修改")
     if update.status == "verified" or "verified_version" in update.model_fields_set:
@@ -484,11 +578,38 @@ def update_failure_cluster(
     if target_status == "resolved" and not fixed_version:
         raise FailureTriageConflict("标记修复必须指定修复版本")
 
-    cluster.status = target_status
-    cluster.owner = owner
-    cluster.fixed_version = fixed_version
-    cluster.verified_version = verified_version
-    cluster.updated_at = datetime.now(timezone.utc)
+    original = {
+        "status": cluster.status,
+        "owner": cluster.owner,
+        "fixed_version": cluster.fixed_version,
+        "verified_version": cluster.verified_version,
+        "verification_report_id": cluster.verification_report_id,
+        "report_digest": cluster.report_digest,
+        "coverage_digest": cluster.coverage_digest,
+    }
+    conditions = [FailureCluster.id == cluster.id]
+    conditions.append(FailureCluster.record_version == update.expected_version)
+    for field_name, value in original.items():
+        column = getattr(FailureCluster, field_name)
+        conditions.append(column.is_(None) if value is None else column == value)
+    result = db.execute(
+        sql_update(FailureCluster)
+        .where(*conditions)
+        .values(
+            status=target_status,
+            owner=owner,
+            fixed_version=fixed_version,
+            verified_version=verified_version,
+            record_version=FailureCluster.record_version + 1,
+            updated_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        raise FailureTriageConflict(
+            "失败簇已被其他管理员或评测流程并发更新，请刷新后重试"
+        )
     db.commit()
     db.refresh(cluster)
     return cluster

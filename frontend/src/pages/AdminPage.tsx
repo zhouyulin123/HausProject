@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { AlertTriangle, Boxes, Check, Pencil, Plus, RefreshCw, Ruler, Search, Store, Trash2, X } from "lucide-react";
+import { AlertTriangle, Boxes, Check, History, Pencil, Plus, RefreshCw, Ruler, Search, Store, Trash2, X } from "lucide-react";
 import type { AdminCatalogReadiness, AdminProduct, QuoteRule } from "@/api/designApi";
 import {
+  ApiError,
   deleteProduct,
   deleteQuoteRule,
   fetchAdminCatalogReadiness,
@@ -12,14 +13,61 @@ import {
   saveQuoteRule,
 } from "@/api/designApi";
 import ProductFormModal from "@/components/admin/ProductFormModal";
+import ProductCommercialReviewPanel from "@/components/admin/ProductCommercialReviewPanel";
 import ShopSettingsPanel from "@/components/admin/ShopSettingsPanel";
 import PageTitle from "@/components/common/PageTitle";
 import EmptyState from "@/components/common/EmptyState";
 import Button from "@/components/common/Button";
 import Tag from "@/components/common/Tag";
+import { useAuthStore } from "@/store/useAuthStore";
 
 type AdminTab = "products" | "quotes" | "shop";
 type VerificationFilter = "all" | AdminProduct["verification_status"];
+
+export interface PendingProductDeactivation {
+  productId: number;
+  recordVersion: number;
+  idempotencyKey: string;
+}
+
+export type ProductDeactivationOutcome =
+  | { outcome: "success" }
+  | { outcome: "conflict"; message: string }
+  | { outcome: "retryable_error"; message: string };
+
+export async function submitProductDeactivation(
+  pending: PendingProductDeactivation,
+  remove: typeof deleteProduct,
+  refresh: () => Promise<void>,
+): Promise<ProductDeactivationOutcome> {
+  try {
+    await remove(
+      pending.productId,
+      pending.recordVersion,
+      pending.idempotencyKey,
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      await refresh();
+      return {
+        outcome: "conflict",
+        message: "商品已被其他运营人员更新，目录已刷新，请核对后重新操作",
+      };
+    }
+    return {
+      outcome: "retryable_error",
+      message: "下架结果暂时未知，可点击确认下架重试同一请求",
+    };
+  }
+  await refresh();
+  return { outcome: "success" };
+}
+
+function productDeactivationKey(product: AdminProduct): string {
+  const operationId = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `product-deactivate-${product.id}-v${product.record_version}-${operationId}`;
+}
 
 const verificationLabels: Record<AdminProduct["verification_status"], string> = {
   draft: "待核验",
@@ -40,10 +88,20 @@ const eligibilityReasonLabels: Record<string, string> = {
   inactive: "已下架",
   public_reference: "仅公开参考",
   provenance_unverified: "来源尚未核验",
+  source_name_missing: "缺少来源名称",
+  source_reference_missing: "缺少来源编号或链接",
+  source_retrieved_at_missing: "缺少来源采集时间",
+  source_retrieved_at_future: "来源采集时间晚于检查时间",
+  price_observed_at_missing: "缺少价格观察时间",
+  price_observed_at_future: "价格观察时间晚于检查时间",
   verification_required: "缺少商业核验",
   verification_rejected: "商业核验被拒绝",
   verification_expired: "商业核验已过期",
   verification_invalid: "核验状态无效",
+  verified_at_missing: "缺少核验时间",
+  verified_at_future: "核验时间晚于检查时间",
+  verified_by_missing: "缺少核验负责人",
+  data_version_unverified: "数据版本尚未正式发布",
   out_of_stock: "无可用库存",
   availability_unknown: "库存状态未知",
   lead_time_unknown: "交期未知",
@@ -52,6 +110,7 @@ const eligibilityReasonLabels: Record<string, string> = {
   price_validity_unknown: "价格有效期未知",
   price_not_started: "价格尚未生效",
   price_expired: "价格已过期",
+  region_unknown: "销售地区未知",
   region_required: "需要指定地区",
   region_unavailable: "当前地区不可售",
   dimensions_missing: "缺少完整尺寸",
@@ -152,6 +211,7 @@ export function CatalogReadinessSummary({
 }
 
 export default function AdminPage() {
+  const isAdmin = useAuthStore((state) => state.user?.role === "admin");
   const [tab, setTab] = useState<AdminTab>("products");
   const [products, setProducts] = useState<AdminProduct[]>([]);
   const [rules, setRules] = useState<QuoteRule[]>([]);
@@ -166,7 +226,8 @@ export default function AdminPage() {
   const [catalogError, setCatalogError] = useState("");
   const [editing, setEditing] = useState<AdminProduct | null>(null);
   const [showModal, setShowModal] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<number | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingProductDeactivation | null>(null);
+  const [commercialProductId, setCommercialProductId] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
     setCatalogError("");
@@ -207,6 +268,9 @@ export default function AdminPage() {
       filterAdminProducts(products, keyword, verificationFilter),
     [products, keyword, verificationFilter],
   );
+  const commercialProduct = commercialProductId == null
+    ? null
+    : products.find((product) => product.id === commercialProductId) ?? null;
 
   const openNew = () => {
     setEditing(null);
@@ -383,11 +447,11 @@ export default function AdminPage() {
                       <ProductCommercialFacts product={p} />
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center justify-between gap-2 border-t border-cream-100 pt-2 sm:border-0 sm:pt-0">
+                  <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-between gap-2 border-t border-cream-100 pt-2 sm:border-0 sm:pt-0">
                     <span className="font-display text-sm font-semibold text-terra-600">
                       {p.price_text}
                     </span>
-                    <div className="flex items-center gap-1">
+                    <div className="flex min-w-0 flex-wrap items-center justify-end gap-1">
                     {p.model_status === "pending_review" && (
                       <>
                         <Button
@@ -419,16 +483,36 @@ export default function AdminPage() {
                     <Button variant="ghost" size="sm" title="编辑商品" onClick={() => openEdit(p)}>
                       <Pencil className="h-4 w-4" />
                     </Button>
-                    {pendingDelete === p.id ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title={isAdmin ? "商业审核与审计" : "查看商业审计"}
+                      onClick={() => setCommercialProductId(p.id)}
+                    >
+                      <History className="h-4 w-4" />
+                    </Button>
+                    {pendingDelete?.productId === p.id ? (
                       <div className="flex items-center gap-1">
                         <Button
                           variant="terra"
                           size="sm"
                           onClick={async () => {
-                            await deleteProduct(p.id);
-                            setPendingDelete(null);
-                            void reload();
-                            void loadReadiness(readinessRegion);
+                            const result = await submitProductDeactivation(
+                              pendingDelete,
+                              deleteProduct,
+                              async () => {
+                                await Promise.all([
+                                  reload(),
+                                  loadReadiness(readinessRegion),
+                                ]);
+                              },
+                            );
+                            if (result.outcome !== "success") {
+                              setCatalogError(result.message);
+                            }
+                            if (result.outcome !== "retryable_error") {
+                              setPendingDelete(null);
+                            }
                           }}
                         >
                           确认下架
@@ -438,7 +522,16 @@ export default function AdminPage() {
                         </Button>
                       </div>
                     ) : (
-                      <Button variant="ghost" size="sm" title="下架商品" onClick={() => setPendingDelete(p.id)}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="下架商品"
+                        onClick={() => setPendingDelete({
+                          productId: p.id,
+                          recordVersion: p.record_version,
+                          idempotencyKey: productDeactivationKey(p),
+                        })}
+                      >
                         <Trash2 className="h-4 w-4 text-stone-400" />
                       </Button>
                     )}
@@ -449,6 +542,17 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+      )}
+
+      {commercialProduct && (
+        <ProductCommercialReviewPanel
+          product={commercialProduct}
+          canReview={isAdmin}
+          onClose={() => setCommercialProductId(null)}
+          onProductRefresh={async () => {
+            await Promise.all([reload(), loadReadiness(readinessRegion)]);
+          }}
+        />
       )}
 
       {tab === "quotes" && (

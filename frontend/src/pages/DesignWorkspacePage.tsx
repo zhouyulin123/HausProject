@@ -12,6 +12,7 @@ import {
 import ChatPanel from "@/components/chat/ChatPanel";
 import RoomView3D from "@/components/design/RoomView3D";
 import CustomFurniturePanel from "@/components/workspace/CustomFurniturePanel";
+import OpenGeometryPanel from "@/components/workspace/OpenGeometryPanel";
 import DesignWorkspaceInspector from "@/components/workspace/DesignWorkspaceInspector";
 import WorkspaceFeedbackControls from "@/components/workspace/WorkspaceFeedbackControls";
 import AgentExecutionPanel from "@/components/workspace/AgentExecutionPanel";
@@ -27,6 +28,7 @@ import {
   fetchFurnitureCatalog,
   mutateWorkspacePlan,
   resumeAgentGeneration,
+  type DesignAgentStateResponse,
   type AgentTurnResponse,
   type AgentApproval,
   type TaskTimelineResponse,
@@ -59,6 +61,12 @@ import {
 import { useDesignProjectStore } from "@/store/useDesignProjectStore";
 import { useDesignStore } from "@/store/useDesignStore";
 import type { FurnitureItem } from "@/types/furniture";
+import type { CustomFurniturePreviewResult } from "@/types/customFurniture";
+import type { DesignScene } from "@/types/scene";
+import {
+  emptyOpenGeometryState,
+  type OpenGeometryState,
+} from "@/types/openGeometry";
 
 type AgentConnection = "checking" | "connected" | "unavailable";
 type ProjectRecovery = "checking" | "ready" | "missing";
@@ -67,6 +75,50 @@ type MobilePanel = "conversation" | "scene" | "context";
 const FurnitureModelViewer = lazy(
   () => import("@/components/furniture/FurnitureModelViewer"),
 );
+
+export function applyAuthoritativeOpenGeometry(
+  taskId: number,
+  payload: { task_id: number; open_geometry: OpenGeometryState | null },
+  setState: (state: OpenGeometryState) => void,
+) {
+  if (
+    payload.task_id !== taskId
+    || (payload.open_geometry !== null && payload.open_geometry.task_id !== taskId)
+  ) return;
+  setState(payload.open_geometry ?? emptyOpenGeometryState(taskId));
+}
+
+export async function refreshAuthoritativeSceneFromAgent(
+  taskId: number,
+  sceneReference: { scene_id: number; version: number } | null,
+  getActiveTaskId: () => number | null | undefined,
+  fetchScene: (sceneId: number) => Promise<DesignScene>,
+  applyScene: (scene: DesignScene) => void,
+): Promise<boolean> {
+  if (!sceneReference) return false;
+  const scene = await fetchScene(sceneReference.scene_id);
+  if (
+    getActiveTaskId() !== taskId
+    || scene.id !== sceneReference.scene_id
+    || scene.current_version !== sceneReference.version
+  ) return false;
+  applyScene(scene);
+  return true;
+}
+
+export type CustomFurniturePreviewSource = "open_geometry" | "structured";
+
+export function resolveCustomFurniturePreviewSource(
+  payload: { intent: string; open_geometry: OpenGeometryState | null },
+  structuredPreview: CustomFurniturePreviewResult | null,
+): CustomFurniturePreviewSource | null {
+  if (payload.intent === "custom_furniture" && structuredPreview) return "structured";
+  if (payload.intent === "open_geometry" && payload.open_geometry?.current) {
+    return "open_geometry";
+  }
+  if (structuredPreview) return "structured";
+  return payload.open_geometry?.current ? "open_geometry" : null;
+}
 
 export default function DesignWorkspacePage() {
   const params = useParams();
@@ -102,6 +154,12 @@ export default function DesignWorkspacePage() {
   const [decidingApprovalId, setDecidingApprovalId] = useState<number | null>(null);
   const [timeline, setTimeline] = useState<TaskTimelineResponse | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [openGeometryState, setOpenGeometryState] = useState<OpenGeometryState | null>(null);
+  const [customFurniturePreviewSource, setCustomFurniturePreviewSource] = useState<
+    CustomFurniturePreviewSource | null
+  >(null);
+  const activeProjectIdRef = useRef(projectId);
+  activeProjectIdRef.current = projectId;
   const timelineRef = useRef<TaskTimelineResponse | null>(null);
   const timelineEpochRef = useRef(0);
   const timelineInFlightRef = useRef<Promise<boolean> | null>(null);
@@ -183,7 +241,14 @@ export default function DesignWorkspacePage() {
   }, [attachPlan, setGeneratedPlans]);
 
   const applyWorkspaceAgentResponse = useCallback((response: AgentTurnResponse) => {
-    if (!projectId) return;
+    if (
+      !projectId
+      || activeProjectIdRef.current !== projectId
+      || response.task_id !== projectId
+    ) return;
+    const currentProject = useDesignProjectStore.getState().projects[projectId];
+    if (currentProject && response.state_version < currentProject.stateVersion) return;
+    const customFurnitureResult = parseCustomFurniturePreview(response.result);
     applyAgentState(projectId, {
       stateVersion: response.state_version,
       status: response.status,
@@ -195,17 +260,82 @@ export default function DesignWorkspacePage() {
       exitReason: response.exit_reason,
       activeRoomId: response.active_room_id,
       customFurnitureSpec: response.state.custom_furniture_spec,
-      customFurnitureResult: parseCustomFurniturePreview(response.result),
+      customFurnitureResult,
       approvalRequired: response.approval_required,
       generationRunId: response.run_id,
       execution: agentExecutionFromTurn(response),
     });
+    applyAuthoritativeOpenGeometry(projectId, response, setOpenGeometryState);
+    if (
+      response.status === "completed"
+      && response.scene_ref
+      && ["action_plan", "scene_edit"].includes(response.intent)
+    ) {
+      void refreshAuthoritativeSceneFromAgent(
+        projectId,
+        response.scene_ref,
+        () => activeProjectIdRef.current,
+        fetchDesignScene,
+        (scene) => setAuthoritativeScene(projectId, scene),
+      ).catch(() => undefined);
+    }
+    setCustomFurniturePreviewSource(
+      resolveCustomFurniturePreviewSource(response, customFurnitureResult),
+    );
     if (response.status === "completed" && response.intent === "design") {
       void restoreServerPlans(projectId);
     }
     if (response.approval_required) void refreshApprovals();
     void refreshTimeline("newer");
-  }, [applyAgentState, projectId, refreshApprovals, refreshTimeline, restoreServerPlans]);
+  }, [
+    applyAgentState,
+    projectId,
+    refreshApprovals,
+    refreshTimeline,
+    restoreServerPlans,
+    setAuthoritativeScene,
+  ]);
+
+  const applyRefreshedAgentCheckpoint = useCallback((checkpoint: DesignAgentStateResponse) => {
+    if (
+      !projectId
+      || activeProjectIdRef.current !== projectId
+      || checkpoint.task_id !== projectId
+    ) return;
+    const currentProject = useDesignProjectStore.getState().projects[projectId];
+    if (currentProject && checkpoint.state_version < currentProject.stateVersion) return;
+    const customFurnitureResult = parseCustomFurniturePreview(checkpoint.result);
+    applyAgentState(projectId, {
+      stateVersion: checkpoint.state_version,
+      status: checkpoint.status,
+      activeMode: checkpoint.active_mode,
+      pendingQuestions: checkpoint.pending_questions,
+      facts: checkpoint.facts,
+      factEvidence: checkpoint.fact_evidence,
+      sceneRef: checkpoint.scene_ref,
+      exitReason: checkpoint.exit_reason,
+      activeRoomId: checkpoint.active_room_id,
+      customFurnitureSpec:
+        checkpoint.custom_furniture_draft ?? checkpoint.custom_furniture_spec,
+      customFurnitureResult,
+      approvalRequired: checkpoint.approval_required,
+      generationRunId: checkpoint.run_id,
+      execution: agentExecutionFromCheckpoint(
+        checkpoint,
+        useDesignProjectStore.getState().projects[projectId]?.execution.events ?? [],
+      ),
+    });
+    applyAuthoritativeOpenGeometry(projectId, checkpoint, setOpenGeometryState);
+    setCustomFurniturePreviewSource(
+      resolveCustomFurniturePreviewSource(checkpoint, customFurnitureResult),
+    );
+  }, [applyAgentState, projectId]);
+
+  const refreshAgentCheckpointAfterConflict = useCallback(async () => {
+    if (!projectId) return;
+    const checkpoint = await fetchDesignAgentState(projectId);
+    applyRefreshedAgentCheckpoint(checkpoint);
+  }, [applyRefreshedAgentCheckpoint, projectId]);
 
   const appendConversationTurn = useCallback((message: string, reply: string) => {
     if (!projectId) return;
@@ -236,6 +366,7 @@ export default function DesignWorkspacePage() {
     void fetchDesignAgentState(projectId)
       .then((checkpoint) => {
         if (cancelled) return;
+        if (checkpoint.task_id !== projectId) throw new Error("agent_task_mismatch");
         registerProject(
           checkpoint.task_id,
           checkpoint.active_mode,
@@ -293,7 +424,8 @@ export default function DesignWorkspacePage() {
         .catch(() => ({ events: [], has_more: false, next_before_id: null })),
     ])
       .then(([checkpoint, eventFeed]) => {
-        if (cancelled) return;
+        if (cancelled || checkpoint.task_id !== project.id) return;
+        const customFurnitureResult = parseCustomFurniturePreview(checkpoint.result);
         applyAgentState(project.id, {
           stateVersion: checkpoint.state_version,
           status: checkpoint.status,
@@ -306,7 +438,7 @@ export default function DesignWorkspacePage() {
           activeRoomId: checkpoint.active_room_id,
           customFurnitureSpec:
             checkpoint.custom_furniture_draft ?? checkpoint.custom_furniture_spec,
-          customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
+          customFurnitureResult,
           approvalRequired: checkpoint.approval_required,
           generationRunId: checkpoint.run_id,
           execution: agentExecutionFromCheckpoint(
@@ -317,6 +449,10 @@ export default function DesignWorkspacePage() {
             ),
           ),
         });
+        applyAuthoritativeOpenGeometry(project.id, checkpoint, setOpenGeometryState);
+        setCustomFurniturePreviewSource(
+          resolveCustomFurniturePreviewSource(checkpoint, customFurnitureResult),
+        );
         setMessages(
           project.id,
           checkpoint.messages.map((message) => ({
@@ -361,10 +497,11 @@ export default function DesignWorkspacePage() {
     let cancelled = false;
     void resumeAgentGeneration(project.id, project.generationRunId)
       .then(async ({ checkpoint, plans }) => {
-        if (cancelled) return;
+        if (cancelled || checkpoint.task_id !== project.id) return;
         const eventFeed = await fetchDesignAgentEvents(project.id, { limit: 50 })
           .catch(() => ({ events: [], has_more: false, next_before_id: null }));
         if (cancelled) return;
+        const customFurnitureResult = parseCustomFurniturePreview(checkpoint.result);
         applyAgentState(project.id, {
           stateVersion: checkpoint.state_version,
           status: checkpoint.status,
@@ -377,7 +514,7 @@ export default function DesignWorkspacePage() {
           activeRoomId: checkpoint.active_room_id,
           customFurnitureSpec:
             checkpoint.custom_furniture_draft ?? checkpoint.custom_furniture_spec,
-          customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
+          customFurnitureResult,
           approvalRequired: checkpoint.approval_required,
           generationRunId: checkpoint.run_id,
           execution: agentExecutionFromCheckpoint(
@@ -388,6 +525,10 @@ export default function DesignWorkspacePage() {
             ),
           ),
         });
+        applyAuthoritativeOpenGeometry(project.id, checkpoint, setOpenGeometryState);
+        setCustomFurniturePreviewSource(
+          resolveCustomFurniturePreviewSource(checkpoint, customFurnitureResult),
+        );
         setMessages(
           project.id,
           checkpoint.messages.map((message) => ({
@@ -458,6 +599,15 @@ export default function DesignWorkspacePage() {
     };
   }, [project?.mode]);
 
+  useEffect(() => {
+    setOpenGeometryState(
+      project?.mode === "custom_furniture"
+        ? emptyOpenGeometryState(project.id)
+        : null,
+    );
+    setCustomFurniturePreviewSource(null);
+  }, [project?.id, project?.mode]);
+
   const activePlan = project?.activePlanId
     ? generatedPlans.find(
         (item) => item.id === project.activePlanId && item.task_id === project.id,
@@ -478,6 +628,18 @@ export default function DesignWorkspacePage() {
     : null;
   const planVersionId = plan?.planVersionId ?? null;
   const activeRoomId = project?.activeRoomId ?? project?.roomModel?.rooms[0]?.id ?? null;
+  const activeOpenGeometryPreview = customFurniturePreviewSource === "structured"
+    ? null
+    : openGeometryState?.current ?? null;
+  const activeStructuredFurniturePreview = customFurniturePreviewSource === "open_geometry"
+    ? null
+    : project?.customFurnitureResult ?? null;
+  const activeCustomFurnitureName = activeOpenGeometryPreview?.design.name
+    ?? activeStructuredFurniturePreview?.spec.name
+    ?? "自定义家具参数草案";
+  const activeCustomFurnitureModelSpec = activeOpenGeometryPreview?.model_spec
+    ?? activeStructuredFurniturePreview?.model_spec
+    ?? null;
   const planMutationEventIds = useMemo(
     () => createPlanMutationEventIdResolver(projectId ?? 0),
     [projectId],
@@ -501,6 +663,11 @@ export default function DesignWorkspacePage() {
         item.id === decided.id ? decided : item
       )));
       const checkpoint = await fetchDesignAgentState(projectId);
+      if (
+        activeProjectIdRef.current !== projectId
+        || checkpoint.task_id !== projectId
+      ) return;
+      const customFurnitureResult = parseCustomFurniturePreview(checkpoint.result);
       applyAgentState(projectId, {
         stateVersion: checkpoint.state_version,
         status: checkpoint.status,
@@ -513,7 +680,7 @@ export default function DesignWorkspacePage() {
         activeRoomId: checkpoint.active_room_id,
         customFurnitureSpec:
           checkpoint.custom_furniture_draft ?? checkpoint.custom_furniture_spec,
-        customFurnitureResult: parseCustomFurniturePreview(checkpoint.result),
+        customFurnitureResult,
         approvalRequired: checkpoint.approval_required,
         generationRunId: checkpoint.run_id,
         execution: agentExecutionFromCheckpoint(
@@ -521,6 +688,10 @@ export default function DesignWorkspacePage() {
           useDesignProjectStore.getState().projects[projectId]?.execution.events ?? [],
         ),
       });
+      applyAuthoritativeOpenGeometry(projectId, checkpoint, setOpenGeometryState);
+      setCustomFurniturePreviewSource(
+        resolveCustomFurniturePreviewSource(checkpoint, customFurnitureResult),
+      );
       await refreshApprovals();
       await refreshTimeline("newer");
     } catch {
@@ -649,9 +820,9 @@ export default function DesignWorkspacePage() {
 
   const handleCustomDraftSaved = useCallback((reference: Parameters<
     typeof setCustomFurnitureDraftReference
-  >[1]) => {
+  >[1], stateVersion: number) => {
     if (!projectId || !reference) return;
-    setCustomFurnitureDraftReference(projectId, reference);
+    setCustomFurnitureDraftReference(projectId, reference, stateVersion);
   }, [projectId, setCustomFurnitureDraftReference]);
 
   if (!project && projectRecovery === "checking") {
@@ -792,10 +963,12 @@ export default function DesignWorkspacePage() {
               activeRoomId={activeRoomId}
               sceneId={project.sceneRef?.scene_id}
               baseSceneVersion={project.sceneRef?.version}
+              baseStateVersion={project.stateVersion}
               initialMessages={project.messages}
               pendingQuestions={project.pendingQuestions}
               onMessagesChange={(messages) => setMessages(project.id, messages)}
               onAgentResponse={applyWorkspaceAgentResponse}
+              onAgentStateConflict={refreshAgentCheckpointAfterConflict}
             />
           </div>
 
@@ -807,7 +980,7 @@ export default function DesignWorkspacePage() {
                 </p>
                 <p className="mt-0.5 text-xs font-medium">
                   {project.mode === "custom_furniture"
-                    ? project.customFurnitureResult?.spec.name ?? "自定义家具参数草案"
+                    ? activeCustomFurnitureName
                     : `${roomType} · ${selectedFurniture.length} 件家具`}
                 </p>
               </div>
@@ -816,10 +989,10 @@ export default function DesignWorkspacePage() {
               </span>
             </div>
             {project.mode === "custom_furniture" && !plan.planVersionId ? (
-              project.customFurnitureResult ? (
+              activeCustomFurnitureModelSpec ? (
                 <div className="h-[540px] min-h-[420px] overflow-hidden border border-[#1d241f]/15 bg-[#efe8db]">
                   <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-[#69736a]">正在加载确定性模型…</div>}>
-                    <FurnitureModelViewer spec={project.customFurnitureResult.model_spec} />
+                    <FurnitureModelViewer spec={activeCustomFurnitureModelSpec} />
                   </Suspense>
                 </div>
               ) : (
@@ -846,20 +1019,35 @@ export default function DesignWorkspacePage() {
 
           <div className={mobilePanel === "context" ? "block" : "hidden xl:block"}>
             {project.mode === "custom_furniture" ? (
-              <CustomFurniturePanel
-                taskId={project.id}
-                stateVersion={project.stateVersion}
-                initialSpec={project.customFurnitureSpec}
-                preview={project.customFurnitureResult}
-                approvalRequired={project.approvalRequired}
-                pendingQuestions={project.pendingQuestions}
-                sceneReference={project.sceneRef}
-                savedDraftReference={project.customFurnitureDraftReference}
-                onDraftSaved={handleCustomDraftSaved}
-                onSceneApplied={handleAuthoritativeScene}
-                onAgentResponse={applyWorkspaceAgentResponse}
-                onConversationTurn={appendConversationTurn}
-              />
+              <div className="space-y-3">
+                {openGeometryState && (
+                  <OpenGeometryPanel
+                    key={`open-geometry-${project.id}`}
+                    taskId={project.id}
+                    state={openGeometryState}
+                    sceneReference={project.sceneRef}
+                    authoritativeScene={project.authoritativeScene}
+                    onCheckpointRefresh={applyRefreshedAgentCheckpoint}
+                    onSceneApplied={handleAuthoritativeScene}
+                  />
+                )}
+                <CustomFurniturePanel
+                  key={`structured-furniture-${project.id}`}
+                  taskId={project.id}
+                  stateVersion={project.stateVersion}
+                  initialSpec={project.customFurnitureSpec}
+                  preview={project.customFurnitureResult}
+                  approvalRequired={project.approvalRequired}
+                  pendingQuestions={project.pendingQuestions}
+                  sceneReference={project.sceneRef}
+                  savedDraftReference={project.customFurnitureDraftReference}
+                  onDraftSaved={handleCustomDraftSaved}
+                  onSceneApplied={handleAuthoritativeScene}
+                  onAgentResponse={applyWorkspaceAgentResponse}
+                  onAgentStateConflict={refreshAgentCheckpointAfterConflict}
+                  onConversationTurn={appendConversationTurn}
+                />
+              </div>
             ) : (
               <DesignWorkspaceInspector
                 project={project}

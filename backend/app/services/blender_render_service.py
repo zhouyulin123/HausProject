@@ -35,6 +35,17 @@ class BlenderOutputError(ValueError):
     """Blender 子进程产物不符合发布约束。"""
 
 
+class OpenGeometryRenderUnsupported(BlenderOutputError):
+    """当前 Blender Worker 尚不能等价渲染开放几何快照。"""
+
+
+def assert_scene_renderable(scene: SceneDocument) -> None:
+    if any(item.source_type == "open_geometry_draft" for item in scene.items):
+        raise OpenGeometryRenderUnsupported(
+            "当前 Blender 渲染器尚不支持开放几何家具，请使用房间实时 3D 预览"
+        )
+
+
 def _resolve_allowlisted_model(
     model_url: str | None,
     *,
@@ -70,6 +81,7 @@ def build_render_manifest(
     profile: RenderProfile,
 ) -> dict:
     """生成只含声明式场景数据的 Worker 清单，不接受 Python 或 operator。"""
+    assert_scene_renderable(scene)
     scene_payload = deepcopy(scene.model_dump(by_alias=True, mode="json"))
     for item in scene_payload["items"]:
         model_path = _resolve_allowlisted_model(

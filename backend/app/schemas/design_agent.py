@@ -4,6 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.custom_furniture import CustomFurnitureSpec, CustomFurnitureSpecPatch
+from app.schemas.open_geometry import OpenGeometryStateResponse
 
 
 ActiveMode = Literal[
@@ -64,6 +65,7 @@ class AgentTurnRequest(BaseModel):
     active_room_id: str | None = Field(default=None, max_length=100)
     scene_id: int | None = Field(default=None, ge=1)
     base_scene_version: int | None = Field(default=None, ge=1)
+    base_state_version: int | None = Field(default=None, ge=0)
     selected_instance_id: str | None = Field(default=None, max_length=100)
     plan_id: str | None = Field(default=None, min_length=1, max_length=100)
     answers: AgentFactsPatch | None = None
@@ -137,6 +139,8 @@ class AgentStateResponse(BaseModel):
 
 
 class AgentTurnResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     task_id: int
     turn_id: int
     state_version: int
@@ -153,6 +157,8 @@ class AgentTurnResponse(BaseModel):
     scene_ref: dict[str, Any] | None = None
     run_id: int | None = None
     result: dict[str, Any] | None = None
+    open_geometry: OpenGeometryStateResponse | None = None
+    partial_completion: bool = Field(default=False, alias="partialCompletion")
 
 
 class AgentCheckpointResponse(BaseModel):
@@ -188,6 +194,7 @@ class AgentCheckpointResponse(BaseModel):
     turn_execution_deadline_at: datetime | None = None
     result: dict[str, Any] | None = None
     messages: list[AgentMessageResponse] = Field(default_factory=list)
+    open_geometry: OpenGeometryStateResponse | None = None
 
 
 class CustomFurnitureDraftRequest(BaseModel):

@@ -11,6 +11,7 @@ __pycache__/
 .pytest-tmp*/
 backend/.pytest-tmp*/
 backend/.tmp-*/
+.ruff_cache/
 .coverage
 htmlcov/
 .test_artifacts/
@@ -40,6 +41,9 @@ backend/uploads/*
 backend/.runtime/
 backend/*.xlsx
 outputs/backups/
+outputs/pytest-*/
+outputs/test-tmp-*/
+outputs/open_geometry_eval*.json
 *.log
 
 # 本地模型与缓存

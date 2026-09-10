@@ -27,6 +27,7 @@ from app.services.generation_provenance import (
 from app.services.llm_service import generation_prompt_snapshot
 from evals.collect_real_world_evidence import main as collect_evidence_main
 from evals.collect_security_access_evidence import main as collect_security_main
+from evals.dataset_source import load_dataset_source
 from evals.failure_triage import (
     build_failure_triage_report,
     build_failure_triage_sync_payload,
@@ -38,7 +39,6 @@ from evals.real_world import (
     EvaluationSplit,
     EvaluationVersions,
     RealWorldDataset,
-    load_case_manifest,
 )
 from evals.release_change_detection import (
     SensitiveChanges,
@@ -65,8 +65,10 @@ _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40,64}")
 @dataclass(frozen=True)
 class ReleaseSplitConfig:
-    manifest: Path
-    asset_root: Path
+    manifest: Path | None
+    asset_root: Path | None
+    dataset_version: str | None
+    review_root: Path | None
     run_bindings: Path
     security_targets: Path
     baseline_evidence: Path
@@ -207,9 +209,7 @@ def load_release_gate_config(path: Path | str) -> dict[EvaluationSplit, ReleaseS
     if not isinstance(raw_splits, dict) or tuple(raw_splits) != REQUIRED_SPLITS:
         raise EvaluationInputError("发布门禁配置必须按顺序完整包含三类 split")
     result: dict[EvaluationSplit, ReleaseSplitConfig] = {}
-    expected_fields = {
-        "manifest",
-        "asset_root",
+    common_fields = {
         "run_bindings",
         "security_targets",
         "baseline_evidence",
@@ -217,12 +217,34 @@ def load_release_gate_config(path: Path | str) -> dict[EvaluationSplit, ReleaseS
     }
     for split in REQUIRED_SPLITS:
         raw = raw_splits.get(split)
-        if not isinstance(raw, dict) or set(raw) != expected_fields:
+        if not isinstance(raw, dict) or set(raw) not in {
+            frozenset(common_fields | {"manifest", "asset_root"}),
+            frozenset(common_fields | {"dataset_version", "review_root"}),
+        }:
             raise EvaluationInputError(f"split={split} 配置字段不完整或包含未知字段")
         root = config_path.parent
+        dataset_version = raw.get("dataset_version")
+        if dataset_version is not None and (
+            not isinstance(dataset_version, str) or not dataset_version.strip()
+        ):
+            raise EvaluationInputError(f"split={split} 的 dataset_version 不合法")
         result[split] = ReleaseSplitConfig(
-            manifest=_resolve_config_path(root, raw["manifest"], "manifest"),
-            asset_root=_resolve_config_path(root, raw["asset_root"], "asset_root"),
+            manifest=(
+                _resolve_config_path(root, raw["manifest"], "manifest")
+                if "manifest" in raw
+                else None
+            ),
+            asset_root=(
+                _resolve_config_path(root, raw["asset_root"], "asset_root")
+                if "asset_root" in raw
+                else None
+            ),
+            dataset_version=(dataset_version.strip() if dataset_version else None),
+            review_root=(
+                _resolve_config_path(root, raw["review_root"], "review_root")
+                if "review_root" in raw
+                else None
+            ),
             run_bindings=_resolve_config_path(root, raw["run_bindings"], "run_bindings"),
             security_targets=_resolve_config_path(
                 root, raw["security_targets"], "security_targets"
@@ -232,7 +254,27 @@ def load_release_gate_config(path: Path | str) -> dict[EvaluationSplit, ReleaseS
             ),
             deployment_base_url=_validate_https_url(raw["deployment_base_url"]),
         )
+    source_kinds = {
+        "governance" if item.dataset_version is not None else "manifest"
+        for item in result.values()
+    }
+    if len(source_kinds) != 1:
+        raise EvaluationInputError("发布门禁三个 split 必须使用同一数据源类型")
+    governance_versions = {
+        item.dataset_version for item in result.values() if item.dataset_version
+    }
+    if len(governance_versions) > 1:
+        raise EvaluationInputError("发布门禁三个 split 必须使用同一冻结版本")
     return result
+
+
+def validate_release_dataset_sources(
+    configs: Mapping[EvaluationSplit, ReleaseSplitConfig],
+) -> str:
+    versions = {config.dataset_version for config in configs.values()}
+    if None in versions or len(versions) != 1:
+        raise EvaluationInputError("受保护发布证明必须使用同一治理冻结版本")
+    return next(iter(versions))  # type: ignore[return-value]
 
 
 def _required_environment(name: str) -> str:
@@ -302,14 +344,23 @@ def validate_candidate_runtime_versions(
 
 
 def _collector_args(config: ReleaseSplitConfig, split: EvaluationSplit) -> list[str]:
-    return [
-        "--manifest",
-        str(config.manifest),
-        "--split",
-        split,
-        "--asset-root",
-        str(config.asset_root),
-    ]
+    if config.dataset_version is not None:
+        if config.review_root is None:
+            raise EvaluationInputError("治理冻结数据源缺少 review_root")
+        return [
+            "--dataset-version",
+            config.dataset_version,
+            "--split",
+            split,
+            "--review-root",
+            str(config.review_root),
+        ]
+    if config.manifest is None:
+        raise EvaluationInputError("评测数据源配置不完整")
+    result = ["--manifest", str(config.manifest), "--split", split]
+    if config.asset_root is not None:
+        result.extend(["--asset-root", str(config.asset_root)])
+    return result
 
 
 def _generate_candidate_failure_triage_artifacts(
@@ -431,10 +482,13 @@ def _verify_split(
     eval_keys: Mapping[str, str],
     security_keys: Mapping[str, str],
 ) -> VerifiedReleaseSplit:
-    dataset = dataset or load_case_manifest(
-        config.manifest,
-        asset_root=config.asset_root,
-    )
+    if dataset is None:
+        dataset, _ = load_dataset_source(
+            manifest=config.manifest,
+            dataset_version=config.dataset_version,
+            asset_root=config.asset_root,
+            review_root=config.review_root,
+        )
     validate_release_dataset(dataset, split=split)
     security_output = work_dir / f"{split}.security.evidence.json"
     candidate_output = work_dir / f"{split}.candidate.evidence.json"
@@ -629,13 +683,14 @@ def _verify(args: argparse.Namespace) -> int:
         config = load_release_gate_config(
             _required_environment("REAL_WORLD_RELEASE_GATE_CONFIG_PATH")
         )
-        datasets = {
-            split: load_case_manifest(
-                config[split].manifest,
-                asset_root=config[split].asset_root,
-            )
-            for split in REQUIRED_SPLITS
-        }
+        dataset_version = validate_release_dataset_sources(config)
+        governed_dataset, _ = load_dataset_source(
+            manifest=None,
+            dataset_version=dataset_version,
+            asset_root=None,
+            review_root=config["development"].review_root,
+        )
+        datasets = {split: governed_dataset for split in REQUIRED_SPLITS}
         for split in REQUIRED_SPLITS:
             validate_release_dataset(datasets[split], split=split)
         private_real_case_count = validate_release_cohort(datasets)

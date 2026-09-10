@@ -82,7 +82,15 @@ def _product_eligibility_inputs(
     facts = ProductEligibilityFacts(
         is_active=bool(product.is_active),
         data_origin=product.data_origin,
+        source_name=product.source_name,
+        source_url=product.source_url,
+        source_product_id=product.source_product_id,
+        source_retrieved_at=_as_utc(product.source_retrieved_at),
+        price_observed_at=_as_utc(product.price_observed_at),
         verification_status=product.verification_status,
+        verified_at=_as_utc(product.verified_at),
+        verified_by=product.verified_by,
+        data_version=product.data_version,
         availability_status=product.availability_status,
         stock_quantity=product.stock_quantity,
         lead_time_days_min=product.lead_time_days_min,
@@ -148,7 +156,7 @@ def _eligibility_snapshot(
         else {}
     )
     return {
-        "schemaVersion": "1.0",
+        "schemaVersion": "1.1",
         "checkedAt": policy.checked_at.isoformat(),
         "sku": product.sku,
         "quantity": required_quantity,
@@ -164,7 +172,27 @@ def _eligibility_snapshot(
         "facts": {
             "isActive": facts.is_active,
             "dataOrigin": facts.data_origin,
+            "sourceName": facts.source_name,
+            "sourceUrl": facts.source_url,
+            "sourceProductId": facts.source_product_id,
+            "sourceRetrievedAt": (
+                facts.source_retrieved_at.isoformat()
+                if facts.source_retrieved_at is not None
+                else None
+            ),
+            "priceObservedAt": (
+                facts.price_observed_at.isoformat()
+                if facts.price_observed_at is not None
+                else None
+            ),
             "verificationStatus": facts.verification_status,
+            "verifiedAt": (
+                facts.verified_at.isoformat()
+                if facts.verified_at is not None
+                else None
+            ),
+            "verifiedBy": facts.verified_by,
+            "dataVersion": facts.data_version,
             "availabilityStatus": facts.availability_status,
             "stockQuantity": facts.stock_quantity,
             "leadTimeDaysMin": facts.lead_time_days_min,

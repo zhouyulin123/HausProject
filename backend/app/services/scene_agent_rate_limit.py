@@ -16,11 +16,18 @@ class SceneAgentRateLimiter:
         self._max_requests = max_requests
         self._window_seconds = window_seconds
         self._buckets: dict[str, deque[float]] = {}
+        self._accepted_request_ids: dict[str, dict[str, float]] = {}
         self._lock = Lock()
         self._checks = 0
 
-    def retry_after(self, key: str, *, now: float | None = None) -> int | None:
-        """记录一次允许的请求；被拒绝的请求不会占用新的额度。"""
+    def retry_after(
+        self,
+        key: str,
+        *,
+        request_id: str | None = None,
+        now: float | None = None,
+    ) -> int | None:
+        """记录一次允许的请求；幂等重放与被拒绝请求不占用新额度。"""
         current = monotonic() if now is None else now
         cutoff = current - self._window_seconds
         with self._lock:
@@ -32,10 +39,23 @@ class SceneAgentRateLimiter:
             while bucket and bucket[0] <= cutoff:
                 bucket.popleft()
 
+            accepted = self._accepted_request_ids.setdefault(key, {})
+            stale_request_ids = [
+                item_id
+                for item_id, accepted_at in accepted.items()
+                if accepted_at <= cutoff
+            ]
+            for item_id in stale_request_ids:
+                del accepted[item_id]
+            if request_id is not None and request_id in accepted:
+                return None
+
             if len(bucket) >= self._max_requests:
                 return max(1, ceil(bucket[0] + self._window_seconds - current))
 
             bucket.append(current)
+            if request_id is not None:
+                accepted[request_id] = current
             return None
 
     def _prune_stale_buckets(self, cutoff: float) -> None:
@@ -47,3 +67,4 @@ class SceneAgentRateLimiter:
                 stale_keys.append(key)
         for key in stale_keys:
             del self._buckets[key]
+            self._accepted_request_ids.pop(key, None)

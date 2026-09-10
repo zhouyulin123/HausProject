@@ -5,10 +5,11 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import logging
-from math import isclose
+from math import hypot, isclose
 import re
 from typing import Any, Callable
 
+from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -37,10 +38,24 @@ from app.db.models import (
     UploadedImage,
 )
 from app.schemas.design_agent import AgentTurnRequest, CustomFurnitureDraftRequest
+from app.schemas.agent_action_plan import (
+    AgentActionPlan,
+    ExplicitPlacement,
+    MoveSceneItemAction,
+    NearOpeningPlacement,
+    OpenGeometryEditAction,
+    PlaceOpenGeometryAction,
+    RoomCenterPlacement,
+)
 from app.schemas.custom_furniture import CustomFurniturePreviewRequest
 from app.schemas.room_model import RoomModel
-from app.schemas.scene_agent import SceneOperationBatch
-from app.schemas.scenes import SceneDocument
+from app.schemas.scene_agent import MoveSceneItem, SceneOperationBatch
+from app.schemas.scenes import (
+    OpenGeometrySceneItemRequest,
+    PositiveVector3,
+    SceneDocument,
+    Vector2XZ,
+)
 from app.services import (
     agent_approval_service,
     aggregate_lock_service,
@@ -49,6 +64,7 @@ from app.services import (
     generation_request_service,
     generation_run_service,
     llm_service,
+    open_geometry_service,
     plan_refine_service,
     scene_service,
     scene_tools,
@@ -56,9 +72,11 @@ from app.services import (
 )
 from app.services.llm_service import LLMUnavailable
 from app.services.langgraph_checkpoint_service import SqlAlchemyCheckpointSaver
+from app.services.scene_geometry import point_in_polygon
 
 logger = logging.getLogger(__name__)
 ROOM_FACT_CONFIDENCE_THRESHOLD = 0.8
+_AGENT_STATE_EXTENSION_KEYS = frozenset({"open_geometry_furniture"})
 
 
 class AgentSceneNotFound(ValueError):
@@ -94,6 +112,14 @@ class AgentStateVersionConflict(ValueError):
         self.scene_ref = deepcopy(scene_ref)
 
 
+class AgentActionPlanFailed(ValueError):
+    """统一动作计划失败；携带可公开的稳定门禁原因码。"""
+
+    def __init__(self, codes: list[str]) -> None:
+        self.codes = list(dict.fromkeys(codes)) or ["action_plan_failed"]
+        super().__init__("统一动作计划未通过确定性门禁")
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -107,8 +133,19 @@ def _as_utc(value: datetime) -> datetime:
 def _intent_for(payload: AgentTurnRequest) -> str:
     if payload.plan_id is not None:
         return "plan_refine"
-    if payload.scene_id is not None:
-        return "scene_edit"
+    if payload.active_mode == "custom_furniture":
+        supplied_spec = (
+            payload.custom_furniture_spec.model_dump(
+                mode="json", exclude_none=True
+            )
+            if payload.custom_furniture_spec is not None
+            else {}
+        )
+        if supplied_spec:
+            return "custom_furniture"
+        if payload.scene_id is not None and payload.base_scene_version is not None:
+            return "action_plan"
+        return "open_geometry"
     if (
         payload.active_mode in {"catalog_design", "room_reconstruction"}
         and classify_scene_edit_intent(payload.message)
@@ -117,6 +154,11 @@ def _intent_for(payload: AgentTurnRequest) -> str:
     if payload.active_mode != "catalog_design":
         return payload.active_mode
     return "design"
+
+
+def is_open_geometry_turn(payload: AgentTurnRequest) -> bool:
+    """供 HTTP 前置治理复用与编排完全一致的意图判定。"""
+    return _intent_for(payload) in {"open_geometry", "action_plan"}
 
 
 def _normalize_requirement_facts(requirement: dict[str, Any]) -> dict[str, Any]:
@@ -383,6 +425,615 @@ def _merge_nested_dict(
         else:
             merged[key] = deepcopy(value)
     return merged
+
+
+def _preserve_agent_state_extensions(
+    prior: dict[str, Any],
+    checkpoint: dict[str, Any],
+    *,
+    extension: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """在重建核心 checkpoint 时保留已登记的扩展状态命名空间。"""
+    preserved = deepcopy(checkpoint)
+    for key in _AGENT_STATE_EXTENSION_KEYS:
+        if extension is not None and key in extension:
+            preserved[key] = deepcopy(extension[key])
+        elif key in prior:
+            preserved[key] = deepcopy(prior[key])
+    return preserved
+
+
+def _open_geometry_tool():
+    def execute(state: dict[str, Any]) -> dict[str, Any]:
+        extension = state.get("open_geometry_extension")
+        if not isinstance(extension, dict):
+            extension = {"current_version": 0, "current": None, "history": []}
+        try:
+            prepared = open_geometry_service.prepare_command(
+                instruction=state.get("message", ""),
+                current_state=extension,
+            )
+        except open_geometry_service.OpenGeometryError as exc:
+            raise AgentToolRejected(str(exc), codes=[exc.code]) from exc
+        return {
+            **prepared.result,
+            "_open_geometry_extension": prepared.extension,
+        }
+
+    return execute
+
+
+def _scene_document_for_action(
+    db: Session,
+    *,
+    task_id: int,
+    scene_id: int,
+) -> tuple[DesignScene, SceneDocument]:
+    scene = _load_task_scene(db, task_id=task_id, scene_id=scene_id)
+    if scene is None:
+        raise AgentSceneNotFound("场景不存在或不属于当前任务")
+    current = scene_service.get_current_version(db, scene)
+    return scene, SceneDocument.model_validate(current.scene_json)
+
+
+def _action_planner_context(
+    *,
+    task_id: int,
+    scene: DesignScene,
+    document: SceneDocument,
+    selected_instance_id: str | None,
+    open_geometry_state: dict[str, Any],
+    active_mode: str,
+) -> dict[str, Any]:
+    open_response = open_geometry_service.state_response(task_id, open_geometry_state)
+    current = open_response.current if open_response is not None else None
+    points = document.room.floor_polygon
+    center = {
+        "x": sum(point.x for point in points) / len(points),
+        "z": sum(point.z for point in points) / len(points),
+    }
+    open_items = [
+        {
+            "instanceId": item.instance_id,
+            "name": item.category,
+            "openGeometryVersion": (
+                item.open_geometry_ref.open_geometry_version
+                if item.open_geometry_ref is not None
+                else None
+            ),
+            "position": {
+                "x": item.transform.position.x,
+                "z": item.transform.position.z,
+            },
+        }
+        for item in document.items
+        if item.source_type == "open_geometry_draft"
+    ]
+    return {
+        "activeMode": active_mode,
+        "scene": {
+            "id": scene.id,
+            "version": scene.current_version,
+            "roomId": document.room.id,
+            "roomName": document.room.name,
+            "roomCenter": center,
+            "openings": [
+                {"id": opening.id, "type": opening.type}
+                for opening in document.openings[:20]
+            ],
+        },
+        "selectedInstanceId": selected_instance_id,
+        "currentOpenGeometry": (
+            {
+                "version": current.version,
+                "name": current.design.name,
+                "modelId": (
+                    current.model_spec.get("确定性建模规则", {}).get("模型ID")
+                ),
+                "partIds": [part.id for part in current.design.parts[:40]],
+            }
+            if current is not None
+            else None
+        ),
+        "openGeometryItems": open_items[:20],
+        "openGeometryItemsTruncated": len(open_items) > 20,
+    }
+
+
+def _placement_point(
+    document: SceneDocument,
+    placement: RoomCenterPlacement | NearOpeningPlacement | ExplicitPlacement,
+    *,
+    dimensions: Any = None,
+) -> Vector2XZ:
+    if isinstance(placement, ExplicitPlacement):
+        return placement.position
+    points = document.room.floor_polygon
+    if isinstance(placement, RoomCenterPlacement):
+        return Vector2XZ(
+            x=sum(point.x for point in points) / len(points),
+            z=sum(point.z for point in points) / len(points),
+        )
+    opening = next(
+        (item for item in document.openings if item.id == placement.opening_id),
+        None,
+    )
+    if opening is None:
+        raise AgentToolRejected(
+            "动作计划引用了不存在的门窗洞口",
+            codes=["opening_not_found"],
+        )
+    start = points[opening.wall_index]
+    end = points[(opening.wall_index + 1) % len(points)]
+    wall_length = hypot(end.x - start.x, end.z - start.z)
+    if wall_length <= 1e-9:
+        raise AgentToolRejected(
+            "目标门窗所在墙段无效",
+            codes=["opening_wall_invalid"],
+        )
+    tangent_x = (end.x - start.x) / wall_length
+    tangent_z = (end.z - start.z) / wall_length
+    center_x = start.x + tangent_x * (opening.offset + opening.width / 2)
+    center_z = start.z + tangent_z * (opening.offset + opening.width / 2)
+    left_normal = (-tangent_z, tangent_x)
+    polygon = [(point.x, point.z) for point in points]
+    left_probe = (
+        center_x + left_normal[0] * 1e-4,
+        center_z + left_normal[1] * 1e-4,
+    )
+    inward = (
+        left_normal
+        if point_in_polygon(left_probe, polygon)
+        else (-left_normal[0], -left_normal[1])
+    )
+    clearance = 0.35
+    if dimensions is not None:
+        clearance = max(float(dimensions.x), float(dimensions.z)) / 2 + 0.15
+    return Vector2XZ(
+        x=center_x + inward[0] * clearance,
+        z=center_z + inward[1] * clearance,
+    )
+
+
+def _action_plan_tool(
+    db: Session,
+    task: DesignTask,
+    payload: AgentTurnRequest,
+    turn_id: int,
+    *,
+    turn_execution_deadline_at: datetime,
+    clock: Callable[[], datetime] | None = None,
+    on_model_attempt: Callable[[], None] | None = None,
+):
+    current_time = clock or _utc_now
+
+    def ensure_active() -> None:
+        if _as_utc(current_time()) >= _as_utc(turn_execution_deadline_at):
+            raise AgentToolRejected(
+                "统一动作规划超过本轮截止时间",
+                codes=["tool_timeout"],
+            )
+
+    def execute(state: dict[str, Any]) -> dict[str, Any]:
+        if payload.scene_id is None or payload.base_scene_version is None:
+            raise AgentToolRejected(
+                "统一动作规划缺少场景版本",
+                codes=["scene_context_missing"],
+            )
+        ensure_active()
+        scene, document = _scene_document_for_action(
+            db,
+            task_id=task.id,
+            scene_id=payload.scene_id,
+        )
+        if scene.current_version != payload.base_scene_version:
+            raise AgentSceneVersionConflict(
+                f"场景已经更新到版本 {scene.current_version}"
+            )
+        extension = state.get("open_geometry_extension")
+        if not isinstance(extension, dict):
+            extension = {"current_version": 0, "current": None, "history": []}
+        context = _action_planner_context(
+            task_id=task.id,
+            scene=scene,
+            document=document,
+            selected_instance_id=payload.selected_instance_id,
+            open_geometry_state=extension,
+            active_mode=payload.active_mode,
+        )
+        try:
+            if on_model_attempt is not None:
+                on_model_attempt()
+            plan: AgentActionPlan = llm_service.plan_agent_actions(
+                instruction=state["message"],
+                context=context,
+            )
+        except LLMUnavailable as exc:
+            raise AgentToolRejected(str(exc), codes=["model_unavailable"]) from exc
+
+        if plan.outcome == "clarify":
+            question = plan.question
+            return {
+                "status": "waiting_user",
+                "code": "clarification_required",
+                "message": question.prompt,
+                "partialCompletion": False,
+                "actions": [],
+                "_pending_questions": [
+                    {
+                        "field": question.field,
+                        "prompt": question.prompt,
+                        "reason": "需要先唯一确定受控动作目标",
+                    }
+                ],
+                "_open_geometry_extension": extension,
+            }
+        if plan.outcome == "unsupported":
+            return {
+                "status": "completed",
+                "code": "unsupported_action",
+                "message": plan.summary,
+                "reasonCode": plan.reason_code,
+                "partialCompletion": False,
+                "actions": [],
+                "_open_geometry_extension": extension,
+            }
+
+        staged_extension = deepcopy(extension)
+        action_results: list[dict[str, Any]] = []
+        scene_ref: dict[str, int] | None = None
+        for step in plan.steps:
+            ensure_active()
+            if isinstance(step, OpenGeometryEditAction):
+                try:
+                    if on_model_attempt is not None:
+                        on_model_attempt()
+                    prepared = open_geometry_service.prepare_command(
+                        instruction=step.instruction,
+                        current_state=staged_extension,
+                        max_attempts=1,
+                    )
+                except open_geometry_service.OpenGeometryError as exc:
+                    raise AgentToolRejected(str(exc), codes=[exc.code]) from exc
+                if prepared.result.get("code") == "unsupported_geometry":
+                    return {
+                        "status": "completed",
+                        "code": "unsupported_action",
+                        "message": prepared.result.get("message") or plan.summary,
+                        "reasonCode": "unsupported_geometry",
+                        "partialCompletion": False,
+                        "actions": [
+                            {
+                                "id": step.id,
+                                "tool": step.tool,
+                                "status": "unsupported",
+                            }
+                        ],
+                        "_open_geometry_extension": extension,
+                    }
+                staged_extension = prepared.extension
+                action_results.append(
+                    {
+                        "id": step.id,
+                        "tool": step.tool,
+                        "status": "completed",
+                        "result": prepared.result,
+                    }
+                )
+                continue
+
+            if isinstance(step, PlaceOpenGeometryAction):
+                staged_state = open_geometry_service.state_response(
+                    task.id,
+                    staged_extension,
+                )
+                current = staged_state.current if staged_state is not None else None
+                if current is None:
+                    raise AgentToolRejected(
+                        "当前没有可放入房间的开放几何版本",
+                        codes=["open_geometry_missing"],
+                    )
+                rule = current.model_spec.get("确定性建模规则", {})
+                raw_dimensions = rule.get("包围尺寸_mm", {})
+                try:
+                    dimensions = PositiveVector3(
+                        x=float(raw_dimensions["宽"]) / 1000,
+                        y=float(raw_dimensions["高"]) / 1000,
+                        z=float(raw_dimensions["深"]) / 1000,
+                    )
+                except (KeyError, TypeError, ValueError, ValidationError) as exc:
+                    raise AgentToolRejected(
+                        "开放几何版本缺少有效包围尺寸",
+                        codes=["open_geometry_dimensions_invalid"],
+                    ) from exc
+                position = _placement_point(
+                    document,
+                    step.placement,
+                    dimensions=dimensions,
+                )
+                try:
+                    version, _ = scene_service.add_staged_open_geometry_to_scene(
+                        db,
+                        task=task,
+                        scene=scene,
+                        payload=OpenGeometrySceneItemRequest(
+                            base_version=scene.current_version,
+                            client_mutation_id=f"agent-turn:{turn_id}:{step.id}",
+                            open_geometry_version=current.version,
+                            position=position,
+                            rotation_y=0,
+                        ),
+                        current=current,
+                    )
+                except scene_service.SceneConflictError as exc:
+                    raise AgentSceneVersionConflict(str(exc)) from exc
+                except (
+                    scene_service.OpenGeometrySceneBindingError,
+                    scene_service.ScenePlacementError,
+                    scene_service.SceneValidationError,
+                ) as exc:
+                    codes = [getattr(exc, "code", "scene_validation_failed")]
+                    if isinstance(exc, scene_service.ScenePlacementError):
+                        codes = [issue.code for issue in exc.issues]
+                    raise AgentToolRejected(str(exc), codes=codes) from exc
+                scene_ref = {"scene_id": scene.id, "version": version.version}
+                action_results.append(
+                    {
+                        "id": step.id,
+                        "tool": step.tool,
+                        "status": "completed",
+                        "sceneRef": scene_ref,
+                    }
+                )
+                continue
+
+            if isinstance(step, MoveSceneItemAction):
+                target = next(
+                    (
+                        item
+                        for item in document.items
+                        if item.instance_id == step.instance_id
+                    ),
+                    None,
+                )
+                if target is None:
+                    raise AgentToolRejected(
+                        "动作计划引用了不存在的场景物件",
+                        codes=["target_instance_not_found"],
+                    )
+                position = _placement_point(
+                    document,
+                    step.placement,
+                    dimensions=target.dimensions,
+                )
+                try:
+                    proposed = scene_tools.apply_scene_operations(
+                        db,
+                        document,
+                        [
+                            MoveSceneItem(
+                                type="move",
+                                instance_id=step.instance_id,
+                                position=position,
+                            )
+                        ],
+                    )
+                    placement_issues = scene_service.validate_item_placement(
+                        proposed,
+                        step.instance_id,
+                    )
+                    if placement_issues:
+                        raise scene_service.ScenePlacementError(placement_issues)
+                    version, _ = scene_service.update_scene_idempotent(
+                        db,
+                        scene=scene,
+                        base_version=scene.current_version,
+                        document=proposed,
+                        source="scene_agent",
+                        client_mutation_id=f"agent-turn:{turn_id}:{step.id}",
+                        mutation_metadata={
+                            "task_id": task.id,
+                            "turn_id": turn_id,
+                            "action_plan_schema": plan.schema_version,
+                        },
+                    )
+                except scene_service.SceneConflictError as exc:
+                    raise AgentSceneVersionConflict(str(exc)) from exc
+                except scene_service.ScenePlacementError as exc:
+                    raise AgentToolRejected(
+                        str(exc),
+                        codes=[issue.code for issue in exc.issues],
+                    ) from exc
+                except (scene_tools.SceneToolError, scene_service.SceneValidationError) as exc:
+                    raise AgentToolRejected(
+                        str(exc),
+                        codes=["scene_validation_failed"],
+                    ) from exc
+                scene_ref = {"scene_id": scene.id, "version": version.version}
+                action_results.append(
+                    {
+                        "id": step.id,
+                        "tool": step.tool,
+                        "status": "completed",
+                        "sceneRef": scene_ref,
+                    }
+                )
+
+        ensure_active()
+        return {
+            "status": "completed",
+            "code": "action_plan_completed",
+            "message": plan.summary,
+            "partialCompletion": False,
+            "actions": action_results,
+            "scene_ref": scene_ref,
+            "_open_geometry_extension": staged_extension,
+        }
+
+    return execute
+
+
+def _normalized_model_call_capture(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"attempt_count": 0, "usage": {}}
+    attempt_count = value.get("attempt_count", 0)
+    if (
+        not isinstance(attempt_count, int)
+        or isinstance(attempt_count, bool)
+        or attempt_count < 0
+    ):
+        attempt_count = 0
+    raw_usage = value.get("usage")
+    usage: dict[str, int] = {}
+    if isinstance(raw_usage, dict):
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            token_count = raw_usage.get(key)
+            if (
+                isinstance(token_count, int)
+                and not isinstance(token_count, bool)
+                and token_count >= 0
+            ):
+                usage[key] = token_count
+    return {"attempt_count": attempt_count, "usage": usage}
+
+
+def _runtime_model_call_capture(value: Any) -> dict[str, Any]:
+    return _normalized_model_call_capture(
+        {
+            "attempt_count": getattr(value, "attempt_count", 0),
+            "usage": deepcopy(getattr(value, "usage", {}) or {}),
+        }
+    )
+
+
+def _merge_model_call_capture(
+    persisted: dict[str, Any],
+    runtime: dict[str, Any],
+) -> dict[str, Any]:
+    left = _normalized_model_call_capture(persisted)
+    right = _normalized_model_call_capture(runtime)
+    usage = {
+        key: left["usage"].get(key, 0) + right["usage"].get(key, 0)
+        for key in {**left["usage"], **right["usage"]}
+    }
+    return {
+        "attempt_count": left["attempt_count"] + right["attempt_count"],
+        "usage": usage,
+    }
+
+
+def _effective_model_call_capture(
+    state: dict[str, Any],
+    runtime: Any,
+) -> llm_service.ModelCallCapture:
+    checkpointed = _normalized_model_call_capture(
+        state.get("model_call_capture")
+    )
+    live = _runtime_model_call_capture(runtime)
+    selected = (
+        checkpointed
+        if checkpointed["attempt_count"] >= live["attempt_count"]
+        else live
+    )
+    return llm_service.ModelCallCapture(
+        attempt_count=selected["attempt_count"],
+        usage=deepcopy(selected["usage"]),
+    )
+
+
+def _open_geometry_payload(task_id: int, state: Any) -> dict[str, Any] | None:
+    try:
+        response = open_geometry_service.state_response(task_id, state)
+    except (
+        TypeError,
+        ValueError,
+        ValidationError,
+        open_geometry_service.OpenGeometryError,
+    ):
+        return None
+    return response.model_dump(mode="json") if response is not None else None
+
+
+def _validated_open_geometry_extension(
+    task_id: int,
+    state: Any,
+    *,
+    result: dict[str, Any] | None,
+    prior_state: Any,
+) -> dict[str, Any]:
+    response = open_geometry_service.state_response(task_id, state)
+    if response is None:
+        raise open_geometry_service.OpenGeometryError(
+            "invalid_state",
+            "开放几何工具没有返回可提交的状态",
+        )
+    prior_response = open_geometry_service.state_response(
+        task_id,
+        prior_state
+        if isinstance(prior_state, dict)
+        else {"current_version": 0, "current": None, "history": []},
+    )
+    if prior_response is None:
+        raise open_geometry_service.OpenGeometryError(
+            "invalid_state",
+            "开放几何旧状态无效",
+        )
+    normalized = response.model_dump(mode="json", exclude={"task_id"})
+    prior = prior_response.model_dump(mode="json", exclude={"task_id"})
+    if not isinstance(result, dict):
+        if normalized != prior:
+            raise open_geometry_service.OpenGeometryError(
+                "invalid_state",
+                "开放几何失败结果不得修改设计状态",
+            )
+        return normalized
+
+    code = result.get("code")
+    if result.get("current_version") != response.current_version:
+        raise open_geometry_service.OpenGeometryError(
+            "invalid_state",
+            "开放几何结果版本与设计状态不一致",
+        )
+    if code == "unsupported_geometry":
+        if normalized != prior:
+            raise open_geometry_service.OpenGeometryError(
+                "invalid_state",
+                "不支持的开放几何请求不得覆盖旧版本",
+            )
+    elif code == "completed":
+        if (
+            response.current_version != prior_response.current_version + 1
+            or response.current is None
+        ):
+            raise open_geometry_service.OpenGeometryError(
+                "invalid_state",
+                "开放几何成功结果必须在旧状态上连续推进一版",
+            )
+    else:
+        raise open_geometry_service.OpenGeometryError(
+            "invalid_state",
+            "开放几何工具返回了未知结果状态",
+        )
+
+    expected_part_count = (
+        len(response.current.design.parts) if response.current is not None else 0
+    )
+    expected_model_id = None
+    if response.current is not None:
+        expected_model_id = (
+            response.current.model_spec.get("确定性建模规则", {}).get("模型ID")
+        )
+    if result.get("part_count") != expected_part_count:
+        raise open_geometry_service.OpenGeometryError(
+            "invalid_state",
+            "开放几何结果部件数与设计状态不一致",
+        )
+    if result.get("model_id") != expected_model_id:
+        raise open_geometry_service.OpenGeometryError(
+            "invalid_state",
+            "开放几何结果模型 ID 与设计状态不一致",
+        )
+    return normalized
 
 
 def _custom_spec_for_turn(
@@ -785,6 +1436,10 @@ def _reply(state: dict[str, Any]) -> str:
         return str(result.get("message") or "已按要求调整方案。")
     if state["intent"] == "custom_furniture":
         return "已生成通过参数校验且报价可复算的定制家具预览。"
+    if state["intent"] == "open_geometry":
+        return str(result.get("message") or "开放几何家具状态已更新。")
+    if state["intent"] == "action_plan":
+        return str(result.get("message") or "已完成受控家具与场景动作。")
     contains_drafts = any(
         event.get("payload", {}).get("contains_unverified_drafts")
         for event in state.get("tool_events", [])
@@ -975,6 +1630,8 @@ _PUBLIC_EVENT_NODES = {
     "scene_edit",
     "plan_refine",
     "custom_furniture_preview",
+    "open_geometry_edit",
+    "action_plan",
     "safety_intent_gate",
     "checkpoint_commit",
     "turn_recovery",
@@ -1002,6 +1659,8 @@ _PUBLIC_NODE_LABELS = {
     "scene_edit": "3D 场景调整",
     "plan_refine": "方案精修",
     "custom_furniture_preview": "定制家具预览",
+    "open_geometry_edit": "开放几何编辑",
+    "action_plan": "统一家具与场景动作",
     "safety_intent_gate": "安全意图检查",
 }
 
@@ -1304,6 +1963,15 @@ def _claim_turn(
         db.commit()
         return task, existing, response, False
 
+    if (
+        payload.base_state_version is not None
+        and payload.base_state_version != int(task.agent_state_version or 0)
+    ):
+        raise AgentStateVersionConflict(
+            "Agent 状态版本已变化，请刷新后重试",
+            state_version=int(task.agent_state_version or 0),
+        )
+
     for running in running_turns:
         if not _turn_lease_expired(running, now=now):
             raise AgentTurnInProgress("任务已有 Agent turn 正在处理中")
@@ -1355,6 +2023,7 @@ def _record_state_conflict(
     *,
     task_id: int,
     payload: AgentTurnRequest,
+    model_capture: llm_service.ModelCallCapture | None = None,
 ) -> dict[str, Any] | AgentStateVersionConflict:
     db.rollback()
     task = _lock_task_for_turn(db, task_id)
@@ -1401,7 +2070,12 @@ def _record_state_conflict(
     )
     db.add(event)
     db.flush()
-    _record_agent_timeline_event(db, event=event, state="conflict")
+    _record_agent_timeline_event(
+        db,
+        event=event,
+        state="conflict",
+        model_capture=model_capture,
+    )
     db.commit()
     return AgentStateVersionConflict(
         message,
@@ -1436,27 +2110,28 @@ def _run_turn(
             raise AgentSceneVersionConflict(
                 f"场景已经更新到版本 {scene.current_version}"
             )
-    checkpoint = (
+    prior_checkpoint = (
         task.agent_state_json if isinstance(task.agent_state_json, dict) else {}
     )
-    max_steps = checkpoint.get("max_steps", 12)
+    opening_state_version = int(task.agent_state_version or 0)
+    max_steps = prior_checkpoint.get("max_steps", 12)
     if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
         max_steps = 12
-    max_retries = checkpoint.get("max_retries", 2)
+    max_retries = prior_checkpoint.get("max_retries", 2)
     if (
         not isinstance(max_retries, int)
         or isinstance(max_retries, bool)
         or max_retries < 0
     ):
         max_retries = 2
-    initial_step_count = checkpoint.get("step_count", 0)
+    initial_step_count = prior_checkpoint.get("step_count", 0)
     if (
         not isinstance(initial_step_count, int)
         or isinstance(initial_step_count, bool)
         or initial_step_count < 0
     ):
         initial_step_count = 0
-    initial_retry_count = checkpoint.get("retry_count", 0)
+    initial_retry_count = prior_checkpoint.get("retry_count", 0)
     if (
         not isinstance(initial_retry_count, int)
         or isinstance(initial_retry_count, bool)
@@ -1464,22 +2139,30 @@ def _run_turn(
     ):
         initial_retry_count = 0
     retry_budget_exhausted = (
-        checkpoint.get("status") == "needs_human"
-        and checkpoint.get("exit_reason")
+        prior_checkpoint.get("status") == "needs_human"
+        and prior_checkpoint.get("exit_reason")
         in {"retry_exhausted", "safety_blocked", "tool_failed"}
         and initial_retry_count >= max_retries
     )
     step_budget_exhausted = initial_step_count >= max_steps
     budget_exhausted = retry_budget_exhausted or step_budget_exhausted
-    initial_hard_errors = list(checkpoint.get("hard_errors") or [])
-    initial_exit_reason = str(checkpoint.get("exit_reason") or "")
+    initial_hard_errors = list(prior_checkpoint.get("hard_errors") or [])
+    initial_exit_reason = str(prior_checkpoint.get("exit_reason") or "")
+    if initial_exit_reason in {"goal_completed", "unsupported_geometry"}:
+        initial_step_count = 0
+        initial_retry_count = 0
+        initial_hard_errors = []
+        initial_exit_reason = ""
+        retry_budget_exhausted = False
+        step_budget_exhausted = False
+        budget_exhausted = False
     if step_budget_exhausted:
         initial_hard_errors = list(
             dict.fromkeys([*initial_hard_errors, "step_limit_exceeded"])
         )
         initial_exit_reason = "retry_exhausted"
 
-    next_state_version = (task.agent_state_version or 0) + 1
+    next_state_version = opening_state_version + 1
     turn_execution_deadline_at = _turn_execution_deadline(turn)
     checkpoint_saver = _checkpoint_saver(
         db,
@@ -1492,6 +2175,26 @@ def _run_turn(
             result = callback(state)
             checkpoint_saver.defer()
             return result
+
+        return execute
+
+    resumed_model_capture: dict[str, Any] | None = None
+
+    def preserve_model_call_capture(callback):
+        def execute(state):
+            nonlocal resumed_model_capture
+            if resumed_model_capture is None:
+                resumed_model_capture = _normalized_model_call_capture(
+                    state.get("model_call_capture")
+                )
+            result = callback(state)
+            return {
+                **result,
+                "_model_call_capture": _merge_model_call_capture(
+                    resumed_model_capture,
+                    _runtime_model_call_capture(model_capture),
+                ),
+            }
 
         return execute
 
@@ -1511,35 +2214,60 @@ def _run_turn(
     )
     registry.register(
         "scene_edit",
-        defer_after_side_effect(
-            _scene_tool(
-                db,
-                task,
-                payload,
-                turn.id,
-                turn_execution_deadline_at=turn_execution_deadline_at,
-                on_model_attempt=mark_model_attempted,
+        preserve_model_call_capture(
+            defer_after_side_effect(
+                _scene_tool(
+                    db,
+                    task,
+                    payload,
+                    turn.id,
+                    turn_execution_deadline_at=turn_execution_deadline_at,
+                    on_model_attempt=mark_model_attempted,
+                )
             )
         ),
     )
     registry.register(
         "plan_refine",
-        defer_after_side_effect(
-            _plan_refine_tool(
-                db,
-                task,
-                payload,
-                on_model_attempt=mark_model_attempted,
+        preserve_model_call_capture(
+            defer_after_side_effect(
+                _plan_refine_tool(
+                    db,
+                    task,
+                    payload,
+                    on_model_attempt=mark_model_attempted,
+                )
             )
         ),
     )
     registry.register("custom_furniture_preview", _custom_furniture_tool(db))
+    registry.register(
+        "open_geometry_edit",
+        preserve_model_call_capture(_open_geometry_tool()),
+    )
+    registry.register(
+        "action_plan",
+        preserve_model_call_capture(
+            defer_after_side_effect(
+                _action_plan_tool(
+                    db,
+                    task,
+                    payload,
+                    turn.id,
+                    turn_execution_deadline_at=turn_execution_deadline_at,
+                    on_model_attempt=mark_model_attempted,
+                )
+            )
+        ),
+    )
     workflow = DesignAgentWorkflow(
         retrieve_catalog=registry.get("catalog_search"),
         execute_design=registry.get("design_generation"),
         execute_scene=registry.get("scene_edit"),
         execute_plan_refine=registry.get("plan_refine"),
         execute_custom=registry.get("custom_furniture_preview"),
+        execute_open_geometry=registry.get("open_geometry_edit"),
+        execute_action_plan=registry.get("action_plan"),
         max_steps=max_steps,
         max_retries=max_retries,
         checkpointer=checkpoint_saver,
@@ -1577,14 +2305,34 @@ def _run_turn(
         initial_hard_errors=initial_hard_errors,
         budget_exhausted=budget_exhausted,
         initial_exit_reason=initial_exit_reason,
+        task_state_version=opening_state_version,
+        open_geometry_extension=deepcopy(
+            prior_checkpoint.get("open_geometry_furniture") or {}
+        ),
         turn_execution_deadline_at=turn_execution_deadline_at,
         resume=resume_turn,
     )
+    if intent == "action_plan" and state.get("hard_errors"):
+        raise AgentActionPlanFailed(state.get("hard_errors") or [])
+    effective_model_capture = _effective_model_call_capture(
+        state,
+        model_capture,
+    )
+    checkpoint_base_version = state.get("task_state_version", opening_state_version)
+    if (
+        not isinstance(checkpoint_base_version, int)
+        or isinstance(checkpoint_base_version, bool)
+        or checkpoint_base_version < 0
+    ):
+        checkpoint_base_version = opening_state_version
+    next_state_version = checkpoint_base_version + 1
 
     requirement = deepcopy(task.confirmed_requirement_json or {})
     requirement.update(facts)
     public_result = _public_result(state.get("result"))
-    scene_ref = (public_result or {}).get("scene_ref")
+    scene_ref = (public_result or {}).get("scene_ref") or prior_checkpoint.get(
+        "scene_ref"
+    )
     run_id = (
         public_result.get("run_id")
         if intent == "design" and isinstance(public_result, dict)
@@ -1616,6 +2364,40 @@ def _run_turn(
         **generation_run_service.agent_execution_control(generation_run),
         "result": public_result,
     }
+    candidate_open_geometry = None
+    if intent == "open_geometry":
+        candidate_open_geometry = _validated_open_geometry_extension(
+            task.id,
+            state.get("open_geometry_extension"),
+            result=public_result,
+            prior_state=prior_checkpoint.get("open_geometry_furniture"),
+        )
+    elif intent == "action_plan":
+        geometry_result = next(
+            (
+                action.get("result")
+                for action in (public_result or {}).get("actions", [])
+                if action.get("tool") == "open_geometry.edit"
+            ),
+            None,
+        )
+        validated_action_extension = _validated_open_geometry_extension(
+            task.id,
+            state.get("open_geometry_extension"),
+            result=geometry_result,
+            prior_state=prior_checkpoint.get("open_geometry_furniture"),
+        )
+        if geometry_result is not None:
+            candidate_open_geometry = validated_action_extension
+    checkpoint = _preserve_agent_state_extensions(
+        prior_checkpoint,
+        checkpoint,
+        extension=(
+            {"open_geometry_furniture": candidate_open_geometry}
+            if candidate_open_geometry is not None
+            else None
+        ),
+    )
     state_update = db.execute(
         update(DesignTask)
         .where(
@@ -1640,6 +2422,7 @@ def _run_turn(
             db,
             task_id=task.id,
             payload=payload,
+            model_capture=effective_model_capture,
         )
         if isinstance(conflict, dict):
             return conflict
@@ -1652,7 +2435,7 @@ def _run_turn(
         db,
         event=events[-1],
         model_attempted=model_attempted,
-        model_capture=model_capture,
+        model_capture=effective_model_capture,
     )
     agent_approval_service.ensure_for_agent_handoff(
         db,
@@ -1678,6 +2461,10 @@ def _run_turn(
         "run_id": run_id,
         "exit_reason": state["exit_reason"],
         "result": public_result,
+        "open_geometry": _open_geometry_payload(
+            task.id, checkpoint.get("open_geometry_furniture")
+        ),
+        "partialCompletion": False,
     }
     turn.status = state["status"]
     turn.response_json = deepcopy(response)
@@ -1718,6 +2505,11 @@ def _persist_failed_turn(
     )
     prior_facts = prior_checkpoint.get("facts") or {}
     prior_fact_evidence = prior_checkpoint.get("fact_evidence") or {}
+    failure_codes = (
+        error.codes
+        if isinstance(error, AgentActionPlanFailed)
+        else ["internal_error"]
+    )
     step_count = prior_checkpoint.get("step_count", 0)
     if (
         not isinstance(step_count, int)
@@ -1761,7 +2553,7 @@ def _persist_failed_turn(
         "max_retries": max_retries,
         "hard_errors": list(
             dict.fromkeys(
-                [*(prior_checkpoint.get("hard_errors") or []), "internal_error"]
+                [*(prior_checkpoint.get("hard_errors") or []), *failure_codes]
             )
         ),
         "custom_furniture_spec": deepcopy(
@@ -1769,14 +2561,24 @@ def _persist_failed_turn(
         ),
         "approval_required": False,
         "exit_reason": "tool_failed",
-        "scene_ref": None,
+        "scene_ref": deepcopy(prior_checkpoint.get("scene_ref")),
         "run_id": None,
         "turn_execution_deadline_at": prior_checkpoint.get(
             "turn_execution_deadline_at"
         ),
         **generation_run_service.agent_execution_control(None),
-        "result": None,
+        "result": (
+            {
+                "status": "failed",
+                "code": failure_codes[0],
+                "message": "本轮动作未通过确定性门禁，未提交任何家具或场景变更。",
+                "partialCompletion": False,
+            }
+            if isinstance(error, AgentActionPlanFailed)
+            else None
+        ),
     }
+    checkpoint = _preserve_agent_state_extensions(prior_checkpoint, checkpoint)
     task.agent_state_json = checkpoint
     event = DesignAgentEvent(
         task_id=task.id,
@@ -1787,7 +2589,10 @@ def _persist_failed_turn(
         status="failed",
         source="orchestrator",
         summary="本轮执行失败，未提交方案或场景副作用",
-        details_json={"error_type": type(error).__name__},
+        details_json={
+            "error_type": type(error).__name__,
+            "reason_codes": failure_codes,
+        },
     )
     db.add(event)
     db.flush()
@@ -1797,7 +2602,11 @@ def _persist_failed_turn(
         state="failed",
         model_capture=model_capture,
     )
-    reply = "本轮执行失败，已安全停止。请稍后重试或由人工继续处理。"
+    reply = (
+        "本轮动作未通过确定性门禁，未提交任何家具或场景变更。"
+        if isinstance(error, AgentActionPlanFailed)
+        else "本轮执行失败，已安全停止。请稍后重试或由人工继续处理。"
+    )
     response = {
         "task_id": task.id,
         "turn_id": turn.id,
@@ -1811,10 +2620,14 @@ def _persist_failed_turn(
         "pending_questions": [],
         "events": [_event_payload(event)],
         "approval_required": False,
-        "scene_ref": None,
+        "scene_ref": deepcopy(prior_checkpoint.get("scene_ref")),
         "run_id": None,
         "exit_reason": "tool_failed",
-        "result": None,
+        "result": checkpoint["result"],
+        "open_geometry": _open_geometry_payload(
+            task.id, checkpoint.get("open_geometry_furniture")
+        ),
+        "partialCompletion": False,
     }
     turn.status = "failed"
     turn.response_json = deepcopy(response)
@@ -1922,6 +2735,9 @@ def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
             }
             for message in messages
         ],
+        "open_geometry": _open_geometry_payload(
+            task.id, state.get("open_geometry_furniture")
+        ),
     }
 
 

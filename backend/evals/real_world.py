@@ -91,6 +91,8 @@ class RealWorldCase:
             reasons.append("purpose_not_allowed")
         if self.split == "unassigned":
             reasons.append("split_not_assigned")
+        if self.task_input is None:
+            reasons.append("task_input_missing")
         return reasons
 
 
@@ -99,6 +101,13 @@ class RealWorldDataset:
     schema_version: str
     dataset_version: str
     cases: tuple[RealWorldCase, ...]
+    governance_manifest_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.governance_manifest_digest is not None and not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", self.governance_manifest_digest
+        ):
+            raise ValueError("治理冻结摘要必须是 SHA-256 摘要")
 
     def eligible_cases(self, split: CaseSplit | None = None) -> list[RealWorldCase]:
         return [
@@ -135,8 +144,14 @@ class RealWorldDataset:
             }
             for case in sorted(self.eligible_cases(), key=lambda item: item.id)
         ]
+        fingerprint_payload: Any = canonical_cases
+        if self.governance_manifest_digest is not None:
+            fingerprint_payload = {
+                "cases": canonical_cases,
+                "governance_manifest_digest": self.governance_manifest_digest,
+            }
         encoded = json.dumps(
-            canonical_cases,
+            fingerprint_payload,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -210,6 +225,8 @@ def load_case_manifest(
         raise DatasetValidationError(f"无法读取案例清单：{exc}") from exc
     if not isinstance(payload, dict):
         raise DatasetValidationError("案例清单根节点必须是对象")
+    if "governance_manifest_digest" in payload:
+        raise DatasetValidationError("静态案例清单不得声明治理冻结摘要")
     schema_version = payload.get("schema_version")
     dataset_version = payload.get("dataset_version")
     if schema_version not in {"1.0", "2.0"}:

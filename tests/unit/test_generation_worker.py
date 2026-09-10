@@ -40,7 +40,14 @@ def _persist_worker_output(db, task, *, generator: str):
                 price=1000,
                 is_active=True,
                 data_origin="merchant",
+                source_name="测试供应商",
+                source_product_id="SOFA-001",
+                source_retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                price_observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
                 verification_status="verified",
+                verified_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                verified_by="test:fixture",
+                data_version="catalog-test-v1",
                 availability_status="in_stock",
                 stock_quantity=10,
                 price_valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -258,8 +265,16 @@ def test_worker_never_completes_layout_with_hard_issue(monkeypatch, hard_code):
         assert task.agent_state_json["exit_reason"] == "generation_failed"
 
 
-def test_agent_generation_run_disables_template_fallback_in_default_worker(
+@pytest.mark.parametrize(
+    "idempotency_key",
+    [
+        "agent-generation:1:no-template",
+        "client-selected-key:1:no-template",
+    ],
+)
+def test_default_worker_disables_template_fallback_for_all_run_keys(
     monkeypatch,
+    idempotency_key,
 ):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -271,7 +286,7 @@ def test_agent_generation_run_disables_template_fallback_in_default_worker(
         generation_run_service.create_run(
             db,
             task=task,
-            idempotency_key="agent-generation:1:no-template",
+            idempotency_key=idempotency_key,
             request_digest="sha256:" + "c" * 64,
         )
 
@@ -507,7 +522,14 @@ def test_worker_budget_replan_success_completes_same_run_and_checkpoint(monkeypa
                 price=9_000,
                 is_active=True,
                 data_origin="merchant",
+                source_name="测试供应商",
+                source_product_id="SOFA-001",
+                source_retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                price_observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
                 verification_status="verified",
+                verified_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                verified_by="test:fixture",
+                data_version="catalog-test-v1",
                 availability_status="in_stock",
                 stock_quantity=10,
                 price_valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),

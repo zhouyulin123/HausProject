@@ -8,11 +8,15 @@ import os
 from pathlib import Path
 from typing import Any
 
+from evals.dataset_source import (
+    add_dataset_source_arguments,
+    load_dataset_source,
+    source_arguments,
+)
 from evals.real_world import (
     EvaluationInputError,
     EvaluationSplit,
     EvaluationVersions,
-    load_case_manifest,
 )
 from evals.security_access_attestation import (
     AccessTarget,
@@ -78,13 +82,12 @@ def _read_targets(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="运行独立跨用户 HTTP 安全回归")
-    parser.add_argument("--manifest", type=Path, required=True)
+    add_dataset_source_arguments(parser)
     parser.add_argument(
         "--split",
         choices=("development", "regression", "blind"),
         required=True,
     )
-    parser.add_argument("--asset-root", type=Path)
     parser.add_argument("--targets", type=Path, required=True)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--app-build-digest", required=True)
@@ -99,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
             raise EvaluationInputError(
                 "缺少独立安全证据签名密钥或 key_id"
             )
-        dataset = load_case_manifest(args.manifest, asset_root=args.asset_root)
+        dataset, _ = load_dataset_source(**source_arguments(args))
         targets, versions = _read_targets(args.targets, split=args.split)
         credential_names = {
             name

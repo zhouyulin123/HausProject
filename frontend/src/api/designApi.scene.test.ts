@@ -181,6 +181,52 @@ describe("3D 场景 API", () => {
     );
   });
 
+  it("把当前开放几何版本以幂等 CAS 请求加入房间", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const storage = createLocalStorage({
+      "haus-anonymous-session-id": sessionId,
+    });
+    const addedScene = {
+      id: 9,
+      plan_version_id: 7,
+      current_version: 2,
+      scene: { ...scene, schemaVersion: "1.1" as const },
+      validation: { valid: true, errors: [], warnings: [] },
+      source: "manual" as const,
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ session_id: sessionId }))
+      .mockResolvedValueOnce(jsonResponse(addedScene));
+    vi.stubGlobal("window", { localStorage: storage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { addOpenGeometryToScene } = await import("./designApi");
+    const result = await addOpenGeometryToScene(9, {
+      baseVersion: 1,
+      clientMutationId: "place-open-001",
+      openGeometryVersion: 4,
+      position: { x: 1.2, z: 0.8 },
+      rotationY: 0.25,
+    });
+
+    expect(result).toEqual(addedScene);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/design/scenes/9/open-geometry-items",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          baseVersion: 1,
+          clientMutationId: "place-open-001",
+          openGeometryVersion: 4,
+          position: { x: 1.2, z: 0.8 },
+          rotationY: 0.25,
+        }),
+      }),
+    );
+  });
+
   it("将草稿 409 解析为带权威服务端快照的冲突", async () => {
     const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
     const storage = createLocalStorage({

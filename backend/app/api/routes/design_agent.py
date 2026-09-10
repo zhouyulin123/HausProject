@@ -27,6 +27,10 @@ from app.services import (
     aggregate_lock_service,
     design_agent_service,
 )
+from app.services.open_geometry_rate_limit import (
+    open_geometry_rate_key,
+    open_geometry_rate_limiter,
+)
 
 
 router = APIRouter()
@@ -287,6 +291,20 @@ def run_agent_turn(
         session_id=x_session_id,
         task_id=task_id,
     )
+    if design_agent_service.is_open_geometry_turn(payload):
+        retry_after = open_geometry_rate_limiter.retry_after(
+            open_geometry_rate_key(task.id),
+            request_id=f"turn:{payload.client_turn_id}",
+        )
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "rate_limited",
+                    "message": "开放几何 AI 请求过于频繁，请稍后重试",
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
     try:
         return design_agent_service.run_turn(db, task=task, payload=payload)
     except design_agent_service.AgentSceneNotFound as exc:

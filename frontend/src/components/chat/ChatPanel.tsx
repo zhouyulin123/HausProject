@@ -5,9 +5,11 @@ import { RotateCcw, Send, Sparkles } from "lucide-react";
 import type { ChatMessage as ChatMessageType } from "@/types/chat";
 import { quickCommands, quickReplies } from "@/data/mockChat";
 import {
+  ApiError,
   sendAgentTurn,
   sendChatMessage,
   type AgentActiveMode,
+  type AgentTurnRequest,
   type AgentTurnResponse,
 } from "@/api/designApi";
 import { buildOpeningMessage } from "@/lib/openingMessage";
@@ -25,10 +27,12 @@ interface ChatPanelProps {
   activeRoomId?: string | null;
   sceneId?: number | null;
   baseSceneVersion?: number | null;
+  baseStateVersion?: number;
   initialMessages?: ChatMessageType[];
   pendingQuestions?: AgentPendingQuestion[];
   onMessagesChange?: (messages: ChatMessageType[]) => void;
   onAgentResponse?: (response: AgentTurnResponse) => void;
+  onAgentStateConflict?: () => Promise<void> | void;
   onGenerate?: () => void;
   workspace?: boolean;
 }
@@ -37,6 +41,13 @@ export interface PendingSend {
   text: string;
   clientTurnId: string;
   messagesWithUser: ChatMessageType[];
+}
+
+export class AgentStateConflictRefreshError extends Error {
+  constructor() {
+    super("agent_state_conflict_refresh_failed");
+    this.name = "AgentStateConflictRefreshError";
+  }
 }
 
 export function createPendingSend(
@@ -55,16 +66,88 @@ export function createPendingSend(
   };
 }
 
+export function buildWorkspaceAgentTurn(
+  pending: PendingSend,
+  context: {
+    activeMode: AgentActiveMode;
+    activeRoomId: string | null;
+    sceneId: number | null;
+    baseSceneVersion: number | null;
+    baseStateVersion: number;
+  },
+): AgentTurnRequest {
+  return {
+    client_turn_id: pending.clientTurnId,
+    message: pending.text,
+    active_mode: context.activeMode,
+    active_room_id: context.activeRoomId,
+    base_state_version: context.baseStateVersion,
+    ...agentTurnSceneContext(context.sceneId, context.baseSceneVersion),
+  };
+}
+
+export function workspaceAgentSendFailure(error: unknown): {
+  message: string;
+  retryable: boolean;
+} {
+  if (error instanceof AgentStateConflictRefreshError) {
+    return {
+      message: "设计状态已变化，但最新状态读取失败。请刷新页面后再继续。",
+      retryable: false,
+    };
+  }
+  if (error instanceof ApiError) {
+    const detail = typeof error.detail === "object" && error.detail
+      ? error.detail as { code?: string; message?: string }
+      : null;
+    if (error.status === 409 && detail?.code === "agent_state_conflict") {
+      return {
+        message: "设计状态已被更新，请查看最新结果后重新发送需求。",
+        retryable: false,
+      };
+    }
+    const serverMessage = detail?.message
+      ?? (typeof error.detail === "string" ? error.detail : error.message);
+    return { message: serverMessage, retryable: true };
+  }
+  return {
+    message: "智能体服务暂时不可用，本轮没有执行任何设计操作。",
+    retryable: true,
+  };
+}
+
+export async function recoverWorkspaceAgentConflict(
+  error: unknown,
+  refresh: () => Promise<void> | void,
+): Promise<boolean> {
+  const detail = error instanceof ApiError
+    && typeof error.detail === "object"
+    && error.detail
+    ? error.detail as { code?: string }
+    : null;
+  if (!(error instanceof ApiError)
+    || error.status !== 409
+    || detail?.code !== "agent_state_conflict") return false;
+  try {
+    await refresh();
+  } catch {
+    throw new AgentStateConflictRefreshError();
+  }
+  return true;
+}
+
 export default function ChatPanel({
   projectId,
   activeMode,
   activeRoomId = null,
   sceneId = null,
   baseSceneVersion = null,
+  baseStateVersion = 0,
   initialMessages,
   pendingQuestions = [],
   onMessagesChange,
   onAgentResponse,
+  onAgentStateConflict,
   onGenerate,
   workspace = false,
 }: ChatPanelProps = {}) {
@@ -111,13 +194,13 @@ export default function ChatPanel({
     try {
       let reply: string;
       if (projectId && activeMode) {
-        const response = await sendAgentTurn(projectId, {
-          client_turn_id: pending.clientTurnId,
-          message: pending.text,
-          active_mode: activeMode,
-          active_room_id: activeRoomId,
-          ...agentTurnSceneContext(sceneId, baseSceneVersion),
-        });
+        const response = await sendAgentTurn(projectId, buildWorkspaceAgentTurn(pending, {
+          activeMode,
+          activeRoomId,
+          sceneId,
+          baseSceneVersion,
+          baseStateVersion,
+        }));
         reply = response.reply;
         onAgentResponse?.(response);
       } else {
@@ -130,13 +213,26 @@ export default function ChatPanel({
       setMessages(nextWithReply);
       onMessagesChange?.(nextWithReply);
       setFailedSend(null);
-    } catch {
-      setFailedSend(pending);
-      setSendError(
-        workspace
-          ? "智能体服务暂未连接，本轮没有执行任何设计操作。"
-          : "消息发送失败，请稍后重试。",
-      );
+    } catch (cause) {
+      let failureCause = cause;
+      if (workspace) {
+        try {
+          await recoverWorkspaceAgentConflict(
+            cause,
+            async () => {
+              if (!onAgentStateConflict) throw new AgentStateConflictRefreshError();
+              await onAgentStateConflict();
+            },
+          );
+        } catch (recoveryError) {
+          failureCause = recoveryError;
+        }
+      }
+      const failure = workspace
+        ? workspaceAgentSendFailure(failureCause)
+        : { message: "消息发送失败，请稍后重试。", retryable: true };
+      setFailedSend(failure.retryable ? pending : null);
+      setSendError(failure.message);
     } finally {
       sendingRef.current = false;
       setLoading(false);

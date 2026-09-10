@@ -29,6 +29,8 @@ EVENT_SUMMARIES = {
     "agent.approval.decided": "人工审批已作出决定",
     "agent.turn.recovered": "智能体执行已恢复",
     "agent.turn.conflict": "智能体状态提交冲突",
+    "agent.open_geometry.completed": "开放几何家具修改已完成",
+    "agent.open_geometry.failed": "开放几何家具修改失败",
     "requirement.completed": "AI 需求解析已完成",
     "requirement.fallback": "需求解析已降级为确定性规则",
     "vision.completed": "AI 空间识别已完成",

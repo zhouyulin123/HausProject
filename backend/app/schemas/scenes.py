@@ -1,7 +1,7 @@
 """Web 3D 场景的版本化数据契约。"""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -195,6 +195,19 @@ class CustomFurnitureSceneRef(SceneModel):
     spec_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
+class OpenGeometrySceneRef(SceneModel):
+    task_id: int = Field(ge=1)
+    plan_version_id: int = Field(ge=1)
+    introduced_scene_version: int = Field(ge=1)
+    open_geometry_version: int = Field(ge=1)
+    model_id: str = Field(
+        min_length=1,
+        max_length=50,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    spec_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class SceneItem(SceneModel):
     instance_id: str = Field(
         min_length=1,
@@ -211,8 +224,14 @@ class SceneItem(SceneModel):
     )
     asset_mode: AssetMode = "parametric"
     fallback_reason: AssetFallbackReason | None = None
-    source_type: Literal["catalog", "custom_furniture_draft"] = "catalog"
+    source_type: Literal[
+        "catalog",
+        "custom_furniture_draft",
+        "open_geometry_draft",
+    ] = "catalog"
     custom_furniture_ref: CustomFurnitureSceneRef | None = None
+    open_geometry_ref: OpenGeometrySceneRef | None = None
+    open_geometry_model_spec: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_asset_contract(self) -> "SceneItem":
@@ -223,13 +242,33 @@ class SceneItem(SceneModel):
             and self.fallback_reason is not None
         ):
             raise ValueError("approved_glb 不得携带 fallbackReason")
-        if self.source_type == "catalog" and self.custom_furniture_ref is not None:
-            raise ValueError("目录商品不得携带 customFurnitureRef")
+        if self.source_type == "catalog":
+            if self.custom_furniture_ref is not None:
+                raise ValueError("目录商品不得携带 customFurnitureRef")
+            if (
+                self.open_geometry_ref is not None
+                or self.open_geometry_model_spec is not None
+            ):
+                raise ValueError("目录商品不得携带开放几何快照")
         if self.source_type == "custom_furniture_draft":
             if self.custom_furniture_ref is None:
                 raise ValueError("定制家具必须携带 customFurnitureRef")
+            if (
+                self.open_geometry_ref is not None
+                or self.open_geometry_model_spec is not None
+            ):
+                raise ValueError("结构化定制家具不得携带开放几何快照")
             if self.asset_mode != "parametric" or self.fallback_reason is not None:
                 raise ValueError("定制家具草稿只能使用参数化预览资产")
+        if self.source_type == "open_geometry_draft":
+            if self.open_geometry_ref is None:
+                raise ValueError("开放几何家具必须携带 openGeometryRef")
+            if self.open_geometry_model_spec is None:
+                raise ValueError("开放几何家具必须携带 openGeometryModelSpec")
+            if self.custom_furniture_ref is not None:
+                raise ValueError("开放几何家具不得携带 customFurnitureRef")
+            if self.asset_mode != "parametric" or self.fallback_reason is not None:
+                raise ValueError("开放几何家具只能使用参数化预览资产")
         return self
 
 
@@ -242,7 +281,7 @@ class SceneCamera(SceneModel):
 class SceneDocument(SceneModel):
     """可以被 Web 编辑器、Scene Agent 与 Blender 共同消费的场景快照。"""
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.0"
     unit: Literal["m"] = "m"
     coordinate_system: Literal["right-handed-y-up"] = "right-handed-y-up"
     room: RoomGeometry
@@ -273,6 +312,10 @@ class SceneDocument(SceneModel):
                 "opening.wallIndex 超出墙体范围: "
                 + ", ".join(str(index) for index in invalid_wall_indexes)
             )
+        if self.schema_version == "1.0" and any(
+            item.source_type == "open_geometry_draft" for item in self.items
+        ):
+            raise ValueError("开放几何场景物件要求 SceneDocument 1.1")
         return self
 
 
@@ -338,6 +381,18 @@ class CustomFurnitureSceneItemRequest(SceneModel):
         max_length=100,
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
+    position: Vector2XZ
+    rotation_y: float = Field(default=0, ge=-6.2831853072, le=6.2831853072)
+
+
+class OpenGeometrySceneItemRequest(SceneModel):
+    base_version: int = Field(ge=1)
+    client_mutation_id: str = Field(
+        min_length=8,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    open_geometry_version: int = Field(ge=1)
     position: Vector2XZ
     rotation_y: float = Field(default=0, ge=-6.2831853072, le=6.2831853072)
 

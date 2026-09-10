@@ -655,6 +655,46 @@ def judge_plan_compliance(
 
 # ---------------------------------------------------------------- Scene Agent
 
+_AGENT_ACTION_PLANNER_SYSTEM = """你是家装家具对话的受控动作规划器。
+你只负责把用户意图映射成给定 JSON Schema，不执行工具，也不能编造状态中不存在的
+scene、instanceId 或 openingId。只允许 Schema 中声明的白名单工具，最多 3 步。
+创建或修改开放几何家具后再放进房间时，放置步骤必须依赖几何步骤。
+“房间中间”使用 room_center；“靠窗/靠门”必须选择现有 openingId 并使用 near_opening；
+明确坐标才使用 explicit。指代不能由 selectedInstanceId、最近开放几何实例或唯一候选
+可靠消解时返回 clarify；能力超出白名单时返回 unsupported。不得输出代码或额外字段。"""
+
+
+def plan_agent_actions(
+    *,
+    instruction: str,
+    context: Dict[str, Any],
+):
+    """单次模型调用生成严格动作计划；结构错误直接失败，不自由重试。"""
+    from pydantic import ValidationError
+
+    from app.schemas.agent_action_plan import AgentActionPlan
+
+    user_prompt = json.dumps(
+        {
+            "instruction": instruction,
+            "context": context,
+            "responseJsonSchema": AgentActionPlan.model_json_schema(),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    data = _chat_json(
+        _AGENT_ACTION_PLANNER_SYSTEM,
+        user_prompt,
+        max_tokens=1200,
+        temperature=0.1,
+    )
+    try:
+        return AgentActionPlan.model_validate(data)
+    except ValidationError as exc:
+        raise LLMUnavailable("动作规划模型返回的 JSON 未通过严格校验") from exc
+
+
 _SCENE_AGENT_SYSTEM = """你是坐标计算器。必须执行明确指令，禁止追问。
 输出 JSON 且 operations 不能为空，只允许 move、rotate、remove、add，最多12项。
 move/rotate/remove 只能使用 scene 已有 instanceId；add 只能使用 catalog 已有 sku。

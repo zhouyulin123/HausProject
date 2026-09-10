@@ -115,3 +115,16 @@ def test_task_status_requires_session_header(session_access_context):
     response = client.get(f"/api/design/tasks/{task_id}")
 
     assert response.status_code == 422
+
+
+@pytest.mark.integration
+def test_owner_cannot_read_legacy_design_result_without_revision(session_access_context):
+    client, owner_id, _, task_id = session_access_context
+
+    response = client.get(
+        f"/api/design/tasks/{task_id}/result",
+        headers={"X-Session-ID": owner_id},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "design_revision_required"

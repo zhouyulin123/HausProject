@@ -16,6 +16,18 @@ import type {
   QualitySummary,
   QualityWindowDays,
 } from "@/types/quality";
+import type {
+  AnnotationRevisionPayload,
+  CaseImportPayload,
+  CaseImportPreview,
+  CaseImportResponse,
+  ConsentDecisionPayload,
+  DatasetFreezePayload,
+  DatasetRevisionResponse,
+  GovernanceCase,
+  GovernanceCaseListResponse,
+  GovernanceCaseUpdate,
+} from "@/types/admin";
 
 export interface AdminUser extends AuthUser {
   created_at: string | null;
@@ -104,6 +116,69 @@ export async function fetchQualitySummary(
 export async function fetchRealWorldReadiness(): Promise<RealWorldReadiness> {
   return adminRequest<RealWorldReadiness>(
     "/api/admin/quality/real-world-readiness",
+  );
+}
+
+export async function fetchRealWorldCases(): Promise<GovernanceCaseListResponse> {
+  return adminRequest<GovernanceCaseListResponse>(
+    "/api/admin/quality/real-world-cases",
+  );
+}
+
+export async function previewRealWorldCaseImport(
+  payload: CaseImportPayload,
+): Promise<CaseImportPreview> {
+  return adminRequest<CaseImportPreview>(
+    "/api/admin/quality/real-world-case-imports/preview",
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export async function importRealWorldCase(
+  payload: CaseImportPayload,
+): Promise<CaseImportResponse> {
+  return adminRequest<CaseImportResponse>(
+    "/api/admin/quality/real-world-case-imports",
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export async function updateRealWorldCase(
+  caseRef: string,
+  payload: GovernanceCaseUpdate,
+): Promise<GovernanceCase> {
+  return adminRequest<GovernanceCase>(
+    `/api/admin/quality/real-world-cases/${encodeURIComponent(caseRef)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+}
+
+export async function createRealWorldConsentDecision(
+  caseRef: string,
+  payload: ConsentDecisionPayload,
+): Promise<GovernanceCase> {
+  return adminRequest<GovernanceCase>(
+    `/api/admin/quality/real-world-cases/${encodeURIComponent(caseRef)}/consent-decisions`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export async function createRealWorldAnnotationRevision(
+  caseRef: string,
+  payload: AnnotationRevisionPayload,
+): Promise<GovernanceCase> {
+  return adminRequest<GovernanceCase>(
+    `/api/admin/quality/real-world-cases/${encodeURIComponent(caseRef)}/annotation-revisions`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export async function freezeRealWorldDataset(
+  payload: DatasetFreezePayload,
+): Promise<DatasetRevisionResponse> {
+  return adminRequest<DatasetRevisionResponse>(
+    "/api/admin/quality/real-world-dataset-revisions",
+    { method: "POST", body: JSON.stringify(payload) },
   );
 }
 

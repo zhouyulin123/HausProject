@@ -20,7 +20,6 @@ from app.core.request_context import normalize_request_id
 from app.db.database import get_db
 from app.db.models import (
     DesignPlanVersion,
-    DesignResult,
     DesignTask,
     RequirementParseResult,
     UploadedImage,
@@ -463,7 +462,7 @@ def _execute_generation(
     on_meta=None,
     before_persist=None,
     on_success=None,
-    allow_template_fallback: bool = True,
+    allow_template_fallback: bool = False,
 ) -> GenerateResponse:
     task_id = task.id
     task.status = "generating"
@@ -644,13 +643,6 @@ def _execute_generation(
         if before_persist is not None:
             before_persist()
 
-        result = DesignResult(
-            task_id=task.id,
-            plans_json=plans,
-            generator=generator,
-            pdf_url=None,
-        )
-        db.add(result)
         revision = design_version_service.persist_generation(
             db,
             task=task,
@@ -890,13 +882,14 @@ def get_task_result(
         task_id=task_id,
     )
     revision = design_version_service.get_latest_revision(db, task_id=task_id)
-    result = db.scalars(
-        select(DesignResult)
-        .where(DesignResult.task_id == task_id)
-        .order_by(DesignResult.id.desc())
-    ).first()
-    if not result and not revision:
-        raise HTTPException(status_code=404, detail="Result not ready")
+    if revision is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "design_revision_required",
+                "message": "可信方案版本尚未生成",
+            },
+        )
 
     images = [
         {"image_id": img.id, "image_url": img.file_url, "image_type": img.image_type}
@@ -905,18 +898,14 @@ def get_task_result(
         )
     ]
     return TaskResultResponse(
-        plans=(
-            [
-                {**_plan_version_payload(plan), "task_id": task_id}
-                for plan in revision.plans
-            ]
-            if revision
-            else result.plans_json or []
-        ),
-        generator=revision.generator if revision else result.generator,
-        revision_version=revision.version if revision else None,
+        plans=[
+            {**_plan_version_payload(plan), "task_id": task_id}
+            for plan in revision.plans
+        ],
+        generator=revision.generator,
+        revision_version=revision.version,
         images=images,
-        pdf_url=result.pdf_url if result else None,
+        pdf_url=None,
     )
 
 

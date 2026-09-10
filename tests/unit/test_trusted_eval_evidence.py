@@ -143,6 +143,21 @@ def test_trusted_dataset_requires_manifest_v2_and_binds_annotation_semantics(tmp
     assert dataset_fingerprint(changed_dataset, split="regression") != original
 
 
+def test_dataset_fingerprint_binds_governance_manifest_digest(tmp_path):
+    dataset = _dataset(tmp_path)
+    static_digest = dataset_fingerprint(dataset, split="regression")
+    governed = replace(
+        dataset,
+        governance_manifest_digest="sha256:" + "a" * 64,
+    )
+
+    assert dataset_fingerprint(governed, split="regression") != static_digest
+    assert dataset_fingerprint(
+        replace(governed, governance_manifest_digest="sha256:" + "b" * 64),
+        split="regression",
+    ) != dataset_fingerprint(governed, split="regression")
+
+
 def _completed_system_run(
     db: Session,
     *,
@@ -179,7 +194,7 @@ def _completed_system_run(
         task=task,
     )
     catalog_snapshot = {
-        "schemaVersion": "1.0",
+        "schemaVersion": "1.1",
         "checkedAt": "2026-09-01T00:00:00+00:00",
         "sku": "SOFA-001",
         "quantity": 1,
@@ -195,14 +210,22 @@ def _completed_system_run(
         "facts": {
             "isActive": True,
             "dataOrigin": "merchant_verified",
+            "sourceName": "受控评测供应商目录",
+            "sourceUrl": None,
+            "sourceProductId": "SOFA-001",
+            "sourceRetrievedAt": "2026-08-31T22:00:00+00:00",
+            "priceObservedAt": "2026-08-31T23:00:00+00:00",
             "verificationStatus": "verified",
+            "verifiedAt": "2026-08-31T23:30:00+00:00",
+            "verifiedBy": "eval-fixture:catalog-reviewer",
+            "dataVersion": "catalog-data-v1",
             "availabilityStatus": "in_stock",
             "stockQuantity": 10,
             "leadTimeDaysMin": None,
             "leadTimeDaysMax": None,
             "priceValidFrom": "2026-01-01T00:00:00+00:00",
             "priceValidTo": "2027-01-01T00:00:00+00:00",
-            "regionCodes": [],
+            "regionCodes": ["*"],
             "dimensionsMm": {"width": 1000, "depth": 800, "height": 900},
         },
         "eligible": True,
@@ -1027,3 +1050,35 @@ def test_collector_cli_no_longer_accepts_self_reported_versions():
         )
 
     assert error.value.code == 2
+
+
+def test_collector_cli_requires_exactly_one_dataset_source():
+    with pytest.raises(SystemExit) as missing:
+        collect_real_world_evidence.main(
+            [
+                "--split",
+                "regression",
+                "--run-bindings",
+                "bindings.json",
+                "--output",
+                "evidence.json",
+            ]
+        )
+    assert missing.value.code == 2
+
+    with pytest.raises(SystemExit) as duplicate:
+        collect_real_world_evidence.main(
+            [
+                "--manifest",
+                "manifest.json",
+                "--dataset-version",
+                "governance-1",
+                "--split",
+                "regression",
+                "--run-bindings",
+                "bindings.json",
+                "--output",
+                "evidence.json",
+            ]
+        )
+    assert duplicate.value.code == 2

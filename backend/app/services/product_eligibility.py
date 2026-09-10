@@ -14,10 +14,20 @@ PRODUCT_ELIGIBILITY_REASON_CODES = (
     "inactive",
     "public_reference",
     "provenance_unverified",
+    "source_name_missing",
+    "source_reference_missing",
+    "source_retrieved_at_missing",
+    "source_retrieved_at_future",
+    "price_observed_at_missing",
+    "price_observed_at_future",
     "verification_required",
     "verification_rejected",
     "verification_expired",
     "verification_invalid",
+    "verified_at_missing",
+    "verified_at_future",
+    "verified_by_missing",
+    "data_version_unverified",
     "out_of_stock",
     "availability_unknown",
     "lead_time_unknown",
@@ -26,6 +36,7 @@ PRODUCT_ELIGIBILITY_REASON_CODES = (
     "price_validity_unknown",
     "price_not_started",
     "price_expired",
+    "region_unknown",
     "region_required",
     "region_unavailable",
     "dimensions_missing",
@@ -45,7 +56,15 @@ class ProductDimensions:
 class ProductEligibilityFacts:
     is_active: bool
     data_origin: str | None
+    source_name: str | None
+    source_url: str | None
+    source_product_id: str | None
+    source_retrieved_at: datetime | None
+    price_observed_at: datetime | None
     verification_status: str | None
+    verified_at: datetime | None
+    verified_by: str | None
+    data_version: str | None
     availability_status: str | None
     stock_quantity: int | None
     lead_time_days_min: int | None
@@ -90,10 +109,25 @@ def evaluate_product_eligibility(
         reasons.append("inactive")
     if facts.data_origin == "public_reference":
         reasons.append("public_reference")
-    elif facts.data_origin not in {"merchant", "merchant_verified", "verified"} and not (
+    elif facts.data_origin not in {"merchant", "merchant_verified"} and not (
         policy.allow_draft and facts.data_origin == "merchant_draft"
     ):
         reasons.append("provenance_unverified")
+
+    if not (facts.source_name or "").strip():
+        reasons.append("source_name_missing")
+    if not (facts.source_url or "").strip() and not (
+        facts.source_product_id or ""
+    ).strip():
+        reasons.append("source_reference_missing")
+    if facts.source_retrieved_at is None:
+        reasons.append("source_retrieved_at_missing")
+    elif facts.source_retrieved_at > policy.checked_at:
+        reasons.append("source_retrieved_at_future")
+    if facts.price_observed_at is None:
+        reasons.append("price_observed_at_missing")
+    elif facts.price_observed_at > policy.checked_at:
+        reasons.append("price_observed_at_future")
 
     verification = facts.verification_status or "draft"
     if verification == "draft" and not policy.allow_draft:
@@ -104,6 +138,20 @@ def evaluate_product_eligibility(
         reasons.append("verification_expired")
     elif verification not in VERIFICATION_STATUSES:
         reasons.append("verification_invalid")
+    data_version = (facts.data_version or "").strip()
+    is_allowed_draft = verification == "draft" and policy.allow_draft
+    if is_allowed_draft:
+        if not data_version:
+            reasons.append("data_version_unverified")
+    else:
+        if facts.verified_at is None:
+            reasons.append("verified_at_missing")
+        elif facts.verified_at > policy.checked_at:
+            reasons.append("verified_at_future")
+        if not (facts.verified_by or "").strip():
+            reasons.append("verified_by_missing")
+        if not data_version or data_version.casefold().startswith("draft"):
+            reasons.append("data_version_unverified")
 
     availability = facts.availability_status or "unknown"
     if availability == "out_of_stock":
@@ -136,11 +184,12 @@ def evaluate_product_eligibility(
         if policy.checked_at > facts.price_valid_to:
             reasons.append("price_expired")
 
-    if facts.region_codes and "*" not in facts.region_codes and policy.region is None:
+    if not facts.region_codes:
+        reasons.append("region_unknown")
+    elif "*" not in facts.region_codes and policy.region is None:
         reasons.append("region_required")
     elif (
         policy.region
-        and facts.region_codes
         and policy.region not in facts.region_codes
         and "*" not in facts.region_codes
     ):

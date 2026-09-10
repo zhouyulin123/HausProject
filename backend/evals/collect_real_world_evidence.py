@@ -7,13 +7,16 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Any
 
 from app.db.database import SessionLocal
+from evals.dataset_source import (
+    add_dataset_source_arguments,
+    load_dataset_source,
+    source_arguments,
+)
 from evals.real_world import (
     EvaluationInputError,
     EvaluationSplit,
-    load_case_manifest,
 )
 from evals.trusted_evidence import RunBinding, collect_trusted_evidence
 
@@ -94,13 +97,12 @@ def _read_bindings(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="签发真实系统执行评测证据")
-    parser.add_argument("--manifest", type=Path, required=True)
+    add_dataset_source_arguments(parser)
     parser.add_argument(
         "--split",
         choices=("development", "regression", "blind"),
         required=True,
     )
-    parser.add_argument("--asset-root", type=Path)
     parser.add_argument("--run-bindings", type=Path, required=True)
     parser.add_argument(
         "--security-evidence",
@@ -116,12 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             raise EvaluationInputError(
                 "缺少签名密钥：必须配置 EVAL_EVIDENCE_HMAC_KEY 和 EVAL_EVIDENCE_KEY_ID"
             )
-        dataset = load_case_manifest(args.manifest, asset_root=args.asset_root)
-        dataset_root = (
-            args.asset_root.resolve()
-            if args.asset_root is not None
-            else args.manifest.resolve().parent
-        )
+        dataset, dataset_root = load_dataset_source(**source_arguments(args))
         bindings = _read_bindings(args.run_bindings.resolve(), split=args.split)
         security_bundle = None
         security_keys: dict[str, str] = {}

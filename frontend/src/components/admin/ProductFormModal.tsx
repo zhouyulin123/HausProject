@@ -18,15 +18,12 @@ const styles = ["奶油风", "原木风", "现代简约", "北欧风", "轻奢�
 
 type Draft = Partial<AdminProduct> & { name: string; price: number };
 
-const verificationStatuses: Array<{
-  value: AdminProduct["verification_status"];
-  label: string;
-}> = [
-  { value: "draft", label: "待核验" },
-  { value: "verified", label: "已核验" },
-  { value: "rejected", label: "核验拒绝" },
-  { value: "expired", label: "核验过期" },
-];
+const verificationLabels: Record<AdminProduct["verification_status"], string> = {
+  draft: "待核验",
+  verified: "已核验",
+  rejected: "核验拒绝",
+  expired: "核验过期",
+};
 
 const availabilityStatuses: Array<{
   value: AdminProduct["availability_status"];
@@ -44,7 +41,6 @@ const dataOrigins = [
   ["merchant_draft", "商家草稿"],
   ["merchant", "商家提供"],
   ["merchant_verified", "商家已核验"],
-  ["verified", "历史已核验（需复核）"],
   ["public_reference", "公开参考"],
   ["demo", "演示数据"],
 ] as const;
@@ -82,46 +78,6 @@ export function validateProductDraft(draft: Draft): string | null {
     new Date(draft.price_valid_from) > new Date(draft.price_valid_to)
   ) {
     return "价格生效时间不能晚于失效时间";
-  }
-  if (draft.verification_status !== "verified") return null;
-
-  const missing: string[] = [];
-  if (!draft.data_origin || !["merchant", "merchant_verified"].includes(draft.data_origin)) {
-    missing.push("可核验商业来源");
-  }
-  if (!draft.source_name?.trim()) missing.push("来源名称");
-  if (!draft.source_url?.trim() && !draft.source_product_id?.trim()) {
-    missing.push("来源链接或商品编号");
-  }
-  if (!draft.source_retrieved_at) missing.push("来源采集时间");
-  if (!draft.price_observed_at) missing.push("价格观察时间");
-  if (!draft.region_codes?.length) missing.push("销售地区");
-  if (!draft.price_valid_from || !draft.price_valid_to) missing.push("价格有效期");
-  if (!draft.data_version?.trim() || draft.data_version.trim().toLowerCase().startsWith("draft")) {
-    missing.push("正式数据版本");
-  }
-  if (!draft.availability_status || draft.availability_status === "unknown") {
-    missing.push("可售状态");
-  }
-  if (missing.length) {
-    const list = missing.length === 1
-      ? missing[0]
-      : `${missing.slice(0, -1).join("、")}和${missing.at(-1)}`;
-    return `标记为已核验前，请补全${list}`;
-  }
-
-  if (
-    ["in_stock", "low_stock"].includes(draft.availability_status ?? "") &&
-    (!Number.isInteger(draft.stock_quantity) || (draft.stock_quantity ?? 0) <= 0)
-  ) {
-    return "有库存商品必须填写大于 0 的库存数量";
-  }
-  if (
-    draft.availability_status === "preorder" &&
-    (!(draft.lead_time_days_min && draft.lead_time_days_min > 0) ||
-      !(draft.lead_time_days_max && draft.lead_time_days_max > 0))
-  ) {
-    return "预售商品必须填写完整交期";
   }
   return null;
 }
@@ -369,17 +325,9 @@ export default function ProductFormModal({
             </select>
           </Field>
           <Field label="核验状态">
-            <select
-              className={inputClass}
-              value={draft.verification_status ?? "draft"}
-              onChange={(event) => set({
-                verification_status: event.target.value as AdminProduct["verification_status"],
-              })}
-            >
-              {verificationStatuses.map(({ value, label }) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
+            <div className={`${inputClass} bg-cream-100 text-stone-500`}>
+              {verificationLabels[draft.verification_status ?? "draft"]}
+            </div>
           </Field>
           <Field label="来源名称">
             <input

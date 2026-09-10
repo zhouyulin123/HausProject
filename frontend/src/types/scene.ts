@@ -1,5 +1,7 @@
 /** Web 编辑器、Scene Agent 与 Blender 交换的 3D 场景契约。 */
 
+import type { Furniture3DSpec } from "@/types/furniture";
+
 export interface ScenePoint {
   x: number;
   z: number;
@@ -63,6 +65,15 @@ export interface CustomFurnitureSceneReference {
   specDigest: string;
 }
 
+export interface OpenGeometrySceneReference {
+  taskId: number;
+  planVersionId: number;
+  introducedSceneVersion: number;
+  openGeometryVersion: number;
+  modelId: string;
+  specDigest: string;
+}
+
 export interface SceneItem {
   instanceId: string;
   /** 目录实例对应真实 SKU；定制草稿使用服务端生成的 CUSTOM 标识。 */
@@ -74,8 +85,10 @@ export interface SceneItem {
   /** 服务端审核后的资产模式；浏览器运行时失败会按实例覆写为 fallback。 */
   assetMode?: AssetMode;
   fallbackReason?: AssetFallbackReason | null;
-  sourceType?: "catalog" | "custom_furniture_draft";
+  sourceType?: "catalog" | "custom_furniture_draft" | "open_geometry_draft";
   customFurnitureRef?: CustomFurnitureSceneReference | null;
+  openGeometryRef?: OpenGeometrySceneReference | null;
+  openGeometryModelSpec?: Furniture3DSpec | null;
 }
 
 export interface SceneCamera {
@@ -85,7 +98,7 @@ export interface SceneCamera {
 }
 
 export interface SceneDocument {
-  schemaVersion: "1.0";
+  schemaVersion: "1.0" | "1.1";
   unit: "m";
   coordinateSystem: "right-handed-y-up";
   room: SceneRoom;

@@ -51,6 +51,7 @@ interface DesignProjectState {
   setCustomFurnitureDraftReference: (
     projectId: number,
     reference: CustomFurnitureDraftReference | null,
+    stateVersion?: number,
   ) => void;
   attachPlan: (
     projectId: number,
@@ -113,11 +114,13 @@ function updateProject(
 ): Pick<DesignProjectState, "projects"> {
   const project = state.projects[projectId];
   if (!project) return { projects: state.projects };
+  const updatedProject = update(project);
+  if (updatedProject === project) return { projects: state.projects };
   return {
     projects: {
       ...state.projects,
       [projectId]: {
-        ...update(project),
+        ...updatedProject,
         updatedAt: new Date().toISOString(),
       },
     },
@@ -232,14 +235,23 @@ export const useDesignProjectStore = create<DesignProjectState>()(
               : project.sceneRef,
           })),
         ),
-      setCustomFurnitureDraftReference: (projectId, reference) =>
+      setCustomFurnitureDraftReference: (projectId, reference, stateVersion) =>
         set((state) =>
-          updateProject(state, projectId, (project) => ({
-            ...project,
-            customFurnitureDraftReference: reference
-              ? { ...reference }
-              : null,
-          })),
+          updateProject(state, projectId, (project) => {
+            if (stateVersion !== undefined && stateVersion < project.stateVersion) {
+              return project;
+            }
+            return {
+              ...project,
+              stateVersion:
+                stateVersion === undefined
+                  ? project.stateVersion
+                  : Math.max(project.stateVersion, stateVersion),
+              customFurnitureDraftReference: reference
+                ? { ...reference }
+                : null,
+            };
+          }),
         ),
       attachPlan: (projectId, plan) =>
         set((state) =>
@@ -255,46 +267,49 @@ export const useDesignProjectStore = create<DesignProjectState>()(
         ),
       applyAgentState: (projectId, checkpoint) =>
         set((state) =>
-          updateProject(state, projectId, (project) => ({
-            ...project,
-            status: checkpoint.status,
-            mode: checkpoint.activeMode,
-            stateVersion: checkpoint.stateVersion,
-            pendingQuestions: checkpoint.pendingQuestions,
-            facts: checkpoint.facts
-              ? structuredClone(checkpoint.facts)
-              : project.facts,
-            factEvidence: checkpoint.factEvidence
-              ? structuredClone(checkpoint.factEvidence)
-              : project.factEvidence,
-            sceneRef:
-              project.sceneRef
-              && checkpoint.sceneRef
-              && project.sceneRef.scene_id === checkpoint.sceneRef.scene_id
-              && project.sceneRef.version > checkpoint.sceneRef.version
-                ? project.sceneRef
-                : checkpoint.sceneRef ?? project.sceneRef,
-            exitReason: checkpoint.exitReason,
-            activeRoomId:
-              checkpoint.activeRoomId === undefined
-                ? project.activeRoomId
-                : checkpoint.activeRoomId,
-            customFurnitureSpec:
-              checkpoint.customFurnitureSpec === undefined
-                ? project.customFurnitureSpec
-                : checkpoint.customFurnitureSpec,
-            customFurnitureResult:
-              checkpoint.customFurnitureResult === undefined
-                ? project.customFurnitureResult
-                : checkpoint.customFurnitureResult,
-            approvalRequired:
-              checkpoint.approvalRequired ?? project.approvalRequired,
-            generationRunId:
-              checkpoint.generationRunId === undefined
-                ? project.generationRunId
-                : checkpoint.generationRunId,
-            execution: checkpoint.execution ?? project.execution,
-          })),
+          updateProject(state, projectId, (project) => {
+            if (checkpoint.stateVersion < project.stateVersion) return project;
+            return {
+              ...project,
+              status: checkpoint.status,
+              mode: checkpoint.activeMode,
+              stateVersion: checkpoint.stateVersion,
+              pendingQuestions: checkpoint.pendingQuestions,
+              facts: checkpoint.facts
+                ? structuredClone(checkpoint.facts)
+                : project.facts,
+              factEvidence: checkpoint.factEvidence
+                ? structuredClone(checkpoint.factEvidence)
+                : project.factEvidence,
+              sceneRef:
+                project.sceneRef
+                && checkpoint.sceneRef
+                && project.sceneRef.scene_id === checkpoint.sceneRef.scene_id
+                && project.sceneRef.version > checkpoint.sceneRef.version
+                  ? project.sceneRef
+                  : checkpoint.sceneRef ?? project.sceneRef,
+              exitReason: checkpoint.exitReason,
+              activeRoomId:
+                checkpoint.activeRoomId === undefined
+                  ? project.activeRoomId
+                  : checkpoint.activeRoomId,
+              customFurnitureSpec:
+                checkpoint.customFurnitureSpec === undefined
+                  ? project.customFurnitureSpec
+                  : checkpoint.customFurnitureSpec,
+              customFurnitureResult:
+                checkpoint.customFurnitureResult === undefined
+                  ? project.customFurnitureResult
+                  : checkpoint.customFurnitureResult,
+              approvalRequired:
+                checkpoint.approvalRequired ?? project.approvalRequired,
+              generationRunId:
+                checkpoint.generationRunId === undefined
+                  ? project.generationRunId
+                  : checkpoint.generationRunId,
+              execution: checkpoint.execution ?? project.execution,
+            };
+          }),
         ),
     }),
     {

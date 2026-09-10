@@ -206,14 +206,17 @@ def dataset_fingerprint(
         }
         for case in sorted(eligible, key=lambda item: item.id)
     ]
-    return _digest(
-        {
-            "schema_version": dataset.schema_version,
-            "dataset_version": dataset.dataset_version,
-            "split": normalized_split,
-            "cases": cases,
-        }
-    )
+    fingerprint_payload: dict[str, Any] = {
+        "schema_version": dataset.schema_version,
+        "dataset_version": dataset.dataset_version,
+        "split": normalized_split,
+        "cases": cases,
+    }
+    if dataset.governance_manifest_digest is not None:
+        fingerprint_payload["governance_manifest_digest"] = (
+            dataset.governance_manifest_digest
+        )
+    return _digest(fingerprint_payload)
 
 
 def _case_fingerprint(dataset_digest: str, case_id: str) -> str:
@@ -794,7 +797,15 @@ def _frozen_catalog_reasons(snapshot: dict[str, Any], *, run_id: int) -> tuple[s
     expected_facts = {
         "isActive",
         "dataOrigin",
+        "sourceName",
+        "sourceUrl",
+        "sourceProductId",
+        "sourceRetrievedAt",
+        "priceObservedAt",
         "verificationStatus",
+        "verifiedAt",
+        "verifiedBy",
+        "dataVersion",
         "availabilityStatus",
         "stockQuantity",
         "leadTimeDaysMin",
@@ -863,6 +874,20 @@ def _frozen_catalog_reasons(snapshot: dict[str, Any], *, run_id: int) -> tuple[s
             raise EvaluationInputError(
                 f"系统运行 {run_id} 的冻结商品资格 {field} 不合法"
             )
+    for field in (
+        "sourceName",
+        "sourceUrl",
+        "sourceProductId",
+        "verifiedBy",
+        "dataVersion",
+    ):
+        value = facts.get(field)
+        if value is not None and not isinstance(value, str):
+            raise EvaluationInputError(
+                f"系统运行 {run_id} 的冻结商品资格 {field} 不合法"
+            )
+    if facts.get("dataVersion") != snapshot.get("dataVersion"):
+        raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品数据版本不一致")
     stock = facts.get("stockQuantity")
     if stock is not None and (
         isinstance(stock, bool) or not isinstance(stock, int) or stock < 0
@@ -889,6 +914,24 @@ def _frozen_catalog_reasons(snapshot: dict[str, Any], *, run_id: int) -> tuple[s
         field="priceValidTo",
         optional=True,
     )
+    source_retrieved_at = _catalog_time(
+        facts.get("sourceRetrievedAt"),
+        run_id=run_id,
+        field="sourceRetrievedAt",
+        optional=True,
+    )
+    price_observed_at = _catalog_time(
+        facts.get("priceObservedAt"),
+        run_id=run_id,
+        field="priceObservedAt",
+        optional=True,
+    )
+    verified_at = _catalog_time(
+        facts.get("verifiedAt"),
+        run_id=run_id,
+        field="verifiedAt",
+        optional=True,
+    )
 
     region_codes = facts.get("regionCodes")
     if (
@@ -913,7 +956,15 @@ def _frozen_catalog_reasons(snapshot: dict[str, Any], *, run_id: int) -> tuple[s
     frozen_facts = ProductEligibilityFacts(
         is_active=facts["isActive"],
         data_origin=facts["dataOrigin"],
+        source_name=facts["sourceName"],
+        source_url=facts["sourceUrl"],
+        source_product_id=facts["sourceProductId"],
+        source_retrieved_at=source_retrieved_at,
+        price_observed_at=price_observed_at,
         verification_status=facts["verificationStatus"],
+        verified_at=verified_at,
+        verified_by=facts["verifiedBy"],
+        data_version=facts["dataVersion"],
         availability_status=facts["availabilityStatus"],
         stock_quantity=stock,
         lead_time_days_min=facts["leadTimeDaysMin"],
@@ -965,7 +1016,7 @@ def _consume_valid_frozen_catalog_line(
     }
     if not isinstance(snapshot, dict) or set(snapshot) != expected_fields:
         raise EvaluationInputError(f"系统运行 {run_id} 缺少完整冻结商品资格证据")
-    if snapshot.get("schemaVersion") != "1.0":
+    if snapshot.get("schemaVersion") != "1.1":
         raise EvaluationInputError(f"系统运行 {run_id} 的冻结商品资格版本不受支持")
     reasons = _frozen_catalog_reasons(snapshot, run_id=run_id)
     if snapshot.get("reasonCodes") != list(reasons) or snapshot.get("eligible") != (not reasons):

@@ -41,6 +41,15 @@ def _dataset(tmp_path: Path, **case_overrides) -> RealWorldDataset:
         "label_version": "labels-2026-09-02.1",
         "allowed_purposes": ("offline_evaluation",),
         "failure_tags": (),
+        "task_input": {
+            "raw_user_input": "设计一个已脱敏的测试客厅",
+            "confirmed_requirement": {"space_type": "客厅"},
+            "space_type": "客厅",
+            "style": None,
+            "budget_min": None,
+            "budget_max": None,
+            "image_context": ["已脱敏空间事实"],
+        },
     }
     values.update(case_overrides)
     case = RealWorldCase(**values)
@@ -179,6 +188,15 @@ def _write_v2_manifest(
                 "label_version": "labels-2026-09-02.1",
                 "allowed_purposes": ["offline_evaluation"],
                 "failure_tags": [],
+                "task_input": {
+                    "raw_user_input": "设计一个已脱敏的测试客厅",
+                    "confirmed_requirement": {"space_type": "客厅"},
+                    "space_type": "客厅",
+                    "style": None,
+                    "budget_min": None,
+                    "budget_max": None,
+                    "image_context": ["已脱敏空间事实"],
+                },
                 "annotation_path": annotation_path,
                 "annotation_sha256": annotation_sha256,
             }

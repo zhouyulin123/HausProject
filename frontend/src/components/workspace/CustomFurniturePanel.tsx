@@ -55,10 +55,62 @@ interface CustomFurniturePanelProps {
   pendingQuestions: AgentPendingQuestion[];
   sceneReference: AgentSceneReference | null;
   savedDraftReference: CustomFurnitureDraftReference | null;
-  onDraftSaved: (reference: CustomFurnitureDraftReference) => void;
+  onDraftSaved: (
+    reference: CustomFurnitureDraftReference,
+    stateVersion: number,
+  ) => void;
   onSceneApplied: (scene: DesignScene) => void;
   onAgentResponse: (response: AgentTurnResponse) => void;
+  onAgentStateConflict?: () => Promise<void>;
   onConversationTurn: (message: string, reply: string) => void;
+}
+
+export class StructuredFurnitureCheckpointRefreshError extends Error {
+  constructor() {
+    super("structured_furniture_checkpoint_refresh_failed");
+    this.name = "StructuredFurnitureCheckpointRefreshError";
+  }
+}
+
+function isAgentStateConflict(error: unknown): boolean {
+  const detail = error instanceof ApiError
+    && typeof error.detail === "object"
+    && error.detail
+    ? error.detail as { code?: string }
+    : null;
+  return error instanceof ApiError
+    && error.status === 409
+    && detail?.code === "agent_state_conflict";
+}
+
+export async function submitStructuredFurnitureTurnWithConflictRecovery<T>({
+  submit,
+  refresh,
+}: {
+  submit: () => Promise<T>;
+  refresh: () => Promise<void>;
+}): Promise<T> {
+  try {
+    return await submit();
+  } catch (cause) {
+    if (!isAgentStateConflict(cause)) throw cause;
+    try {
+      await refresh();
+    } catch {
+      throw new StructuredFurnitureCheckpointRefreshError();
+    }
+    throw cause;
+  }
+}
+
+function structuredFurnitureSubmitErrorMessage(error: unknown): string {
+  if (error instanceof StructuredFurnitureCheckpointRefreshError) {
+    return "设计状态已变化且最新状态读取失败。请刷新页面后再继续提交。";
+  }
+  if (isAgentStateConflict(error)) {
+    return "设计状态已更新，已恢复最新参数。请确认后重新提交。";
+  }
+  return "参数提交失败，本次没有生成或更新预览。可直接重试。";
 }
 
 const inputClass =
@@ -130,12 +182,14 @@ export default function CustomFurniturePanel({
   onDraftSaved,
   onSceneApplied,
   onAgentResponse,
+  onAgentStateConflict,
   onConversationTurn,
 }: CustomFurniturePanelProps) {
   const [draft, setDraft] = useState<CustomFurnitureSpec>(() =>
     customFurnitureDraftFromSpec(initialSpec),
   );
   const [submitting, setSubmitting] = useState(false);
+  const [stateSyncBlocked, setStateSyncBlocked] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [draftSaveError, setDraftSaveError] = useState("");
   const [placing, setPlacing] = useState(false);
@@ -162,12 +216,12 @@ export default function CustomFurniturePanel({
       initialStateVersion: stateVersion,
       createMutationId: () => nextTurnId(taskId),
       save: (payload) => saveCustomFurnitureDraft(taskId, payload),
-      onSynced: ({ spec, clientMutationId }) => {
+      onSynced: ({ stateVersion: savedStateVersion, spec, clientMutationId }) => {
         initialDraftSignatureRef.current = JSON.stringify(spec);
         onDraftSaved({
           clientMutationId,
           specSignature: JSON.stringify(spec),
-        });
+        }, savedStateVersion);
         setDraftSaveError("");
       },
       onError: () => {
@@ -204,6 +258,7 @@ export default function CustomFurniturePanel({
 
   useEffect(() => {
     draftCoordinatorRef.current?.updateStateVersion(stateVersion);
+    setStateSyncBlocked(false);
   }, [stateVersion]);
 
   useEffect(() => {
@@ -254,7 +309,7 @@ export default function CustomFurniturePanel({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (submitting) return;
+    if (submitting || stateSyncBlocked) return;
     const signature = JSON.stringify(draft);
     const turnId =
       lastSubmissionRef.current?.signature === signature
@@ -265,16 +320,28 @@ export default function CustomFurniturePanel({
     setSubmitting(true);
     setSubmitError("");
     try {
-      const response = await sendAgentTurn(taskId, {
-        client_turn_id: turnId,
-        message,
-        active_mode: "custom_furniture",
-        custom_furniture_spec: draft,
+      const response = await submitStructuredFurnitureTurnWithConflictRecovery({
+        submit: () => sendAgentTurn(taskId, {
+          client_turn_id: turnId,
+          message,
+          active_mode: "custom_furniture",
+          base_state_version: stateVersion,
+          custom_furniture_spec: draft,
+        }),
+        refresh: async () => {
+          if (!onAgentStateConflict) {
+            throw new StructuredFurnitureCheckpointRefreshError();
+          }
+          await onAgentStateConflict();
+        },
       });
       onAgentResponse(response);
       onConversationTurn(message, response.reply);
-    } catch {
-      setSubmitError("参数提交失败，本次没有生成或更新预览。可直接重试。");
+    } catch (cause) {
+      if (cause instanceof StructuredFurnitureCheckpointRefreshError) {
+        setStateSyncBlocked(true);
+      }
+      setSubmitError(structuredFurnitureSubmitErrorMessage(cause));
     } finally {
       setSubmitting(false);
     }
@@ -537,7 +604,7 @@ export default function CustomFurniturePanel({
         )}
         <button
           type="submit"
-          disabled={submitting || !draft.name.trim()}
+          disabled={submitting || stateSyncBlocked || !draft.name.trim()}
           className="mt-5 flex min-h-11 w-full items-center justify-center gap-2 bg-[#d5ff67] px-3 text-xs font-semibold text-[#111713] transition-colors hover:bg-[#e0ff91] disabled:cursor-wait disabled:opacity-55"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}

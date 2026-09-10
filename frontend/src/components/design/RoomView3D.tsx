@@ -32,6 +32,11 @@ import {
 import { type Group } from "three";
 import { useSceneEditor } from "@/hooks/useSceneEditor";
 import ProductModel3D from "./ProductModel3D";
+import FurnitureModel3D from "@/components/furniture/FurnitureModel3D";
+import {
+  openGeometryRoomCenterOffset,
+  roomItemRendererKind,
+} from "@/lib/openGeometryScene";
 import {
   getProductAssetState,
   markInstanceGlbLoadFailed,
@@ -142,17 +147,24 @@ function FurnitureBox({
         }}
         onPointerOut={() => setHovered(false)}
       >
-        <ProductModel3D
-          url={asset.model?.url}
-          dimensions={dimensions}
-          color={
-            hovered
-              ? "#93A77E"
-              : CATEGORY_COLOR[item.category ?? ""] ?? "#C3B49A"
-          }
-          selected={selected}
-          onLoadFailure={onModelLoadFailure}
-        />
+        {roomItemRendererKind(item) === "open_geometry"
+          && item.openGeometryModelSpec ? (
+            <group position={openGeometryRoomCenterOffset(item.openGeometryModelSpec)}>
+              <FurnitureModel3D spec={item.openGeometryModelSpec} />
+            </group>
+          ) : (
+            <ProductModel3D
+              url={asset.model?.url}
+              dimensions={dimensions}
+              color={
+                hovered
+                  ? "#93A77E"
+                  : CATEGORY_COLOR[item.category ?? ""] ?? "#C3B49A"
+              }
+              selected={selected}
+              onLoadFailure={onModelLoadFailure}
+            />
+          )}
       </group>
       {(selected || hovered) && (
         <Html
@@ -168,7 +180,11 @@ function FurnitureBox({
             }`}
           >
             <span>{name}</span>
-            <span className="ml-2 opacity-75">{productAssetLabel(asset)}</span>
+            <span className="ml-2 opacity-75">
+              {item.sourceType === "open_geometry_draft"
+                ? "开放几何 · 冻结快照"
+                : productAssetLabel(asset)}
+            </span>
           </div>
         </Html>
       )}
@@ -749,7 +765,9 @@ export default function RoomView3D({
               <p className="mt-1 text-[10px] font-medium text-stone-500">
                 {selectedItem.sourceType === "custom_furniture_draft"
                   ? "参数化定制草稿 · 非正式商品"
-                  : productAssetLabel(itemAssets[selectedItem.instanceId])}
+                  : selectedItem.sourceType === "open_geometry_draft"
+                    ? `开放几何 V${selectedItem.openGeometryRef?.openGeometryVersion ?? "?"} · 冻结快照`
+                    : productAssetLabel(itemAssets[selectedItem.instanceId])}
               </p>
             </div>
             <Box className="h-5 w-5 shrink-0 text-wood-500" />
@@ -812,7 +830,8 @@ export default function RoomView3D({
             </ToolButton>
             <span />
           </div>
-          {selectedItem.sourceType === "custom_furniture_draft" && (
+          {(selectedItem.sourceType === "custom_furniture_draft"
+            || selectedItem.sourceType === "open_geometry_draft") && (
             <button
               type="button"
               title="从当前房间删除"

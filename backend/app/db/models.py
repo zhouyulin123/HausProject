@@ -506,6 +506,7 @@ class FailureCluster(Base):
     severity = Column(String(20), nullable=False, index=True)
     status = Column(String(20), nullable=False, default="open", index=True)
     owner = Column(String(100), nullable=True, index=True)
+    record_version = Column(Integer, nullable=False, default=1)
     occurrence_count = Column(Integer, nullable=False, default=0)
     affected_count = Column(Integer, nullable=False, default=0)
     first_seen_at = Column(DateTime(timezone=True), nullable=False)
@@ -552,6 +553,206 @@ class FailureVerificationImport(Base):
     semantic_digest = Column(String(71), nullable=False, unique=True, index=True)
     coverage_digest = Column(String(71), nullable=False)
     imported_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class RealWorldCaseRecord(Base):
+    """从既有设计任务提升的真实案例治理记录。"""
+
+    __tablename__ = "real_world_case_records"
+    __table_args__ = (
+        CheckConstraint(
+            "origin = 'private_real'",
+            name="ck_real_world_case_origin_private",
+        ),
+        CheckConstraint(
+            "split IN ('unassigned', 'development', 'regression', 'blind')",
+            name="ck_real_world_case_split",
+        ),
+        CheckConstraint(
+            "redaction_review IN ('pending', 'reviewed', 'rejected')",
+            name="ck_real_world_case_redaction",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    case_ref = Column(String(40), nullable=False, unique=True, index=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    uploaded_image_id = Column(
+        Integer,
+        ForeignKey("uploaded_images.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    origin = Column(
+        String(20), nullable=False, default="private_real", server_default="private_real"
+    )
+    asset_digest = Column(String(71), nullable=False, unique=True, index=True)
+    task_input_json = Column(JSON, nullable=False)
+    task_input_digest = Column(String(71), nullable=False)
+    split = Column(
+        String(20), nullable=False, default="unassigned", server_default="unassigned"
+    )
+    redaction_review = Column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    record_version = Column(Integer, nullable=False, default=1, server_default="1")
+    created_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class RealWorldCaseImport(Base):
+    """真实案例提升操作的幂等凭据。"""
+
+    __tablename__ = "real_world_case_imports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_import_id = Column(String(100), nullable=False, unique=True, index=True)
+    request_digest = Column(String(71), nullable=False)
+    case_id = Column(
+        Integer,
+        ForeignKey("real_world_case_records.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    actor_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RealWorldConsentDecision(Base):
+    """真实案例授权的追加式决定，不保存授权文书内容。"""
+
+    __tablename__ = "real_world_consent_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('granted', 'denied', 'revoked')",
+            name="ck_real_world_consent_decision",
+        ),
+        CheckConstraint(
+            "legal_basis IN ('explicit_consent', 'contract', 'withdrawal_request')",
+            name="ck_real_world_consent_legal_basis",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    case_id = Column(
+        Integer,
+        ForeignKey("real_world_case_records.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    decision = Column(String(20), nullable=False, index=True)
+    legal_basis = Column(String(30), nullable=False)
+    allowed_purposes_json = Column(JSON, nullable=False)
+    evidence_digest = Column(String(71), nullable=True)
+    effective_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    actor_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RealWorldAnnotationRevision(Base):
+    """经过严格 Schema 校验并与来源资产绑定的标注修订。"""
+
+    __tablename__ = "real_world_annotation_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "case_id",
+            "annotation_digest",
+            name="uq_real_world_annotation_case_digest",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    case_id = Column(
+        Integer,
+        ForeignKey("real_world_case_records.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    label_version = Column(String(100), nullable=False)
+    annotation_json = Column(JSON, nullable=False)
+    annotation_digest = Column(String(71), nullable=False, index=True)
+    actor_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RealWorldDatasetRevision(Base):
+    """不可变的真实案例数据集冻结快照。"""
+
+    __tablename__ = "real_world_dataset_revisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    revision_ref = Column(String(40), nullable=False, unique=True, index=True)
+    schema_version = Column(String(10), nullable=False)
+    dataset_version = Column(String(100), nullable=False, unique=True, index=True)
+    manifest_digest = Column(String(71), nullable=False, unique=True, index=True)
+    snapshot_json = Column(JSON, nullable=False)
+    case_count = Column(Integer, nullable=False)
+    created_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class GovernanceEvent(Base):
+    """不含案例内容的真实案例治理追加式审计事件。"""
+
+    __tablename__ = "real_world_governance_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    case_id = Column(
+        Integer,
+        ForeignKey("real_world_case_records.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    actor_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    action = Column(String(50), nullable=False, index=True)
+    request_id = Column(String(100), nullable=False, index=True)
+    before_digest = Column(String(71), nullable=False)
+    after_digest = Column(String(71), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class ShopSetting(Base):
@@ -662,6 +863,74 @@ class Product(Base):
         cascade="all, delete-orphan",
         order_by="ProductAsset.id",
     )
+    audit_events = relationship(
+        "ProductAuditEvent",
+        back_populates="product",
+        order_by="ProductAuditEvent.id",
+    )
+
+
+class ProductAuditEvent(Base):
+    """商品商业事实与审核决定的追加式审计事件。"""
+
+    __tablename__ = "product_audit_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('commercial_created', 'commercial_patch', "
+            "'commercial_deactivate', 'commercial_excel_created', "
+            "'commercial_excel_updated', 'commercial_review_approve', "
+            "'commercial_review_reject')",
+            name="ck_product_audit_event_type",
+        ),
+        CheckConstraint(
+            "decision IS NULL OR decision IN ('approve', 'reject')",
+            name="ck_product_audit_decision",
+        ),
+        CheckConstraint(
+            "resulting_status IN ('draft', 'verified', 'rejected', 'expired')",
+            name="ck_product_audit_resulting_status",
+        ),
+        CheckConstraint(
+            "resulting_record_version >= 1",
+            name="ck_product_audit_record_version",
+        ),
+        CheckConstraint(
+            "(idempotency_key IS NULL AND payload_hash IS NULL) OR "
+            "(idempotency_key IS NOT NULL AND payload_hash IS NOT NULL)",
+            name="ck_product_audit_idempotency_pair",
+        ),
+        UniqueConstraint(
+            "product_id",
+            "idempotency_key",
+            name="uq_product_audit_product_idempotency",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(
+        Integer,
+        ForeignKey("products.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    event_type = Column(String(40), nullable=False, index=True)
+    actor = Column(String(100), nullable=False, index=True)
+    request_id = Column(String(100), nullable=False, index=True)
+    idempotency_key = Column(String(100), nullable=True)
+    payload_hash = Column(String(64), nullable=True)
+    changed_fields = Column(JSON, nullable=False, default=list)
+    changes = Column(JSON, nullable=False, default=dict)
+    decision = Column(String(20), nullable=True, index=True)
+    resulting_status = Column(String(20), nullable=False, index=True)
+    resulting_record_version = Column(Integer, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+
+    product = relationship("Product", back_populates="audit_events")
 
 
 class ProductAsset(Base):

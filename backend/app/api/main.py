@@ -10,8 +10,10 @@ from app.api.routes import (
     design_agent,
     feedback,
     orders,
+    open_geometry,
     products,
     proposal,
+    real_world_governance,
     render,
     scenes,
     sessions,
@@ -51,6 +53,11 @@ api_router.include_router(
     tags=["design_shares"],
 )
 api_router.include_router(
+    open_geometry.router,
+    prefix="/design/tasks",
+    tags=["open_geometry_furniture"],
+)
+api_router.include_router(
     shares.public_router,
     prefix="/shares",
     tags=["public_shares"],
@@ -60,4 +67,9 @@ api_router.include_router(customers.router, prefix="/customers", tags=["customer
 api_router.include_router(shop.router, prefix="/shop", tags=["shop"])
 api_router.include_router(orders.router, prefix="/orders", tags=["orders"])
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
+api_router.include_router(
+    real_world_governance.router,
+    prefix="/admin",
+    tags=["real_world_governance"],
+)
 api_router.include_router(demo.router, prefix="", tags=["demo"])

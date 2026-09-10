@@ -21,7 +21,10 @@ export interface DeterministicModelPart {
     | "curtain_panel"
     | "mesh_panel"
     | "sphere"
-    | "torus";
+    | "torus"
+    | "box"
+    | "sweep"
+    | "lathe";
   尺寸_mm: [number, number, number];
   位置_mm: [number, number, number];
   旋转_deg: [number, number, number];
@@ -34,11 +37,24 @@ export interface DeterministicModelPart {
   褶皱周期_mm?: number;
   网格间距_mm?: number;
   图案?: string;
+  几何参数?: {
+    size_mm?: [number, number, number];
+    radius_mm?: number;
+    top_radius_mm?: number | null;
+    height_mm?: number;
+    radial_segments?: number;
+    scale?: [number, number, number];
+    segments?: number;
+    path_mm?: [number, number, number][];
+    tubular_segments?: number;
+    closed?: boolean;
+    profile_mm?: [number, number][];
+  };
 }
 
 export interface DeterministicMaterialSlot extends FurnitureMaterialSpec {
   槽位ID: string;
-  表面类型?: "wood" | "fabric" | "metal" | "glass" | "stone" | "paper" | "rattan" | "mesh" | "generic";
+  表面类型?: "wood" | "fabric" | "metal" | "glass" | "stone" | "paper" | "rattan" | "mesh" | "generic" | "custom";
   sheen?: number;
 }
 
@@ -59,7 +75,8 @@ export interface DeterministicFurnitureRule {
     | "cabinet_v2"
     | "desk_v2"
     | "shelf_v2"
-    | "ergonomic_chair_v2";
+    | "ergonomic_chair_v2"
+    | "open_geometry_v1";
   包围尺寸_mm: { 宽: number; 高: number; 深: number };
   预览规则?: { 中心_mm: [number, number, number]; 半径_mm: number };
   外观规则: {
@@ -80,6 +97,7 @@ export interface DeterministicFurnitureRule {
   };
   材质槽: DeterministicMaterialSlot[];
   部件: DeterministicModelPart[];
+  全局缩放?: [number, number, number];
 }
 
 export type LocalAxis = "x" | "y" | "z";
@@ -240,6 +258,7 @@ export function deterministicFurnitureRule(
       "desk_v2",
       "shelf_v2",
       "ergonomic_chair_v2",
+      "open_geometry_v1",
     ] as DeterministicFurnitureRule["生成器"][]).includes(rule.生成器)
   ) {
     return undefined;

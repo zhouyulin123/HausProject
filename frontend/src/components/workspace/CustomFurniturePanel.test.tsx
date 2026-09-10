@@ -1,6 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import CustomFurniturePanel from "./CustomFurniturePanel";
+import { ApiError } from "@/api/designApi";
+import CustomFurniturePanel, {
+  StructuredFurnitureCheckpointRefreshError,
+  submitStructuredFurnitureTurnWithConflictRecovery,
+} from "./CustomFurniturePanel";
 import type { CustomFurniturePreviewResult } from "@/types/customFurniture";
 
 function previewResult(
@@ -53,6 +57,33 @@ const quoteBase = {
 };
 
 describe("自定义家具结构化面板", () => {
+  it("结构化 turn 冲突时只恢复 checkpoint，不自动重放语义请求", async () => {
+    const conflict = new ApiError("conflict", 409, {
+      code: "agent_state_conflict",
+    });
+    const submit = vi.fn(async () => { throw conflict; });
+    const refresh = vi.fn(async () => undefined);
+
+    await expect(submitStructuredFurnitureTurnWithConflictRecovery({
+      submit,
+      refresh,
+    })).rejects.toBe(conflict);
+
+    expect(submit).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it("结构化 turn 冲突且 checkpoint 恢复失败时阻断继续提交", async () => {
+    const conflict = new ApiError("conflict", 409, {
+      code: "agent_state_conflict",
+    });
+
+    await expect(submitStructuredFurnitureTurnWithConflictRecovery({
+      submit: async () => { throw conflict; },
+      refresh: async () => { throw new Error("network"); },
+    })).rejects.toBeInstanceOf(StructuredFurnitureCheckpointRefreshError);
+  });
+
   it("显示家具族、毫米尺寸和服务端待确认提示", () => {
     const html = renderToStaticMarkup(
       <CustomFurniturePanel
@@ -172,6 +203,7 @@ describe("自定义家具结构化面板", () => {
         onDraftSaved={vi.fn()}
         onSceneApplied={vi.fn()}
         onAgentResponse={vi.fn()}
+        onAgentStateConflict={vi.fn()}
         onConversationTurn={vi.fn()}
       />,
     );

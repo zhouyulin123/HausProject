@@ -20,3 +20,23 @@ def test_scene_agent_rate_limiter_does_not_consume_blocked_requests():
     assert limiter.retry_after("session-a", now=10.0) is None
     assert limiter.retry_after("session-a", now=20.0) == 20
     assert limiter.retry_after("session-a", now=25.0) == 15
+
+
+def test_scene_agent_rate_limiter_idempotent_request_does_not_consume_twice():
+    limiter = SceneAgentRateLimiter(max_requests=1, window_seconds=30)
+
+    assert limiter.retry_after("task:1", request_id="turn:same", now=10.0) is None
+    assert limiter.retry_after("task:1", request_id="turn:same", now=20.0) is None
+    assert limiter.retry_after("task:1", request_id="turn:other", now=20.0) == 20
+
+    assert limiter.retry_after("task:1", request_id="turn:other", now=41.0) is None
+
+
+def test_open_geometry_direct_and_agent_routes_share_one_task_bucket():
+    from app.api.routes import design_agent, open_geometry
+
+    assert design_agent.open_geometry_rate_limiter is (
+        open_geometry.open_geometry_rate_limiter
+    )
+    assert design_agent.open_geometry_rate_key(42) == "task:42"
+    assert open_geometry.open_geometry_rate_key(42) == "task:42"

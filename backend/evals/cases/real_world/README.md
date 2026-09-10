@@ -151,31 +151,31 @@ python -m evals.run_real_world_eval `
 
 `.github/workflows/real-world-release-gate.yml` 只允许手工触发，并要求受保护的 `real-world-evaluation` Environment 与带 `real-world-eval` 标签的 self-hosted runner。敏感密钥、数据库地址和配置路径只通过 GitHub Secrets 注入；案例会话值由受控 runner 的密钥管理环境按安全目标文件中的环境变量名提供，不能写入配置或仓库。
 
-`REAL_WORLD_RELEASE_GATE_CONFIG_PATH` 指向 runner 上的私有 JSON。它不能包含密钥，只记录三组输入位置和受控部署地址：
+`REAL_WORLD_RELEASE_GATE_CONFIG_PATH` 指向 runner 上的私有 JSON。它不能包含密钥。受保护发布证明只接受治理收件箱已经冻结的同一个 `dataset_version`，不接受静态 manifest；静态 manifest 仅保留给本地开发和兼容性校验。数据库地址使用受保护 Environment 的 `REAL_WORLD_EVAL_DATABASE_URL` 注入 `DATABASE_URL`，图片资产根目录使用 `REAL_WORLD_EVAL_UPLOAD_DIR` 注入应用 `UPLOAD_DIR` 配置：
 
 ```json
 {
   "schema_version": "1.0",
   "splits": {
     "development": {
-      "manifest": "development/manifest.json",
-      "asset_root": "development",
+      "dataset_version": "governance-2026-09-10.1",
+      "review_root": "development/reviews",
       "run_bindings": "development/run-bindings.json",
       "security_targets": "development/security-targets.json",
       "baseline_evidence": "development/baseline.evidence.json",
       "deployment_base_url": "https://eval.example.invalid"
     },
     "regression": {
-      "manifest": "regression/manifest.json",
-      "asset_root": "regression",
+      "dataset_version": "governance-2026-09-10.1",
+      "review_root": "regression/reviews",
       "run_bindings": "regression/run-bindings.json",
       "security_targets": "regression/security-targets.json",
       "baseline_evidence": "regression/baseline.evidence.json",
       "deployment_base_url": "https://eval.example.invalid"
     },
     "blind": {
-      "manifest": "blind/manifest.json",
-      "asset_root": "blind",
+      "dataset_version": "governance-2026-09-10.1",
+      "review_root": "blind/reviews",
       "run_bindings": "blind/run-bindings.json",
       "security_targets": "blind/security-targets.json",
       "baseline_evidence": "blind/baseline.evidence.json",
@@ -185,14 +185,18 @@ python -m evals.run_real_world_eval `
 }
 ```
 
-门禁在临时目录内现场签发候选安全证据和评测证据，不上传这些内部制品；上传目录只包含脱敏的 `real_world_release_gate.json/.md`，以及从已验签候选证据自动派生的每个 split 的 `failure-triage/*.failure_triage.json/.md`。三组候选必须先全部完成验签、案例队列核验、跨组版本一致性及当前 runtime 绑定校验，之后才使用已验证的提交 SHA 在同一 staging 目录生成三组分诊；三组全部成功后一次发布最终目录。任一 split、版本、分诊派生或制品写入失败都会清除分诊目录，只保留脱敏总失败报告。分诊 JSON 包含既有签名同步载荷，门禁总报告只记录其摘要与 digest；原始 evidence、case ID、用户输入、异常原文或资产路径不会进入 artifact 和 CI 日志。
+门禁会从治理冻结快照精确重建案例，重新核验资产、任务输入、授权有效窗口、授权用途和标注摘要，并把治理 `manifest_digest` 纳入候选、安全及基线证据共同使用的数据集指纹。门禁在临时目录内现场签发候选安全证据和评测证据，不上传这些内部制品；上传目录只包含脱敏的 `real_world_release_gate.json/.md`，以及从已验签候选证据自动派生的每个 split 的 `failure-triage/*.failure_triage.json/.md`。三组候选必须先全部完成验签、案例队列核验、跨组版本一致性及当前 runtime 绑定校验，之后才使用已验证的提交 SHA 在同一 staging 目录生成三组分诊；三组全部成功后一次发布最终目录。任一 split、版本、分诊派生或制品写入失败都会清除分诊目录，只保留脱敏总失败报告。分诊 JSON 包含既有签名同步载荷，门禁总报告只记录其摘要与 digest；原始 evidence、case ID、用户输入、异常原文或资产路径不会进入 artifact 和 CI 日志。
 
 受控 Environment 还必须分别配置 `EVAL_CASE_ID_SALT`、`EVAL_CASE_ID_SALT_ID`、`EVAL_REPORT_SIGNING_KEY` 与 `EVAL_REPORT_SIGNING_KEY_ID`。评测签名、安全签名、分诊签名及 case 别名四个用途的密钥和值标识不得复用；缺少任一项时门禁返回输入错误，不能跳过失败分诊继续发布。
 
 发布 proof 另外使用 `REAL_WORLD_RELEASE_PROOF_SIGNING_KEY_B64`（仅受保护
 Environment Secret）和 `REAL_WORLD_RELEASE_PROOF_KEY_ID`（Environment
 Variable），算法为 Ed25519。普通 CI 只配置公开的
-`REAL_WORLD_RELEASE_PROOF_PUBLIC_KEY_B64` Repository Variable；它按目标 SHA
+`REAL_WORLD_RELEASE_PROOF_PUBLIC_KEY_B64`、
+`REAL_WORLD_RELEASE_PROOF_KEY_ID` Repository Variable；可选的
+`REAL_WORLD_RELEASE_PROOF_MAX_AGE_SECONDS` 控制证明最大有效期，缺省为 604800
+秒（7 天）。普通 CI 同时核对公钥签名、预期 key ID、目标 SHA、签发时间和
+有效期；明显来自未来或已过期的 proof 均失败关闭。它按目标 SHA
 从成功的 `workflow_dispatch` run 获取只含
 `real_world_release_proof.json` 的 artifact，并在本地验签。proof 是独立
 artifact，不能提交回目标 commit；否则 proof 自身会改变它要证明的 SHA。
@@ -254,4 +258,4 @@ digest、完整 evidence digest 和涉及的 immutable output digest；聚类还
 
 失败簇复测由受保护 workflow 的 `evals.failure_verification` 生产。仅当受保护环境提供 `FAILURE_VERIFICATION_TARGETS_PATH` 时执行；没有待复测簇时跳过，不影响常规发布证明。它读取通过的三 split 门禁报告、三份候选 `failure-triage` JSON，以及受控路径中的目标文件（schema `1.0`，只列出 fingerprint 和 fixed_version）。目标不能根据本次候选“未出现”自动生成；只有所有 split 的 manifest/evidence/baseline/output 摘要完整、三份签名候选版本与门禁目标提交一致、目标 fingerprint 在三份候选聚类中均未复现时，才签发与 `FailureVerificationReportRequest` 对齐的 `failure_verification` HMAC 报告。报告 ID 同时绑定提交与目标集合摘要；报告只包含摘要、版本、明确目标和签名，不包含 case ID、用户输入、图片或原始分诊内容。提供目标后，任一 split 缺失、摘要不合法、版本错配、目标复现或输出失败都会返回 `2`。
 
-后端必须通过 `EVAL_REPORT_SIGNING_KEY` 配置同一签名密钥，未配置时同步接口返回 `503`。签名不匹配返回 `422`；同一 `report_id` 对应不同内容，或同一语义证据更换 ID 重放，返回 `409`。报告只包含匿名聚合，不包含原始案例 ID、用户文本或图片。
+后端必须通过 `EVAL_REPORT_SIGNING_KEY` 和 `EVAL_REPORT_SIGNING_KEY_ID` 配置同一签名密钥及其标识；任一缺失时同步接口返回 `503`。报告的 key ID 或签名不匹配返回 `422`；同一 `report_id` 对应不同内容，或同一语义证据更换 ID 重放，返回 `409`。报告只包含匿名聚合，不包含原始案例 ID、用户文本或图片。

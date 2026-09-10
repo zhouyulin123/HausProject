@@ -59,6 +59,27 @@ def _run_scene_workflow(workflow: DesignAgentWorkflow, *, resume: bool = False):
     )
 
 
+def _run_open_geometry_workflow(
+    workflow: DesignAgentWorkflow,
+    *,
+    resume: bool = False,
+):
+    return workflow.run(
+        task_id=1,
+        turn_id=1,
+        active_mode="custom_furniture",
+        intent="open_geometry",
+        message="创建一把椅子",
+        facts={},
+        open_geometry_extension={
+            "current_version": 0,
+            "current": None,
+            "history": [],
+        },
+        resume=resume,
+    )
+
+
 def test_crash_before_tool_resumes_from_last_superstep(resumable_workflow_context):
     factory, task_id, turn_id = resumable_workflow_context
     saver = SqlAlchemyCheckpointSaver(factory, task_id=task_id, turn_id=turn_id)
@@ -124,3 +145,67 @@ def test_crash_after_idempotent_tool_does_not_duplicate_effect(
     assert attempts == 2
     assert list(effects) == [f"agent-turn:{turn_id}"]
     assert state["result"] == {"scene_ref": {"scene_id": 1, "version": 2}}
+
+
+def test_crash_after_open_geometry_checkpoint_restores_model_call_capture(
+    resumable_workflow_context,
+):
+    factory, task_id, turn_id = resumable_workflow_context
+    saver = SqlAlchemyCheckpointSaver(factory, task_id=task_id, turn_id=turn_id)
+    tool_calls = 0
+
+    class CrashAfterExecuteWorkflow(DesignAgentWorkflow):
+        crash_after_execute = True
+
+        def _verify(self, state):
+            if self.crash_after_execute and state.get("result") is not None:
+                self.crash_after_execute = False
+                raise SystemExit("crash-after-open-geometry-checkpoint")
+            return super()._verify(state)
+
+    def open_geometry_tool(_state):
+        nonlocal tool_calls
+        tool_calls += 1
+        return {
+            "status": "completed",
+            "code": "completed",
+            "message": "已生成版本 1",
+            "current_version": 1,
+            "model_id": "OPEN-TEST",
+            "part_count": 1,
+            "_open_geometry_extension": {
+                "current_version": 1,
+                "current": None,
+                "history": [],
+            },
+            "_model_call_capture": {
+                "attempt_count": 1,
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 30,
+                    "total_tokens": 150,
+                },
+            },
+        }
+
+    workflow = CrashAfterExecuteWorkflow(
+        retrieve_catalog=lambda _: {},
+        execute_design=lambda _: {},
+        execute_scene=lambda _: {},
+        execute_open_geometry=open_geometry_tool,
+        checkpointer=saver,
+    )
+    with pytest.raises(SystemExit, match="crash-after-open-geometry-checkpoint"):
+        _run_open_geometry_workflow(workflow)
+
+    state = _run_open_geometry_workflow(workflow, resume=True)
+
+    assert tool_calls == 1
+    assert state["model_call_capture"] == {
+        "attempt_count": 1,
+        "usage": {
+            "prompt_tokens": 120,
+            "completion_tokens": 30,
+            "total_tokens": 150,
+        },
+    }

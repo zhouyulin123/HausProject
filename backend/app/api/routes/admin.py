@@ -1,5 +1,6 @@
 """管理员接口：用户角色管理（把普通用户提升为厂家/管理员）。"""
 
+import hmac
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -40,6 +41,13 @@ class RoleUpdate(BaseModel):
     role: str = Field(pattern="^(customer|factory|admin)$")
 
 
+def _require_eval_report_verifier(signature_key_id: str) -> None:
+    if not settings.eval_report_signing_key or not settings.eval_report_signing_key_id:
+        raise HTTPException(status_code=503, detail="失败报告验签尚未完整配置")
+    if not hmac.compare_digest(signature_key_id, settings.eval_report_signing_key_id):
+        raise HTTPException(status_code=422, detail="失败报告签名 key_id 不匹配")
+
+
 @router.get("/quality/summary", response_model=QualitySummaryResponse)
 def get_quality_summary(
     window_days: int = Query(default=30, ge=1, le=365),
@@ -74,11 +82,7 @@ def sync_failure_clusters(
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> FailureTriageSyncResponse:
-    if not settings.eval_report_signing_key:
-        raise HTTPException(
-            status_code=503,
-            detail="失败分诊报告验签尚未配置",
-        )
+    _require_eval_report_verifier(payload.signature_key_id)
     try:
         result = failure_triage_service.sync_verified_report(
             db,
@@ -105,8 +109,7 @@ def verify_failure_clusters(
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> FailureVerificationSyncResponse:
-    if not settings.eval_report_signing_key:
-        raise HTTPException(status_code=503, detail="失败复测证明验签尚未配置")
+    _require_eval_report_verifier(payload.signature_key_id)
     try:
         result = failure_triage_service.sync_failure_verification(
             db,

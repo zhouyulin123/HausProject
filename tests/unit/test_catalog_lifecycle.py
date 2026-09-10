@@ -37,6 +37,11 @@ def _product(sku: str, **overrides) -> Product:
         "price": 5000,
         "is_active": True,
         "data_origin": "merchant",
+        "source_name": "供应商目录",
+        "source_url": f"https://supplier.example/products/{sku}",
+        "source_product_id": sku,
+        "source_retrieved_at": NOW - timedelta(days=1),
+        "price_observed_at": NOW - timedelta(days=1),
         "verification_status": "verified",
         "availability_status": "in_stock",
         "stock_quantity": 5,
@@ -72,6 +77,7 @@ def _product(sku: str, **overrides) -> Product:
         ({"price_valid_from": NOW + timedelta(seconds=1)}, "price_not_started"),
         ({"price_valid_to": NOW - timedelta(seconds=1)}, "price_expired"),
         ({"region_codes": ["CN-BJ"]}, "region_unavailable"),
+        ({"region_codes": []}, "region_unknown"),
         ({"model_width_mm": None}, "dimensions_missing"),
         ({"model_width_mm": 2600}, "dimensions_exceeded"),
         ({"price": 9000}, "budget_exceeded"),
@@ -427,7 +433,7 @@ def test_enrichment_normalizes_invalid_quantity_before_stock_gate(
     assert plans[0]["catalogValidation"]["hardErrors"] == []
     suggestion = plans[0]["furnitureSuggestions"][0]
     assert suggestion["quantity"] == 1
-    assert suggestion["catalogEligibility"]["schemaVersion"] == "1.0"
+    assert suggestion["catalogEligibility"]["schemaVersion"] == "1.1"
     assert suggestion["catalogEligibility"]["checkedAt"] == NOW.isoformat()
     assert suggestion["catalogEligibility"]["sku"] == "SOFA-ONE"
     assert suggestion["catalogEligibility"]["quantity"] == 1

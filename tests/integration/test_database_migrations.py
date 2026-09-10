@@ -32,7 +32,7 @@ def test_json_list_columns_have_no_mysql_server_default(module_name):
 @pytest.mark.integration
 def test_langgraph_checkpoint_migration_round_trip_from_empty_database():
     backend_dir = Path(__file__).resolve().parents[2] / "backend"
-    artifacts_dir = backend_dir / ".test_artifacts"
+    artifacts_dir = backend_dir.parent / ".test_artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     database_path = artifacts_dir / (f"langgraph_checkpoint_migration_{uuid4().hex}.db")
     database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
@@ -77,7 +77,7 @@ def test_langgraph_checkpoint_migration_round_trip_from_empty_database():
 @pytest.mark.integration
 def test_product_asset_migration_backfills_only_trusted_legacy_glb_as_approved():
     backend_dir = Path(__file__).resolve().parents[2] / "backend"
-    artifacts_dir = backend_dir / ".test_artifacts"
+    artifacts_dir = backend_dir.parent / ".test_artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     database_path = artifacts_dir / f"product_assets_{uuid4().hex}.db"
     database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
@@ -164,7 +164,7 @@ def test_product_asset_migration_backfills_only_trusted_legacy_glb_as_approved()
 @pytest.mark.integration
 def test_alembic_upgrades_empty_database_to_current_schema():
     backend_dir = Path(__file__).resolve().parents[2] / "backend"
-    artifacts_dir = backend_dir / ".test_artifacts"
+    artifacts_dir = backend_dir.parent / ".test_artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     database_path = artifacts_dir / f"haus_migration_test_{uuid4().hex}.db"
     database_url = f"sqlite+pysqlite:///{database_path.as_posix()}"
@@ -217,6 +217,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "verification_report_id",
             "report_digest",
             "coverage_digest",
+            "record_version",
         } <= failure_cluster_columns
         approval_columns = {
             column["name"]
@@ -615,7 +616,7 @@ def test_alembic_upgrades_empty_database_to_current_schema():
 @pytest.mark.integration
 def test_catalog_migration_keeps_existing_merchant_draft_unverified():
     backend_dir = Path(__file__).resolve().parents[2] / "backend"
-    artifacts_dir = backend_dir / ".test_artifacts"
+    artifacts_dir = backend_dir.parent / ".test_artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     database_path = artifacts_dir / "catalog_lifecycle_migration_test.db"
     database_path.unlink(missing_ok=True)

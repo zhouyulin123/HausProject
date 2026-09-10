@@ -27,6 +27,8 @@ class DesignAgentToolRegistry:
         "scene_edit",
         "plan_refine",
         "custom_furniture_preview",
+        "open_geometry_edit",
+        "action_plan",
     }
 
     def __init__(self) -> None:
@@ -80,6 +82,9 @@ class DesignAgentState(TypedDict, total=False):
     budget_exhausted: bool
     turn_execution_deadline_at: str | None
     exit_reason: str
+    task_state_version: int
+    open_geometry_extension: dict[str, Any]
+    model_call_capture: dict[str, Any]
 
 
 _QUESTIONS = {
@@ -373,6 +378,8 @@ class DesignAgentWorkflow:
         execute_scene: AgentTool,
         execute_plan_refine: AgentTool | None = None,
         execute_custom: AgentTool | None = None,
+        execute_open_geometry: AgentTool | None = None,
+        execute_action_plan: AgentTool | None = None,
         max_steps: int = 12,
         max_retries: int = 2,
         checkpointer: BaseCheckpointSaver | None = None,
@@ -383,6 +390,8 @@ class DesignAgentWorkflow:
         self._execute_scene = execute_scene
         self._execute_plan_refine = execute_plan_refine
         self._execute_custom = execute_custom
+        self._execute_open_geometry = execute_open_geometry
+        self._execute_action_plan = execute_action_plan
         self._max_steps = max_steps
         self._max_retries = max_retries
         self._checkpointer = checkpointer
@@ -428,6 +437,7 @@ class DesignAgentWorkflow:
                 "finalize": "finalize",
                 "replan": "replan",
                 "approval": "request_approval",
+                "clarification": "request_clarification",
                 "escalate": "escalate",
             },
         )
@@ -532,6 +542,12 @@ class DesignAgentWorkflow:
             update["pending_questions"] = questions
             update["custom_spec_invalid"] = invalid
             return update
+        elif state["intent"] == "open_geometry":
+            update["pending_questions"] = []
+            return update
+        elif state["intent"] == "action_plan":
+            if not state.get("scene_context"):
+                missing.append("scene_context")
         update["pending_questions"] = [deepcopy(_QUESTIONS[key]) for key in missing]
         return update
 
@@ -551,14 +567,16 @@ class DesignAgentWorkflow:
         return "execute"
 
     def _request_clarification(self, state: DesignAgentState) -> dict[str, Any]:
+        if state.get("intent") == "action_plan":
+            exit_reason = "clarification_required"
+        elif state.get("custom_spec_invalid"):
+            exit_reason = "invalid_facts"
+        else:
+            exit_reason = "missing_facts"
         return {
             **_next_step(state, "request_clarification"),
             "status": "waiting_user",
-            "exit_reason": (
-                "invalid_facts"
-                if state.get("custom_spec_invalid")
-                else "missing_facts"
-            ),
+            "exit_reason": exit_reason,
         }
 
     def _retrieve(self, state: DesignAgentState) -> dict[str, Any]:
@@ -613,6 +631,12 @@ class DesignAgentWorkflow:
         elif state["intent"] == "custom_furniture":
             tool_name = "custom_furniture_preview"
             callback = self._execute_custom
+        elif state["intent"] == "open_geometry":
+            tool_name = "open_geometry_edit"
+            callback = self._execute_open_geometry
+        elif state["intent"] == "action_plan":
+            tool_name = "action_plan"
+            callback = self._execute_action_plan
         else:
             tool_name = "design_generation"
             callback = self._execute_design
@@ -633,9 +657,30 @@ class DesignAgentWorkflow:
                 and result.get("generation_status") in {"queued", "running"}
                 else "completed"
             )
+            public_result = {
+                key: value for key, value in result.items() if not key.startswith("_")
+            }
+            private_extension = result.get("_open_geometry_extension")
+            private_model_call_capture = result.get("_model_call_capture")
+            private_questions = result.get("_pending_questions")
             return {
                 **update,
-                "result": result,
+                "result": public_result,
+                **(
+                    {"open_geometry_extension": deepcopy(private_extension)}
+                    if isinstance(private_extension, dict)
+                    else {}
+                ),
+                **(
+                    {"model_call_capture": deepcopy(private_model_call_capture)}
+                    if isinstance(private_model_call_capture, dict)
+                    else {}
+                ),
+                **(
+                    {"pending_questions": deepcopy(private_questions)}
+                    if isinstance(private_questions, list)
+                    else {}
+                ),
                 "hard_errors": [],
                 "rejection_message": "",
                 "tool_events": [
@@ -644,8 +689,7 @@ class DesignAgentWorkflow:
                         "status": tool_status,
                         "payload": {
                             key: value
-                            for key, value in result.items()
-                            if not key.startswith("_")
+                            for key, value in public_result.items()
                         },
                     }
                 ],
@@ -717,6 +761,34 @@ class DesignAgentWorkflow:
                 or quote.get("status") != "estimated"
             ):
                 errors.append("invalid_custom_furniture_preview")
+        elif state["intent"] == "open_geometry":
+            if (
+                not isinstance(result, dict)
+                or result.get("status") != "completed"
+                or result.get("code") not in {"completed", "unsupported_geometry"}
+            ):
+                errors.append(
+                    result.get("code", "open_geometry_failed")
+                    if isinstance(result, dict)
+                    else "open_geometry_failed"
+                )
+        elif state["intent"] == "action_plan":
+            if isinstance(result, dict) and result.get("code") == "clarification_required":
+                return {
+                    **update,
+                    "hard_errors": [],
+                    "quality_outcome": "clarify",
+                }
+            if (
+                not isinstance(result, dict)
+                or result.get("status") != "completed"
+                or result.get("partialCompletion") is not False
+            ):
+                errors.append(
+                    result.get("code", "action_plan_failed")
+                    if isinstance(result, dict)
+                    else "action_plan_failed"
+                )
         elif state["intent"] == "plan_refine" and (
             not isinstance(result, dict)
             or not isinstance(result.get("plan"), dict)
@@ -729,7 +801,11 @@ class DesignAgentWorkflow:
             outcome = "passed"
         elif "tool_timeout" in errors:
             outcome = "escalate"
-        elif state["intent"] == "custom_furniture":
+        elif state["intent"] in {
+            "custom_furniture",
+            "open_geometry",
+            "action_plan",
+        }:
             outcome = "escalate"
         elif state.get("retry_count", 0) < state.get("max_retries", 2):
             outcome = "retry"
@@ -744,6 +820,7 @@ class DesignAgentWorkflow:
             "queued": "finalize",
             "retry": "replan",
             "approval": "approval",
+            "clarify": "clarification",
         }.get(state.get("quality_outcome", "escalate"), "escalate")
 
     def _replan(self, state: DesignAgentState) -> dict[str, Any]:
@@ -764,6 +841,18 @@ class DesignAgentWorkflow:
         update = _next_step(state, "finalize")
         if update.get("exit_reason"):
             return update
+        result = state.get("result") or {}
+        if state["intent"] == "action_plan" and result.get("code") == "unsupported_action":
+            exit_reason = "unsupported_action"
+        elif state["intent"] == "open_geometry" and result.get("code") == "unsupported_geometry":
+            exit_reason = "unsupported_geometry"
+        elif (
+            state["intent"] == "design"
+            and result.get("generation_status") in {"queued", "running"}
+        ):
+            exit_reason = "generation_queued"
+        else:
+            exit_reason = "goal_completed"
         return {
             **update,
             "status": (
@@ -773,13 +862,7 @@ class DesignAgentWorkflow:
                 in {"queued", "running"}
                 else "completed"
             ),
-            "exit_reason": (
-                "generation_queued"
-                if state["intent"] == "design"
-                and (state.get("result") or {}).get("generation_status")
-                in {"queued", "running"}
-                else "goal_completed"
-            ),
+            "exit_reason": exit_reason,
             "pending_questions": [],
             "approval_required": False,
         }
@@ -843,6 +926,8 @@ class DesignAgentWorkflow:
         fact_evidence: dict[str, dict[str, Any]] | None = None,
         scene_context: dict[str, Any] | None = None,
         custom_furniture_spec: dict[str, Any] | None = None,
+        task_state_version: int = 0,
+        open_geometry_extension: dict[str, Any] | None = None,
         plan_id: str | None = None,
         initial_step_count: int = 0,
         initial_retry_count: int = 0,
@@ -867,9 +952,7 @@ class DesignAgentWorkflow:
             if state is None:
                 raise RuntimeError("没有可恢复的 LangGraph checkpoint")
             return state
-        effective_intent = (
-            "scene_edit" if intent == "auto" and scene_context else intent
-        )
+        effective_intent = intent
         if effective_intent == "auto":
             effective_intent = "design"
         initial_state = {
@@ -906,6 +989,9 @@ class DesignAgentWorkflow:
                 else None
             ),
             "exit_reason": initial_exit_reason if budget_exhausted else "",
+            "task_state_version": task_state_version,
+            "open_geometry_extension": deepcopy(open_geometry_extension or {}),
+            "model_call_capture": {},
         }
         if self._checkpointer is None:
             return self._graph.invoke(initial_state, config=config)

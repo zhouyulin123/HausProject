@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -5,7 +6,7 @@ import struct
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -62,6 +63,24 @@ def product_api(monkeypatch):
                 phone_verified=True,
             )
         )
+        db.add_all(
+            [
+                User(
+                    id=998,
+                    phone="13800009998",
+                    nickname="13800009998",
+                    role="factory",
+                    phone_verified=True,
+                ),
+                User(
+                    id=997,
+                    phone="13800009997",
+                    nickname="13800009997",
+                    role="customer",
+                    phone_verified=True,
+                ),
+            ]
+        )
         db.commit()
 
     monkeypatch.setattr(settings, "upload_dir", str(upload_dir))
@@ -72,9 +91,11 @@ def product_api(monkeypatch):
         with factory() as db:
             yield db
 
-    def override_current_user():
+    def override_current_user(request: Request):
+        user_ids = {"admin": 999, "factory": 998, "customer": 997}
+        user_id = user_ids.get(request.headers.get("X-Test-Role", "admin"), 999)
         with factory() as db:
-            return db.get(User, 999)
+            return db.get(User, user_id)
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = override_current_user
@@ -200,34 +221,360 @@ def test_product_lifecycle_fields_round_trip_and_verifier_is_server_owned(produc
     assert body["eligibility"]["eligible"] is False
     assert "verification_required" in body["eligibility"]["reason_codes"]
 
-    verified = client.patch(
-        f"/api/products/{body['id']}",
+    verified = client.post(
+        f"/api/products/{body['id']}/commercial-review",
+        headers={"Idempotency-Key": "table-001-approve"},
         json={
-            "record_version": body["record_version"],
-            "verification_status": "verified",
-            "verified_by": "spoofed-user",
+            "decision": "approve",
+            "expected_record_version": body["record_version"],
         },
     )
 
     assert verified.status_code == 200
-    assert verified.json()["verification_status"] == "verified"
-    assert verified.json()["verified_by"] == "user:999"
-    assert verified.json()["verified_at"] is not None
-    assert verified.json()["record_version"] == 2
+    assert verified.json()["resulting_status"] == "verified"
+    assert verified.json()["resulting_record_version"] == 2
+    managed = client.get("/api/products/admin/catalog").json()["products"]
+    verified_product = next(item for item in managed if item["id"] == body["id"])
+    assert verified_product["verified_by"] == "user:999"
+    assert verified_product["verified_at"] is not None
     unchanged = client.patch(
         f"/api/products/{body['id']}",
         json={
-            "record_version": verified.json()["record_version"],
-            "price": verified.json()["price"],
-            "region_codes": verified.json()["region_codes"],
-            "price_valid_from": verified.json()["price_valid_from"],
-            "price_valid_to": verified.json()["price_valid_to"],
-            "verification_status": "verified",
+            "record_version": verified_product["record_version"],
+            "price": verified_product["price"],
+            "region_codes": verified_product["region_codes"],
+            "price_valid_from": verified_product["price_valid_from"],
+            "price_valid_to": verified_product["price_valid_to"],
         },
     )
     assert unchanged.status_code == 200
     assert unchanged.json()["record_version"] == 2
-    assert unchanged.json()["verified_at"] == verified.json()["verified_at"]
+    assert unchanged.json()["verified_at"] == verified_product["verified_at"]
+
+
+def _commercial_draft_payload(*, sku: str) -> dict:
+    return {
+        "sku": sku,
+        "name": "待商业核验餐桌",
+        "category": "餐桌",
+        "room": "餐厅",
+        "style": "现代简约",
+        "price": 3200,
+        "model_width_mm": 1600,
+        "model_depth_mm": 850,
+        "model_height_mm": 750,
+        "data_origin": "merchant_draft",
+        "source_name": "供应商目录",
+        "source_product_id": sku,
+        "source_retrieved_at": "2026-09-01T00:00:00Z",
+        "price_observed_at": "2026-09-01T00:00:00Z",
+        "availability_status": "in_stock",
+        "stock_quantity": 8,
+        "region_codes": ["CN-SH"],
+        "price_valid_from": "2026-01-01T00:00:00Z",
+        "price_valid_to": "2099-12-31T23:59:59Z",
+        "data_version": "supplier-2026-q3",
+    }
+
+
+@pytest.mark.integration
+def test_factory_cannot_create_or_patch_commercial_verification(product_api):
+    client, _ = product_api
+    factory_headers = {"X-Test-Role": "factory"}
+
+    direct_verified = client.post(
+        "/api/products",
+        headers=factory_headers,
+        json={
+            **_commercial_draft_payload(sku="NO-DIRECT-VERIFY"),
+            "verification_status": "verified",
+        },
+    )
+    assert direct_verified.status_code == 422
+    legacy_origin = client.post(
+        "/api/products",
+        headers=factory_headers,
+        json={
+            **_commercial_draft_payload(sku="NO-LEGACY-ORIGIN"),
+            "data_origin": "verified",
+        },
+    )
+    assert legacy_origin.status_code == 422
+
+    created = client.post(
+        "/api/products",
+        headers=factory_headers,
+        json=_commercial_draft_payload(sku="NO-PATCH-VERIFY"),
+    ).json()
+    direct_patch = client.patch(
+        f"/api/products/{created['id']}",
+        headers=factory_headers,
+        json={
+            "record_version": created["record_version"],
+            "verification_status": "verified",
+        },
+    )
+    assert direct_patch.status_code == 422
+
+
+@pytest.mark.integration
+def test_product_creation_starts_commercial_audit_trail(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products",
+        headers={"X-Test-Role": "factory", "X-Request-ID": "req-create-001"},
+        json=_commercial_draft_payload(sku="CREATE-AUDIT-001"),
+    ).json()
+
+    audit = client.get(
+        f"/api/products/{created['id']}/audit-events",
+        headers={"X-Test-Role": "factory"},
+    ).json()
+    assert audit["count"] == 1
+    assert audit["items"][0]["event_type"] == "commercial_created"
+    assert audit["items"][0]["actor"] == "user:998"
+    assert audit["items"][0]["request_id"] == "req-create-001"
+    assert audit["items"][0]["resulting_status"] == "draft"
+    assert audit["items"][0]["resulting_record_version"] == 1
+
+
+@pytest.mark.integration
+def test_admin_review_is_cas_idempotent_and_factory_cannot_approve(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products",
+        headers={"X-Test-Role": "factory"},
+        json=_commercial_draft_payload(sku="REVIEW-001"),
+    ).json()
+    request = {
+        "decision": "approve",
+        "expected_record_version": created["record_version"],
+        "note": "来源、库存和有效期已复核",
+    }
+    headers = {"Idempotency-Key": "review-001", "X-Request-ID": "req-review-001"}
+
+    forbidden = client.post(
+        f"/api/products/{created['id']}/commercial-review",
+        headers={**headers, "X-Test-Role": "factory"},
+        json=request,
+    )
+    assert forbidden.status_code == 403
+
+    stale = client.post(
+        f"/api/products/{created['id']}/commercial-review",
+        headers={"Idempotency-Key": "review-001-stale"},
+        json={**request, "expected_record_version": 99},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == {
+        "code": "record_version_conflict",
+        "message": "商品版本冲突：期望 99，当前 1",
+        "expected_record_version": 99,
+        "current_record_version": 1,
+    }
+
+    approved = client.post(
+        f"/api/products/{created['id']}/commercial-review",
+        headers=headers,
+        json=request,
+    )
+    assert approved.status_code == 200
+    assert approved.json()["resulting_status"] == "verified"
+    assert approved.json()["resulting_record_version"] == 2
+
+    replay = client.post(
+        f"/api/products/{created['id']}/commercial-review",
+        headers=headers,
+        json=request,
+    )
+    assert replay.status_code == 200
+    assert replay.json() == approved.json()
+
+    conflict = client.post(
+        f"/api/products/{created['id']}/commercial-review",
+        headers=headers,
+        json={**request, "note": "不同审核内容"},
+    )
+    assert conflict.status_code == 409
+
+
+@pytest.mark.integration
+def test_commercial_patch_downgrades_and_appends_redacted_audit(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products",
+        headers={"X-Test-Role": "factory"},
+        json=_commercial_draft_payload(sku="AUDIT-001"),
+    ).json()
+    approved = client.post(
+        f"/api/products/{created['id']}/commercial-review",
+        headers={"Idempotency-Key": "audit-approve-001"},
+        json={
+            "decision": "approve",
+            "expected_record_version": created["record_version"],
+            "note": "批准",
+        },
+    ).json()
+
+    changed = client.patch(
+        f"/api/products/{created['id']}",
+        headers={"X-Test-Role": "factory", "X-Request-ID": "req-patch-001"},
+        json={
+            "record_version": approved["resulting_record_version"],
+            "price": 3500,
+            "source_metadata": {
+                "api_key": "never-store-this-secret",
+                "local_path": "D:\\private\\catalog.xlsx",
+            },
+        },
+    )
+    assert changed.status_code == 200
+    assert changed.json()["verification_status"] == "draft"
+    assert changed.json()["verified_at"] is None
+    assert changed.json()["verified_by"] is None
+
+    audit = client.get(
+        f"/api/products/{created['id']}/audit-events",
+        headers={"X-Test-Role": "factory"},
+    )
+    assert audit.status_code == 200
+    patch_event = next(
+        item for item in audit.json()["items"] if item["event_type"] == "commercial_patch"
+    )
+    assert patch_event["actor"] == "user:998"
+    assert patch_event["request_id"] == "req-patch-001"
+    assert set(patch_event["changed_fields"]) >= {
+        "price",
+        "source_metadata",
+        "verification_status",
+        "verified_at",
+        "verified_by",
+    }
+    serialized = json.dumps(patch_event, ensure_ascii=False)
+    assert "never-store-this-secret" not in serialized
+    assert "private\\catalog.xlsx" not in serialized
+
+    customer = client.get(
+        f"/api/products/{created['id']}/audit-events",
+        headers={"X-Test-Role": "customer"},
+    )
+    assert customer.status_code == 403
+
+
+@pytest.mark.integration
+def test_review_fails_closed_on_missing_evidence_without_mutation(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products",
+        headers={"X-Test-Role": "factory"},
+        json={
+            "sku": "REVIEW-INCOMPLETE-001",
+            "name": "证据不完整商品",
+            "category": "餐桌",
+            "room": "餐厅",
+            "style": "现代简约",
+            "price": 3200,
+        },
+    ).json()
+
+    rejected = client.post(
+        f"/api/products/{created['id']}/commercial-review",
+        headers={"Idempotency-Key": "review-incomplete-001"},
+        json={
+            "decision": "approve",
+            "expected_record_version": created["record_version"],
+        },
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"]["code"] == "commercial_evidence_incomplete"
+    assert rejected.json()["detail"]["reason_codes"]
+
+    managed = client.get("/api/products/admin/catalog?include_inactive=true").json()
+    current = next(item for item in managed["products"] if item["id"] == created["id"])
+    assert current["record_version"] == created["record_version"]
+    assert current["verification_status"] == "draft"
+    events = client.get(
+        f"/api/products/{created['id']}/audit-events"
+    ).json()["items"]
+    assert [event["event_type"] for event in events] == ["commercial_created"]
+
+
+@pytest.mark.integration
+def test_rejection_note_is_audited_only_as_digest(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products",
+        json=_commercial_draft_payload(sku="REJECT-AUDIT-001"),
+    ).json()
+    secret_note = "供应商合同冲突，不可公开原文"
+
+    rejected = client.post(
+        f"/api/products/{created['id']}/commercial-review",
+        headers={"Idempotency-Key": "reject-audit-001"},
+        json={
+            "decision": "reject",
+            "expected_record_version": created["record_version"],
+            "note": secret_note,
+        },
+    )
+    assert rejected.status_code == 200
+    body = rejected.json()
+    assert body["changes"]["review_note"]["after"] == {
+        "present": True,
+        "char_count": len(secret_note),
+        "sha256": hashlib.sha256(secret_note.encode("utf-8")).hexdigest(),
+    }
+    assert secret_note not in json.dumps(body, ensure_ascii=False)
+
+
+@pytest.mark.integration
+def test_deactivate_increments_version_and_appends_audit(product_api):
+    client, _ = product_api
+    created = client.post(
+        "/api/products",
+        headers={"X-Request-ID": "req-create-deactivate"},
+        json=_commercial_draft_payload(sku="DEACTIVATE-AUDIT-001"),
+    ).json()
+
+    stale = client.delete(
+        f"/api/products/{created['id']}?expected_record_version=99",
+        headers={"Idempotency-Key": "deactivate-audit-stale"},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "record_version_conflict"
+    assert stale.json()["detail"]["expected_record_version"] == 99
+    assert stale.json()["detail"]["current_record_version"] == 1
+
+    url = f"/api/products/{created['id']}?expected_record_version=1"
+    headers = {
+        "Idempotency-Key": "deactivate-audit-001",
+        "X-Request-ID": "req-deactivate-001",
+    }
+    response = client.delete(
+        url,
+        headers=headers,
+    )
+    assert response.status_code == 200
+    replay = client.delete(url, headers=headers)
+    assert replay.status_code == 200
+    assert replay.json() == response.json()
+    reused = client.delete(
+        f"/api/products/{created['id']}?expected_record_version=2",
+        headers=headers,
+    )
+    assert reused.status_code == 409
+    assert reused.json()["detail"]["code"] == "idempotency_conflict"
+    audit = client.get(
+        f"/api/products/{created['id']}/audit-events"
+    ).json()["items"]
+    assert len(audit) == 2
+    assert audit[0]["event_type"] == "commercial_deactivate"
+    assert audit[0]["request_id"] == "req-deactivate-001"
+    assert audit[0]["resulting_record_version"] == 2
+    assert audit[0]["changes"]["is_active"] == {
+        "before": True,
+        "after": False,
+    }
 
 
 @pytest.mark.integration
@@ -248,33 +595,34 @@ def test_product_verification_rejects_incomplete_commercial_evidence(product_api
         },
     ).json()
 
-    response = client.patch(
-        f"/api/products/{created['id']}",
+    response = client.post(
+        f"/api/products/{created['id']}/commercial-review",
+        headers={"Idempotency-Key": "verify-incomplete-001"},
         json={
-            "record_version": created["record_version"],
-            "verification_status": "verified",
+            "decision": "approve",
+            "expected_record_version": created["record_version"],
         },
     )
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "commercial_evidence_incomplete"
-    assert set(response.json()["detail"]["missing_fields"]) == {
-        "data_origin",
-        "source_name",
-        "source_reference",
-        "source_retrieved_at",
-        "price_observed_at",
-        "price_validity",
-        "region_codes",
-        "availability_status",
-        "data_version",
-    }
+    assert {
+        "provenance_unverified",
+        "source_name_missing",
+        "source_reference_missing",
+        "source_retrieved_at_missing",
+        "price_observed_at_missing",
+        "availability_unknown",
+        "price_validity_unknown",
+        "region_unknown",
+        "data_version_unverified",
+    } <= set(response.json()["detail"]["reason_codes"])
 
 
 @pytest.mark.integration
 def test_product_verification_rejects_draft_origin_and_missing_stock(product_api):
     client, _ = product_api
-    response = client.post(
+    created = client.post(
         "/api/products",
         json={
             "sku": "VERIFY-DRAFT-001",
@@ -293,15 +641,19 @@ def test_product_verification_rejects_draft_origin_and_missing_stock(product_api
             "price_valid_from": "2026-09-01T00:00:00Z",
             "price_valid_to": "2026-12-31T23:59:59Z",
             "data_version": "supplier-2026-q3",
-            "verification_status": "verified",
+        },
+    ).json()
+    response = client.post(
+        f"/api/products/{created['id']}/commercial-review",
+        headers={"Idempotency-Key": "verify-draft-001"},
+        json={
+            "decision": "approve",
+            "expected_record_version": created["record_version"],
         },
     )
 
     assert response.status_code == 422
-    assert set(response.json()["detail"]["missing_fields"]) == {
-        "data_origin",
-        "stock_quantity",
-    }
+    assert "out_of_stock" in response.json()["detail"]["reason_codes"]
 
 
 @pytest.mark.integration
@@ -327,7 +679,10 @@ def test_product_management_list_exposes_pending_and_inactive_records(product_ap
     )
     assert created.status_code == 200
     product_id = created.json()["id"]
-    assert client.delete(f"/api/products/{product_id}").status_code == 200
+    assert client.delete(
+        f"/api/products/{product_id}?expected_record_version=1",
+        headers={"Idempotency-Key": "manage-draft-deactivate"},
+    ).status_code == 200
 
     managed = client.get("/api/products/admin/catalog")
 
@@ -354,6 +709,9 @@ def test_product_source_fields_are_validated_and_reset_verification(product_api)
             "room": "餐厅",
             "style": "原木风",
             "price": 3200,
+            "model_width_mm": 1600,
+            "model_depth_mm": 850,
+            "model_height_mm": 750,
             "data_origin": "merchant",
             "source_name": "供应商目录",
             "source_url": "https://supplier.example/products/table-001",
@@ -365,31 +723,45 @@ def test_product_source_fields_are_validated_and_reset_verification(product_api)
             "stock_quantity": 8,
             "region_codes": ["CN-SH"],
             "price_valid_from": "2026-09-01T00:00:00Z",
-            "price_valid_to": "2026-12-31T23:59:59Z",
+            "price_valid_to": "2099-12-31T23:59:59Z",
             "data_version": "supplier-2026-q3",
-            "verification_status": "verified",
         },
     )
     assert created.status_code == 200
     body = created.json()
     assert body["source_product_id"] == "TABLE-001"
-    assert body["verified_by"] == "user:999"
+    assert body["verification_status"] == "draft"
+    approval_response = client.post(
+        f"/api/products/{body['id']}/commercial-review",
+        headers={"Idempotency-Key": "source-001-approve-1"},
+        json={
+            "decision": "approve",
+            "expected_record_version": body["record_version"],
+        },
+    )
+    assert approval_response.status_code == 200, approval_response.json()
+    approved = approval_response.json()
 
     changed = client.patch(
         f"/api/products/{body['id']}",
         json={
-            "record_version": body["record_version"],
+            "record_version": approved["resulting_record_version"],
             "source_url": "https://supplier.example/products/table-002",
-            "verification_status": "verified",
         },
     )
     assert changed.status_code == 200
-    assert changed.json()["verification_status"] == "verified"
-    assert changed.json()["verified_at"] is not None
-    assert changed.json()["verified_by"] == "user:999"
+    assert changed.json()["verification_status"] == "draft"
+    reapproved = client.post(
+        f"/api/products/{body['id']}/commercial-review",
+        headers={"Idempotency-Key": "source-001-approve-2"},
+        json={
+            "decision": "approve",
+            "expected_record_version": changed.json()["record_version"],
+        },
+    ).json()
     downgraded = client.patch(
         f"/api/products/{body['id']}",
-        json={"record_version": changed.json()["record_version"], "price": 3300},
+        json={"record_version": reapproved["resulting_record_version"], "price": 3300},
     )
     assert downgraded.status_code == 200
     assert downgraded.json()["verification_status"] == "draft"
@@ -400,46 +772,41 @@ def test_product_source_fields_are_validated_and_reset_verification(product_api)
         json={"record_version": body["record_version"], "price": 3300},
     )
     assert stale.status_code == 409
-    assert stale.json()["detail"]["current_record_version"] == 3
+    assert stale.json()["detail"]["current_record_version"] == 5
 
-    rejected = client.patch(
-        f"/api/products/{body['id']}",
+    rejected = client.post(
+        f"/api/products/{body['id']}/commercial-review",
+        headers={"Idempotency-Key": "source-001-reject"},
         json={
-            "record_version": downgraded.json()["record_version"],
-            "price_note": "供应商价格证据不一致",
-            "verification_status": "rejected",
+            "decision": "reject",
+            "expected_record_version": downgraded.json()["record_version"],
+            "note": "供应商价格证据不一致",
         },
     )
     assert rejected.status_code == 200
-    assert rejected.json()["verification_status"] == "rejected"
-    assert rejected.json()["verified_at"] is None
-    assert rejected.json()["verified_by"] is None
+    assert rejected.json()["resulting_status"] == "rejected"
 
     cleared_url = client.patch(
         f"/api/products/{body['id']}",
         json={
-            "record_version": rejected.json()["record_version"],
+            "record_version": rejected.json()["resulting_record_version"],
             "source_url": "",
             "source_product_id": "TABLE-OFFLINE-001",
-            "verification_status": "verified",
         },
     )
     assert cleared_url.status_code == 200
     assert cleared_url.json()["source_url"] is None
     assert cleared_url.json()["source_product_id"] == "TABLE-OFFLINE-001"
-    assert cleared_url.json()["verification_status"] == "verified"
+    assert cleared_url.json()["verification_status"] == "draft"
 
     legacy_origin = client.patch(
         f"/api/products/{body['id']}",
         json={
             "record_version": cleared_url.json()["record_version"],
             "data_origin": "verified",
-            "verification_status": "draft",
         },
     )
-    assert legacy_origin.status_code == 200
-    assert legacy_origin.json()["data_origin"] == "verified"
-    assert legacy_origin.json()["verification_status"] == "draft"
+    assert legacy_origin.status_code == 422
 
     assert (
         client.post(

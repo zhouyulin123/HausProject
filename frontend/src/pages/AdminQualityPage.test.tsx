@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  GovernanceCaseTable,
   FailureTriageImportControl,
   FailureVerificationImportControl,
   FailureTriageContent,
@@ -8,10 +9,14 @@ import {
   RealWorldReadinessContent,
   failureTriageImportErrorMessage,
   failureVerificationImportErrorMessage,
+  createStableImportAttempt,
+  executeImportAttempt,
+  submitGovernanceMutation,
 } from "./AdminQualityPage";
 import { AdminApiError, type RealWorldReadiness } from "@/api/adminApi";
 import type { FailureClusterListResponse } from "@/types/quality";
 import type { QualitySummary } from "@/types/quality";
+import type { GovernanceCase } from "@/types/admin";
 
 const summary: QualitySummary = {
   generated_at: "2026-09-02T08:00:00+00:00",
@@ -145,6 +150,7 @@ describe("运营质量看板内容", () => {
           severity: "critical",
           status: "open",
           owner: null,
+          record_version: 1,
           occurrence_count: 4,
           affected_count: 3,
           first_seen_at: "2026-09-01T08:00:00Z",
@@ -168,6 +174,7 @@ describe("运营质量看板内容", () => {
           severity: "high",
           status: "in_progress",
           owner: "quality-admin",
+          record_version: 2,
           occurrence_count: 3,
           affected_count: 2,
           first_seen_at: "2026-09-01T08:00:00Z",
@@ -191,6 +198,7 @@ describe("运营质量看板内容", () => {
           severity: "high",
           status: "resolved",
           owner: "quality-admin",
+          record_version: 3,
           occurrence_count: 2,
           affected_count: 2,
           first_seen_at: "2026-09-01T08:00:00Z",
@@ -360,5 +368,82 @@ describe("运营质量看板内容", () => {
       .toBe("复测证明与已导入记录冲突，请核对证明版本");
     expect(failureVerificationImportErrorMessage(new AdminApiError("未配置", 503)))
       .toBe("服务端复测证明验签尚未配置，未更新失败簇");
+  });
+
+  it("治理收件箱只展示匿名公开状态，不渲染敏感字段", () => {
+    const item = {
+      case_ref: "rwc_public_001",
+      origin: "private_real",
+      split: "unassigned",
+      redaction_review: "pending",
+      consent_status: "pending",
+      annotation_status: "pending",
+      record_version: 4,
+      blockers: ["consent_not_granted", "annotation_not_ready"],
+      created_at: "2026-09-10T08:00:00Z",
+      updated_at: "2026-09-10T08:00:00Z",
+      task_id: 7201,
+      image_id: 7301,
+      asset_path: "D:/private/customer-room.png",
+      asset_digest: `sha256:${"a".repeat(64)}`,
+      task_input: "private user prompt",
+      annotation: "private annotation content",
+      evidence: "private consent evidence",
+    } as unknown as GovernanceCase;
+
+    const html = renderToStaticMarkup(
+      <GovernanceCaseTable
+        cases={[item]}
+        selectedRefs={new Set()}
+        activeCaseRef={null}
+        busyCaseRef={null}
+        onSelect={() => undefined}
+        onActivate={() => undefined}
+        onPatch={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("rwc_public_001");
+    expect(html).toContain("r4");
+    expect(html).toContain("未取得授权");
+    expect(html).toContain("人工标注未就绪");
+    for (const secret of [
+      "7201", "7301", "customer-room.png", "sha256:",
+      "private user prompt", "private annotation content", "private consent evidence",
+    ]) {
+      expect(html).not.toContain(secret);
+    }
+  });
+
+  it("导入重试复用同一个 client_import_id，失败不返回成功结果", async () => {
+    const attempt = createStableImportAttempt(7201, 7301, "stable-nonce");
+    const importer = vi.fn()
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce({ created: true, case: { case_ref: "rwc_1" } });
+
+    const first = await executeImportAttempt(attempt, importer);
+    const second = await executeImportAttempt(attempt, importer);
+
+    expect(first.outcome).toBe("error");
+    expect("result" in first).toBe(false);
+    expect(second.outcome).toBe("success");
+    expect(importer.mock.calls).toEqual([[attempt], [attempt]]);
+    expect(attempt.client_import_id).toBe("case-import-7201-7301-stable-nonce");
+  });
+
+  it("治理 CAS 冲突只刷新权威列表且绝不自动重放", async () => {
+    const mutate = vi.fn().mockRejectedValue(new AdminApiError("版本冲突", 409));
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const mutation = {
+      caseRef: "rwc_public_001",
+      payload: { expected_version: 4, split: "regression" as const },
+    };
+
+    const result = await submitGovernanceMutation(mutation, mutate, refresh);
+
+    expect(result.outcome).toBe("conflict");
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledWith(mutation.caseRef, mutation.payload);
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 });

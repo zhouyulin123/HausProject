@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     effect_render_worker_retry_base_seconds: int = Field(default=5, ge=1, le=600)
     # 阶段 4 失败分诊报告验签；未配置时管理端同步接口关闭。
     eval_report_signing_key: str = ""
+    eval_report_signing_key_id: str = Field(
+        default="",
+        max_length=100,
+        pattern=r"^(?:[A-Za-z0-9._:-]+)?$",
+    )
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),

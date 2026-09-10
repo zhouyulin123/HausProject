@@ -113,6 +113,41 @@ describe("useDesignProjectStore", () => {
     ).toBe("客厅实际宽度是多少？");
   });
 
+  it("忽略晚到的旧 Agent checkpoint，不回退项目状态版本", () => {
+    useDesignProjectStore.getState().registerProject(49, "custom_furniture", {
+      requirement: emptyRequirement,
+      roomModel: null,
+    });
+    useDesignProjectStore.getState().applyAgentState(49, {
+      stateVersion: 8,
+      status: "completed",
+      activeMode: "custom_furniture",
+      pendingQuestions: [],
+      sceneRef: null,
+      exitReason: "goal_completed",
+    });
+    const updatedAt = useDesignProjectStore.getState().projects[49]?.updatedAt;
+
+    useDesignProjectStore.getState().applyAgentState(49, {
+      stateVersion: 7,
+      status: "waiting_user",
+      activeMode: "custom_furniture",
+      pendingQuestions: [
+        { field: "stale", prompt: "旧问题", reason: "延迟响应" },
+      ],
+      sceneRef: null,
+      exitReason: "missing_facts",
+    });
+
+    expect(useDesignProjectStore.getState().projects[49]).toMatchObject({
+      stateVersion: 8,
+      status: "completed",
+      pendingQuestions: [],
+      exitReason: "goal_completed",
+      updatedAt,
+    });
+  });
+
   it("完整保留服务端执行快照和工具事件", () => {
     useDesignProjectStore.getState().registerProject(46, "catalog_design", {
       requirement: emptyRequirement,
@@ -330,7 +365,21 @@ describe("useDesignProjectStore", () => {
     useDesignProjectStore.getState().setCustomFurnitureDraftReference(48, {
       clientMutationId: "draft-custom-001",
       specSignature: "stable-spec-signature",
-    });
+    }, 4);
+    expect(useDesignProjectStore.getState().projects[48]?.customFurnitureDraftReference)
+      .toEqual({
+        clientMutationId: "draft-custom-001",
+        specSignature: "stable-spec-signature",
+      });
+    expect(useDesignProjectStore.getState().projects[48]?.stateVersion).toBe(4);
+    const updatedAt = useDesignProjectStore.getState().projects[48]?.updatedAt;
+
+    useDesignProjectStore.getState().setCustomFurnitureDraftReference(48, {
+      clientMutationId: "draft-custom-older",
+      specSignature: "older-spec-signature",
+    }, 3);
+    expect(useDesignProjectStore.getState().projects[48]?.stateVersion).toBe(4);
+    expect(useDesignProjectStore.getState().projects[48]?.updatedAt).toBe(updatedAt);
     expect(useDesignProjectStore.getState().projects[48]?.customFurnitureDraftReference)
       .toEqual({
         clientMutationId: "draft-custom-001",

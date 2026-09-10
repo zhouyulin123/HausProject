@@ -12,6 +12,18 @@ from app.services import real_world_readiness_service
 from evals.real_world import RealWorldCase, RealWorldDataset
 
 
+def _task_input() -> dict:
+    return {
+        "raw_user_input": "设计一个已脱敏的测试空间",
+        "confirmed_requirement": {"space_type": "客厅"},
+        "space_type": "客厅",
+        "style": None,
+        "budget_min": None,
+        "budget_max": None,
+        "image_context": ["已脱敏空间事实"],
+    }
+
+
 def _write_manifest(root: Path) -> Path:
     asset_dir = root / "assets"
     asset_dir.mkdir()
@@ -29,6 +41,7 @@ def _write_manifest(root: Path) -> Path:
             "label_version": "labels-1",
             "allowed_purposes": ["offline_evaluation"],
             "failure_tags": [],
+            "task_input": _task_input(),
         },
         {
             "id": "regression-1",
@@ -41,6 +54,7 @@ def _write_manifest(root: Path) -> Path:
             "label_version": "labels-1",
             "allowed_purposes": ["offline_evaluation"],
             "failure_tags": [],
+            "task_input": _task_input(),
         },
         {
             "id": "blind-1",
@@ -53,6 +67,7 @@ def _write_manifest(root: Path) -> Path:
             "label_version": "labels-1",
             "allowed_purposes": [],
             "failure_tags": [],
+            "task_input": _task_input(),
         },
         {
             "id": "unassigned-1",
@@ -65,6 +80,7 @@ def _write_manifest(root: Path) -> Path:
             "label_version": None,
             "allowed_purposes": [],
             "failure_tags": [],
+            "task_input": _task_input(),
         },
     ]
     manifest = root / "manifest.json"
@@ -123,6 +139,22 @@ def test_default_manifest_uses_project_asset_root():
     assert result["eligible_total"] == 0
     assert result["private_real_eligible_total"] == 0
     assert result["blocked_total"] == 4
+    assert result["blocker_counts"]["task_input_missing"] == 4
+
+
+def test_readiness_fails_closed_when_governance_is_ready_but_task_input_missing(
+    tmp_path,
+):
+    manifest = _write_manifest(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["cases"][0].pop("task_input")
+    manifest.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    result = build_real_world_readiness(manifest)
+
+    assert result["eligible_total"] == 0
+    assert result["split_counts"]["development"]["eligible"] == 0
+    assert result["blocker_counts"]["task_input_missing"] == 1
 
 
 def test_synthetic_case_cannot_satisfy_private_real_minimum(tmp_path, monkeypatch):
@@ -165,6 +197,7 @@ def _eligible_case(case_id: str, split: str, origin: str = "private_real"):
         label_version="labels-v1",
         allowed_purposes=("offline_evaluation",),
         failure_tags=(),
+        task_input=_task_input(),
     )
 
 

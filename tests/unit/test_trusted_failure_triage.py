@@ -38,6 +38,15 @@ def _dataset() -> RealWorldDataset:
                 label_version="labels-v2",
                 allowed_purposes=("offline_evaluation",),
                 failure_tags=(),
+                task_input={
+                    "raw_user_input": "设计一个已脱敏的测试客厅",
+                    "confirmed_requirement": {"space_type": "客厅"},
+                    "space_type": "客厅",
+                    "style": None,
+                    "budget_min": None,
+                    "budget_max": None,
+                    "image_context": ["已脱敏空间事实"],
+                },
             ),
         ),
     )

@@ -22,7 +22,7 @@ def frozen_catalog_suggestion(
         "dataVersion": data_version,
         "recordVersion": record_version,
         "catalogEligibility": {
-            "schemaVersion": "1.0",
+            "schemaVersion": "1.1",
             "checkedAt": "2026-09-01T00:00:00+00:00",
             "sku": sku,
             "quantity": quantity,
@@ -38,14 +38,22 @@ def frozen_catalog_suggestion(
             "facts": {
                 "isActive": True,
                 "dataOrigin": "merchant_verified",
+                "sourceName": "受控评测供应商目录",
+                "sourceUrl": None,
+                "sourceProductId": sku,
+                "sourceRetrievedAt": "2026-08-31T22:00:00+00:00",
+                "priceObservedAt": "2026-08-31T23:00:00+00:00",
                 "verificationStatus": "verified",
+                "verifiedAt": "2026-08-31T23:30:00+00:00",
+                "verifiedBy": "eval-fixture:catalog-reviewer",
+                "dataVersion": data_version,
                 "availabilityStatus": "in_stock",
                 "stockQuantity": max(10, quantity),
                 "leadTimeDaysMin": None,
                 "leadTimeDaysMax": None,
                 "priceValidFrom": "2026-01-01T00:00:00+00:00",
                 "priceValidTo": "2027-01-01T00:00:00+00:00",
-                "regionCodes": [],
+                "regionCodes": ["*"],
                 "dimensionsMm": {"width": 1000, "depth": 800, "height": 900},
             },
             "eligible": True,
@@ -73,6 +81,18 @@ def write_v2_manifest(
     enriched_cases: list[dict[str, Any]] = []
     for raw_case in cases:
         case = dict(raw_case)
+        case.setdefault(
+            "task_input",
+            {
+                "raw_user_input": "设计一个已脱敏的测试客厅",
+                "confirmed_requirement": {"space_type": "客厅"},
+                "space_type": "客厅",
+                "style": None,
+                "budget_min": None,
+                "budget_max": None,
+                "image_context": ["已脱敏空间事实"],
+            },
+        )
         if case.get("annotation_status") == "ready":
             asset_path = root / str(case["asset_path"])
             asset_digest = hashlib.sha256(asset_path.read_bytes()).hexdigest()

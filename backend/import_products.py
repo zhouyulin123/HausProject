@@ -15,9 +15,11 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 from openpyxl import Workbook, load_workbook
+from sqlalchemy import select
 
 from app.db.database import Base, SessionLocal, engine
 from app.db.models import CustomQuoteRule, Product
+from app.services import product_commercial_service
 
 PRODUCT_HEADERS = [
     "sku", "名称", "类别", "空间", "风格", "材质", "参考价", "价格上限",
@@ -25,6 +27,7 @@ PRODUCT_HEADERS = [
     "启用状态", "人工复核状态", "价格备注",
     "可售状态", "地区代码", "库存数量", "最短交期(天)", "最长交期(天)",
     "价格生效时间", "价格失效时间", "复核负责人", "数据版本", "替代SKU",
+    "record_version",
 ]
 RULE_HEADERS = ["项目名", "分类", "计价单位", "材料档位", "单价", "说明"]
 
@@ -169,9 +172,7 @@ def parse_product_row(
         "人工复核状态",
         {"待复核": "pending_manual_review", "已复核": "manual_verified"},
     )
-    product["verification_status"] = (
-        "verified" if review_status == "manual_verified" else "draft"
-    )
+    product["verification_status"] = "draft"
     if "可售状态" in cells:
         product["availability_status"] = _controlled_value(
             cells.get("可售状态", "未知"),
@@ -199,16 +200,11 @@ def parse_product_row(
     }.items():
         if header in cells:
             product[field] = _datetime_value(cells.get(header), header)
-    if "复核负责人" in cells:
-        product["verified_by"] = cells.get("复核负责人")
+    source_reviewed_by = cells.get("复核负责人")
     if "数据版本" in cells:
         product["data_version"] = cells.get("数据版本") or "draft-v1"
     if "替代SKU" in cells:
         product["alternative_skus"] = _code_list(cells.get("替代SKU"))
-    if product["verification_status"] == "verified":
-        product["verified_at"] = datetime.now(timezone.utc)
-        if not product.get("verified_by"):
-            raise ValueError("已复核商品必须填写复核负责人")
     if (
         product.get("lead_time_days_min") is not None
         and product.get("lead_time_days_max") is not None
@@ -225,13 +221,27 @@ def parse_product_row(
         raise ValueError("价格上限不能低于参考价")
     if product["sku"].upper() in product.get("alternative_skus", []):
         raise ValueError("替代 SKU 不能包含商品自身")
-    return {"product": product, "review_status": review_status}
+    expected_record_version = None
+    if "record_version" in cells:
+        expected_record_version = _positive_int(
+            cells.get("record_version"),
+            "record_version",
+        )
+    return {
+        "product": product,
+        "review_status": review_status,
+        "source_reviewed_by": source_reviewed_by,
+        "expected_record_version": expected_record_version,
+    }
 
 
 def upsert_product_rows(
     db,
     headers: Sequence[Any],
     rows: Iterable[Sequence[Any]],
+    *,
+    actor: str = "system:excel_import",
+    request_id: str | None = None,
 ) -> dict[str, int]:
     """整批校验后按 SKU 回写，拒绝覆盖官网公开参考商品。"""
     parsed_rows = []
@@ -251,7 +261,9 @@ def upsert_product_rows(
         raise ValueError("商品主表存在重复 SKU")
     existing = {
         product.sku: product
-        for product in db.query(Product).filter(Product.sku.in_(skus)).all()
+        for product in db.scalars(
+            select(Product).where(Product.sku.in_(skus)).with_for_update()
+        ).all()
     }
     conflicts = [
         sku for sku, product in existing.items()
@@ -261,13 +273,39 @@ def upsert_product_rows(
         db.rollback()
         raise ValueError(f"拒绝覆盖公开参考商品：{', '.join(sorted(conflicts))}")
 
+    version_conflicts: list[str] = []
+    for parsed in parsed_rows:
+        sku = parsed["product"]["sku"]
+        product = existing.get(sku)
+        if product is None:
+            continue
+        expected = parsed["expected_record_version"]
+        current = product.record_version or 1
+        if expected is None:
+            version_conflicts.append(f"{sku} 缺少 record_version（当前 {current}）")
+        elif expected != current:
+            version_conflicts.append(
+                f"{sku} 的 record_version 为 {expected}，当前为 {current}"
+            )
+    if version_conflicts:
+        db.rollback()
+        raise ValueError("商品批次版本预检失败：" + "；".join(version_conflicts))
+
     result = {"added": 0, "updated": 0, "skipped": skipped}
+    audit_request_id = product_commercial_service.request_id_or_new(
+        request_id,
+        prefix="excel-import",
+    )
     try:
         for parsed in parsed_rows:
             data = parsed["product"]
             sku = data["sku"]
             product = existing.get(sku)
             if product is None:
+                before = {
+                    field: None
+                    for field in product_commercial_service.AUDITED_FIELDS
+                }
                 required = [field for field in ("name", "category", "room", "style", "price") if not data.get(field)]
                 if required:
                     raise ValueError(f"新增商品 {sku} 缺少字段：{', '.join(required)}")
@@ -275,6 +313,7 @@ def upsert_product_rows(
                 db.add(product)
                 result["added"] += 1
             else:
+                before = product_commercial_service.snapshot_product_fields(product)
                 previous_version = product.record_version or 1
                 for field, value in data.items():
                     setattr(product, field, value)
@@ -282,15 +321,32 @@ def upsert_product_rows(
                 result["updated"] += 1
 
             product.data_origin = "merchant_draft"
+            product.verification_status = "draft"
+            product.verified_at = None
+            product.verified_by = None
             product.source_name = "内部商品主表"
             product.source_url = None
             product.source_product_id = sku
             product.source_metadata = {
                 **(product.source_metadata or {}),
                 "verification_status": parsed["review_status"],
+                "source_reviewed_by": parsed["source_reviewed_by"],
                 "workbook_schema": "catalog-v1",
                 "editable_fields": ["name", "material", "price", "price_max", "size"],
             }
+            db.flush()
+            product_commercial_service.append_product_audit_event(
+                db,
+                product=product,
+                event_type=(
+                    "commercial_excel_created"
+                    if existing.get(sku) is None
+                    else "commercial_excel_updated"
+                ),
+                actor=actor,
+                request_id=audit_request_id,
+                before=before,
+            )
         db.commit()
     except Exception:
         db.rollback()

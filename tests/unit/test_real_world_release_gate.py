@@ -17,6 +17,7 @@ from evals.real_world import (
 )
 from evals.release_change_detection import classify_release_sensitive_paths
 from evals.real_world_release_gate import (
+    _collector_args,
     _generate_candidate_failure_triage_artifacts,
     _publish_failure_triage_artifacts,
     VerifiedReleaseSplit,
@@ -26,6 +27,7 @@ from evals.real_world_release_gate import (
     validate_candidate_review_coverage,
     validate_release_cohort,
     validate_release_dataset,
+    validate_release_dataset_sources,
     validate_release_evidence,
     validate_release_event,
 )
@@ -327,6 +329,117 @@ def test_gate_config_requires_all_splits_and_never_accepts_inline_secrets(tmp_pa
         load_release_gate_config(path)
 
 
+def test_gate_config_accepts_one_shared_governance_revision_for_all_splits(tmp_path):
+    config = {
+        "schema_version": "1.0",
+        "splits": {
+            split: {
+                "dataset_version": "governance-2026-09-10.1",
+                "review_root": f"private/{split}/reviews",
+                "run_bindings": f"private/{split}/bindings.json",
+                "security_targets": f"private/{split}/security-targets.json",
+                "baseline_evidence": f"private/{split}/baseline.evidence.json",
+                "deployment_base_url": "https://eval.example.test",
+            }
+            for split in ("development", "regression", "blind")
+        },
+    }
+    path = tmp_path / "gate.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    loaded = load_release_gate_config(path)
+
+    assert {item.dataset_version for item in loaded.values()} == {
+        "governance-2026-09-10.1"
+    }
+    assert _collector_args(loaded["blind"], "blind") == [
+        "--dataset-version",
+        "governance-2026-09-10.1",
+        "--split",
+        "blind",
+        "--review-root",
+        str((tmp_path / "private/blind/reviews").resolve()),
+    ]
+
+
+def test_gate_config_rejects_mixed_or_mismatched_dataset_sources(tmp_path):
+    common = {
+        "run_bindings": "bindings.json",
+        "security_targets": "security-targets.json",
+        "baseline_evidence": "baseline.evidence.json",
+        "deployment_base_url": "https://eval.example.test",
+    }
+    config = {
+        "schema_version": "1.0",
+        "splits": {
+            "development": {
+                **common,
+                "dataset_version": "governance-1",
+                "review_root": "development/reviews",
+            },
+            "regression": {
+                **common,
+                "dataset_version": "governance-2",
+                "review_root": "regression/reviews",
+            },
+            "blind": {
+                **common,
+                "manifest": "blind/manifest.json",
+                "asset_root": "blind",
+            },
+        },
+    }
+    path = tmp_path / "gate.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(EvaluationInputError, match="同一数据源|同一冻结版本"):
+        load_release_gate_config(path)
+
+
+def test_protected_release_proof_rejects_static_manifest_configs(tmp_path):
+    config = {
+        "schema_version": "1.0",
+        "splits": {
+            split: {
+                "manifest": f"private/{split}/manifest.json",
+                "asset_root": f"private/{split}",
+                "run_bindings": f"private/{split}/bindings.json",
+                "security_targets": f"private/{split}/security-targets.json",
+                "baseline_evidence": f"private/{split}/baseline.evidence.json",
+                "deployment_base_url": "https://eval.example.test",
+            }
+            for split in ("development", "regression", "blind")
+        },
+    }
+    path = tmp_path / "gate.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    loaded = load_release_gate_config(path)
+
+    with pytest.raises(EvaluationInputError, match="治理冻结版本"):
+        validate_release_dataset_sources(loaded)
+
+
+def test_governance_release_config_requires_review_root_for_every_split(tmp_path):
+    config = {
+        "schema_version": "1.0",
+        "splits": {
+            split: {
+                "dataset_version": "governance-2026-09-10.1",
+                "run_bindings": "bindings.json",
+                "security_targets": "security-targets.json",
+                "baseline_evidence": "baseline.evidence.json",
+                "deployment_base_url": "https://eval.example.test",
+            }
+            for split in ("development", "regression", "blind")
+        },
+    }
+    path = tmp_path / "gate.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(EvaluationInputError, match="字段不完整|review_root"):
+        load_release_gate_config(path)
+
+
 def test_controlled_workflow_contract_is_fail_closed():
     repo_root = Path(__file__).resolve().parents[2]
     workflow = (
@@ -339,8 +452,11 @@ def test_controlled_workflow_contract_is_fail_closed():
     assert "pull_request:" not in workflow
     assert "runs-on: [self-hosted" in workflow
     assert "environment: real-world-evaluation" in workflow
+    assert 'REAL_WORLD_PROTECTED_EVAL: "1"' in workflow
+    assert "REAL_WORLD_RUNNER_ENVIRONMENT: ${{ runner.environment }}" in workflow
     assert "EVAL_EVIDENCE_HMAC_KEY: ${{ secrets." in workflow
     assert "SECURITY_EVIDENCE_HMAC_KEY: ${{ secrets." in workflow
+    assert "UPLOAD_DIR: ${{ secrets.REAL_WORLD_EVAL_UPLOAD_DIR }}" in workflow
     assert "EVAL_CASE_ID_SALT: ${{ secrets." in workflow
     assert "EVAL_CASE_ID_SALT_ID: ${{ secrets." in workflow
     assert "EVAL_REPORT_SIGNING_KEY: ${{ secrets." in workflow
@@ -681,14 +797,19 @@ def test_triage_generation_failure_fails_release_gate_with_redacted_report(
         real_world_release_gate,
         "load_release_gate_config",
         lambda _path: {
-            split: SimpleNamespace(manifest=tmp_path, asset_root=tmp_path)
+            split: SimpleNamespace(
+                manifest=None,
+                asset_root=None,
+                dataset_version="governance-2026-09-10.1",
+                review_root=tmp_path,
+            )
             for split in real_world_release_gate.REQUIRED_SPLITS
         },
     )
     monkeypatch.setattr(
         real_world_release_gate,
-        "load_case_manifest",
-        lambda *_args, **_kwargs: dataset,
+        "load_dataset_source",
+        lambda **_kwargs: (dataset, tmp_path),
     )
     monkeypatch.setattr(
         real_world_release_gate,

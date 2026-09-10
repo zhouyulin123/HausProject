@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 
@@ -30,6 +31,8 @@ _PROOF_SCHEMA_VERSION = "1.0"
 _PROOF_TYPE = "real_world_release_proof"
 _PROOF_ALGORITHM = "ed25519"
 _MAX_PROOF_BYTES = 128 * 1024
+_DEFAULT_PROOF_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+_MAX_CLOCK_SKEW = timedelta(minutes=5)
 
 # 这是发布契约，不根据文件内容猜测。新增生成链制品时必须同步更新映射和测试。
 SENSITIVE_PATHS: Mapping[str, tuple[str, ...]] = {
@@ -52,6 +55,19 @@ SENSITIVE_PATHS: Mapping[str, tuple[str, ...]] = {
         "backend/app/services/custom_furniture_service.py",
         "backend/app/schemas/custom_furniture.py",
         "backend/migrations/versions/",
+    ),
+    "open_geometry": (
+        "backend/app/services/design_agent_service.py",
+        "backend/app/services/open_geometry_service.py",
+        "backend/app/services/open_geometry_contract.py",
+        "backend/app/schemas/open_geometry.py",
+        "shared/furniture_open_geometry_contract.json",
+        "skills/furniture-open-geometry/",
+        "frontend/src/lib/openGeometryRenderer.ts",
+        "frontend/src/components/furniture/DeterministicFurnitureModel3D.tsx",
+        "backend/evals/open_geometry.py",
+        "backend/evals/run_open_geometry_eval.py",
+        "backend/evals/cases/open_geometry.py",
     ),
     "release": (
         "backend/evals/release_change_detection.py",
@@ -167,6 +183,9 @@ def verify_release_proof(
     *,
     expected_commit_sha: str,
     public_key_b64: str,
+    expected_key_id: str,
+    max_age: timedelta = timedelta(seconds=_DEFAULT_PROOF_MAX_AGE_SECONDS),
+    now: datetime | None = None,
 ) -> dict[str, object]:
     """仅验签脱敏 proof，不加载 proof 以外的任何真实评测资源。"""
     proof_path = Path(path).resolve()
@@ -213,6 +232,17 @@ def verify_release_proof(
         raise ValueError("发布证明 issued_at 不合法") from exc
     if parsed_issued_at.tzinfo is None:
         raise ValueError("发布证明 issued_at 必须包含时区")
+    if max_age <= timedelta(0):
+        raise ValueError("发布证明最大有效期必须大于 0")
+    checked_at = now or datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        raise ValueError("发布证明校验时间必须包含时区")
+    checked_at = checked_at.astimezone(timezone.utc)
+    parsed_issued_at = parsed_issued_at.astimezone(timezone.utc)
+    if parsed_issued_at > checked_at + _MAX_CLOCK_SKEW:
+        raise ValueError("发布证明 issued_at 来自未来")
+    if checked_at - parsed_issued_at > max_age:
+        raise ValueError("发布证明已过期")
     signature = payload["signature"]
     if not isinstance(signature, dict) or set(signature) != {
         "algorithm",
@@ -224,6 +254,10 @@ def verify_release_proof(
         raise ValueError("发布证明签名算法不受支持")
     if not isinstance(signature["key_id"], str) or not signature["key_id"].strip():
         raise ValueError("发布证明签名 key_id 缺失")
+    if not isinstance(expected_key_id, str) or not expected_key_id.strip():
+        raise ValueError("预期发布证明 key_id 缺失")
+    if not hmac.compare_digest(signature["key_id"].strip(), expected_key_id.strip()):
+        raise ValueError("发布证明签名 key_id 不匹配")
     try:
         signature_value = base64.b64decode(signature["value"], validate=True)
     except (ValueError, TypeError) as exc:
@@ -328,6 +362,14 @@ def main(argv: list[str] | None = None) -> int:
         "--proof-public-key-env",
         default="REAL_WORLD_RELEASE_PROOF_PUBLIC_KEY_B64",
     )
+    parser.add_argument(
+        "--proof-key-id-env",
+        default="REAL_WORLD_RELEASE_PROOF_KEY_ID",
+    )
+    parser.add_argument(
+        "--proof-max-age-seconds-env",
+        default="REAL_WORLD_RELEASE_PROOF_MAX_AGE_SECONDS",
+    )
     args = parser.parse_args(argv)
     try:
         paths = changed_paths_between(
@@ -340,10 +382,20 @@ def main(argv: list[str] | None = None) -> int:
         if changes.required and not args.detect_only:
             if args.proof_file is None:
                 raise ValueError("敏感变更必须提供受保护环境签发的发布证明")
+            max_age_raw = os.environ.get(
+                args.proof_max_age_seconds_env,
+                str(_DEFAULT_PROOF_MAX_AGE_SECONDS),
+            )
+            try:
+                max_age_seconds = int(max_age_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("发布证明最大有效期配置不合法") from exc
             proof = verify_release_proof(
                 args.proof_file,
                 expected_commit_sha=args.head_ref,
                 public_key_b64=os.environ.get(args.proof_public_key_env, ""),
+                expected_key_id=os.environ.get(args.proof_key_id_env, ""),
+                max_age=timedelta(seconds=max_age_seconds),
             )
     except (OSError, subprocess.CalledProcessError, ValueError):
         print("REAL_WORLD_CHANGE_DETECTION_ERROR=proof_missing_or_invalid")

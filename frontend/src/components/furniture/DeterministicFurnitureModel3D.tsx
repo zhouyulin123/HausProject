@@ -12,6 +12,7 @@ import {
   RepeatWrapping,
   Shape,
   ExtrudeGeometry,
+  Vector2,
   Vector3,
 } from "three";
 import { RoundedBoxGeometry } from "three-stdlib";
@@ -461,6 +462,61 @@ function RoundedGenericPart({ part, material, wood }: { part: DeterministicModel
   );
 }
 
+function OpenGeometryPart({ part, material }: { part: DeterministicModelPart; material: DeterministicMaterialSlot }) {
+  const parameters = part.几何参数;
+  const position = part.位置_mm.map((value) => value / 1000) as [number, number, number];
+  const rotation = part.旋转_deg.map((value) => value * Math.PI / 180) as [number, number, number];
+  const path = useMemo(
+    () => new CatmullRomCurve3(
+      (parameters?.path_mm ?? []).map((point) => new Vector3(...point.map((value) => value / 1000) as [number, number, number])),
+      parameters?.closed ?? false,
+      "centripetal",
+    ),
+    [parameters?.closed, parameters?.path_mm],
+  );
+  const profile = useMemo(
+    () => (parameters?.profile_mm ?? []).map((point) => new Vector2(point[0] / 1000, point[1] / 1000)),
+    [parameters?.profile_mm],
+  );
+  if (part.几何 === "box") {
+    const size = (parameters?.size_mm ?? [1, 1, 1]).map((value) => value / 1000) as [number, number, number];
+    const radius = Math.min((parameters?.radius_mm ?? 0) / 1000, Math.min(...size) / 2);
+    return (
+      <RoundedBox args={size} radius={Math.max(radius, 0.0005)} smoothness={4} position={position} rotation={rotation} castShadow receiveShadow>
+        <PartMaterial slot={material} />
+      </RoundedBox>
+    );
+  }
+  if (part.几何 === "cylinder") {
+    const radius = (parameters?.radius_mm ?? 1) / 1000;
+    const topRadius = (parameters?.top_radius_mm ?? parameters?.radius_mm ?? 1) / 1000;
+    return <mesh position={position} rotation={rotation} castShadow receiveShadow>
+      <cylinderGeometry args={[topRadius, radius, (parameters?.height_mm ?? 1) / 1000, parameters?.radial_segments ?? 32]} />
+      <PartMaterial slot={material} />
+    </mesh>;
+  }
+  if (part.几何 === "sphere") {
+    const radius = (parameters?.radius_mm ?? 1) / 1000;
+    return <mesh position={position} rotation={rotation} scale={parameters?.scale ?? [1, 1, 1]} castShadow receiveShadow>
+      <sphereGeometry args={[radius, parameters?.segments ?? 32, Math.max(8, Math.round((parameters?.segments ?? 32) * 0.75))]} />
+      <PartMaterial slot={material} />
+    </mesh>;
+  }
+  if (part.几何 === "sweep" && (parameters?.path_mm?.length ?? 0) >= 3) {
+    return <mesh position={position} rotation={rotation} castShadow receiveShadow>
+      <tubeGeometry args={[path, parameters?.tubular_segments ?? 32, (parameters?.radius_mm ?? 1) / 1000, parameters?.radial_segments ?? 12, parameters?.closed ?? false]} />
+      <PartMaterial slot={material} />
+    </mesh>;
+  }
+  if (part.几何 === "lathe" && profile.length >= 3) {
+    return <mesh position={position} rotation={rotation} castShadow receiveShadow>
+      <latheGeometry args={[profile, parameters?.segments ?? 32]} />
+      <PartMaterial slot={material} />
+    </mesh>;
+  }
+  return null;
+}
+
 function TexturedPanelPart({ part, material }: { part: DeterministicModelPart; material: DeterministicMaterialSlot }) {
   const { size, position, rotation } = modelPartTransform(part);
   const radius = Math.min((part.圆角_mm ?? 5) / 1000, Math.min(...size) * 0.45);
@@ -552,6 +608,10 @@ function RulePart({
   appearance?: UpholsteryAppearance;
   wood?: WoodAppearance;
 }) {
+  if (["box", "sweep", "lathe"].includes(part.几何)
+      || (part.几何 === "cylinder" || part.几何 === "sphere") && Boolean(part.几何参数)) {
+    return <OpenGeometryPart part={part} material={material} />;
+  }
   if (
     part.几何 === "tapered_wood_leg"
     || part.几何 === "top_pivot_tapered_wood_leg"
@@ -610,7 +670,7 @@ export default function DeterministicFurnitureModel3D({
   const appearance = rule.外观规则.软包 ? upholsteryAppearance(rule) : undefined;
   const wood = rule.外观规则.木材 ? woodAppearance(rule) : undefined;
   return (
-    <group name={rule.模型ID}>
+    <group name={rule.模型ID} scale={rule.全局缩放 ?? [1, 1, 1]}>
       {rule.部件.map((part) => {
         const material = materials.get(part.材质槽);
         if (!material) return null;

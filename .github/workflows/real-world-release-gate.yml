@@ -21,6 +21,8 @@ jobs:
       APP_ENV: test
       PYTHONPATH: backend
       GITHUB_EVENT_NAME: ${{ github.event_name }}
+      REAL_WORLD_PROTECTED_EVAL: "1"
+      REAL_WORLD_RUNNER_ENVIRONMENT: ${{ runner.environment }}
       REAL_WORLD_TARGET_SHA: ${{ inputs.target_sha }}
       REAL_WORLD_BASE_REF: origin/${{ github.event.repository.default_branch }}
       REAL_WORLD_RELEASE_GATE_CONFIG_PATH: ${{ secrets.REAL_WORLD_RELEASE_GATE_CONFIG_PATH }}
@@ -39,6 +41,7 @@ jobs:
       REAL_WORLD_RELEASE_PROOF_SIGNING_KEY_B64: ${{ secrets.REAL_WORLD_RELEASE_PROOF_SIGNING_KEY_B64 }}
       REAL_WORLD_RELEASE_PROOF_KEY_ID: ${{ vars.REAL_WORLD_RELEASE_PROOF_KEY_ID }}
       DATABASE_URL: ${{ secrets.REAL_WORLD_EVAL_DATABASE_URL }}
+      UPLOAD_DIR: ${{ secrets.REAL_WORLD_EVAL_UPLOAD_DIR }}
       LLM_MODEL: ${{ secrets.REAL_WORLD_EVAL_LLM_MODEL }}
       REAL_WORLD_RELEASE_GATE_OUTPUT_DIR: .test_artifacts/real-world-release-gate/${{ github.run_id }}-${{ github.run_attempt }}
     steps:

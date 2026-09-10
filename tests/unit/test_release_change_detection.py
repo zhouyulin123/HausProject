@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from evals.release_change_detection import (
     build_signed_release_proof,
+    classify_release_sensitive_paths,
     main,
     verify_release_proof,
 )
@@ -35,7 +37,12 @@ def _key_material() -> tuple[str, str]:
     )
 
 
-def _proof_payload(private_key_b64: str, *, commit_sha: str = COMMIT_SHA):
+def _proof_payload(
+    private_key_b64: str,
+    *,
+    commit_sha: str = COMMIT_SHA,
+    issued_at: str = "2026-09-08T00:00:00+00:00",
+):
     return build_signed_release_proof(
         {
             "schema_version": "1.0",
@@ -43,7 +50,7 @@ def _proof_payload(private_key_b64: str, *, commit_sha: str = COMMIT_SHA):
             "status": "passed",
             "overall_passed": True,
             "commit_sha": commit_sha,
-            "issued_at": "2026-09-08T00:00:00+00:00",
+            "issued_at": issued_at,
             "app_build_digest": "sha256:" + "b" * 64,
             "change_detection": {
                 "required": True,
@@ -70,6 +77,8 @@ def test_signed_release_proof_is_verifiable_without_private_key(tmp_path: Path):
         proof_path,
         expected_commit_sha=COMMIT_SHA,
         public_key_b64=public_key_b64,
+        expected_key_id="release-proof-v1",
+        now=datetime(2026, 9, 8, 1, tzinfo=timezone.utc),
     )
 
     assert verified["commit_sha"] == COMMIT_SHA
@@ -108,9 +117,13 @@ def test_sensitive_change_without_or_with_invalid_proof_fails_closed(
 
     private_key_b64, public_key_b64 = _key_material()
     proof_path = tmp_path / "proof.json"
-    proof = _proof_payload(private_key_b64)
+    proof = _proof_payload(
+        private_key_b64,
+        issued_at=datetime.now(timezone.utc).isoformat(),
+    )
     proof_path.write_text(json.dumps(proof), encoding="utf-8")
     monkeypatch.setenv("REAL_WORLD_RELEASE_PROOF_PUBLIC_KEY_B64", public_key_b64)
+    monkeypatch.setenv("REAL_WORLD_RELEASE_PROOF_KEY_ID", "release-proof-v1")
     assert (
         main(
             [
@@ -220,6 +233,26 @@ def test_non_sensitive_change_does_not_require_proof(
     )
 
 
+def test_open_geometry_contract_and_renderer_changes_require_release_proof():
+    changes = classify_release_sensitive_paths(
+        [
+            "backend/app/services/open_geometry_service.py",
+            "backend/app/services/open_geometry_contract.py",
+            "backend/app/schemas/open_geometry.py",
+            "shared/furniture_open_geometry_contract.json",
+            "skills/furniture-open-geometry/SKILL.md",
+            "frontend/src/lib/openGeometryRenderer.ts",
+            "frontend/src/components/furniture/DeterministicFurnitureModel3D.tsx",
+            "backend/evals/open_geometry.py",
+            "backend/evals/run_open_geometry_eval.py",
+            "backend/evals/cases/open_geometry.py",
+        ]
+    )
+
+    assert changes.required is True
+    assert len(changes.by_category["open_geometry"]) == 10
+
+
 def test_release_proof_rejects_tampering_and_wrong_key(tmp_path: Path):
     private_key_b64, public_key_b64 = _key_material()
     proof = _proof_payload(private_key_b64)
@@ -232,4 +265,60 @@ def test_release_proof_rejects_tampering_and_wrong_key(tmp_path: Path):
             proof_path,
             expected_commit_sha=COMMIT_SHA,
             public_key_b64=public_key_b64,
+            expected_key_id="release-proof-v1",
+            now=datetime(2026, 9, 8, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_release_proof_rejects_wrong_key_id_and_stale_or_future_timestamp(
+    tmp_path: Path,
+):
+    private_key_b64, public_key_b64 = _key_material()
+    proof_path = tmp_path / "proof.json"
+    proof = _proof_payload(private_key_b64)
+    proof_path.write_text(json.dumps(proof), encoding="utf-8")
+    verification_time = datetime(2026, 9, 8, 1, tzinfo=timezone.utc)
+
+    with pytest.raises(ValueError, match="key_id"):
+        verify_release_proof(
+            proof_path,
+            expected_commit_sha=COMMIT_SHA,
+            public_key_b64=public_key_b64,
+            expected_key_id="release-proof-v2",
+            now=verification_time,
+        )
+
+    stale = _proof_payload(
+        private_key_b64,
+        issued_at=(verification_time - timedelta(days=8)).isoformat(),
+    )
+    proof_path.write_text(json.dumps(stale), encoding="utf-8")
+    with pytest.raises(ValueError, match="过期"):
+        verify_release_proof(
+            proof_path,
+            expected_commit_sha=COMMIT_SHA,
+            public_key_b64=public_key_b64,
+            expected_key_id="release-proof-v1",
+            now=verification_time,
+        )
+
+    future_report = {
+        "status": "passed",
+        "overall_passed": True,
+        "commit_sha": COMMIT_SHA,
+        "issued_at": (verification_time + timedelta(minutes=6)).isoformat(),
+    }
+    future = build_signed_release_proof(
+        future_report,
+        signing_key_b64=private_key_b64,
+        key_id="release-proof-v1",
+    )
+    proof_path.write_text(json.dumps(future), encoding="utf-8")
+    with pytest.raises(ValueError, match="未来"):
+        verify_release_proof(
+            proof_path,
+            expected_commit_sha=COMMIT_SHA,
+            public_key_b64=public_key_b64,
+            expected_key_id="release-proof-v1",
+            now=verification_time,
         )

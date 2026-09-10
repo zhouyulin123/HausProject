@@ -16,6 +16,7 @@ import type {
   CustomFurniturePreviewResult,
   CustomFurnitureSpecPatch,
 } from "@/types/customFurniture";
+import type { OpenGeometryCommandResult, OpenGeometryState } from "@/types/openGeometry";
 import type {
   DesignFeedbackEventRequest,
   DesignFeedbackEventResponse,
@@ -610,6 +611,32 @@ export interface AdminCatalogReadiness {
   reason_code_counts: Record<string, number>;
 }
 
+export type CommercialReviewDecision = "approve" | "reject";
+
+export interface ProductAuditChange {
+  before: unknown;
+  after: unknown;
+}
+
+export interface ProductAuditEvent {
+  id: number;
+  product_id: number;
+  event_type: string;
+  actor: string;
+  request_id: string;
+  changed_fields: string[];
+  changes: Record<string, ProductAuditChange>;
+  decision: CommercialReviewDecision | null;
+  resulting_status: AdminProduct["verification_status"];
+  resulting_record_version: number;
+  created_at: string;
+}
+
+export interface ProductAuditEventList {
+  items: ProductAuditEvent[];
+  count: number;
+}
+
 export interface QuoteRule {
   id: number;
   project_name: string;
@@ -648,23 +675,94 @@ export async function fetchAdminCatalogReadiness(
 export async function saveProduct(
   product: Partial<AdminProduct> & { name: string; price: number },
 ): Promise<AdminProduct> {
+  const writableFields = [
+    "name", "category", "room", "style", "price", "sku", "price_max",
+    "material", "size", "selling_point", "alternative", "image_url",
+    "data_origin", "source_name", "source_url", "source_product_id",
+    "source_retrieved_at", "price_observed_at", "price_note", "source_metadata",
+    "model_width_mm", "model_height_mm", "model_depth_mm", "model_license",
+    "model_source", "availability_status", "region_codes", "stock_quantity",
+    "lead_time_days_min", "lead_time_days_max", "price_valid_from",
+    "price_valid_to", "data_version", "alternative_skus",
+  ] as const;
+  const payload = Object.fromEntries(
+    writableFields.flatMap((field) => (
+      product[field] === undefined ? [] : [[field, product[field]]]
+    )),
+  );
   if (product.id) {
     if (!Number.isInteger(product.record_version) || !product.record_version) {
       throw new Error("编辑商品缺少记录版本，请刷新目录后重试");
     }
     return factoryRequest<AdminProduct>(`/api/products/${product.id}`, {
       method: "PATCH",
-      body: JSON.stringify(product),
+      body: JSON.stringify({ ...payload, record_version: product.record_version }),
     });
   }
   return factoryRequest<AdminProduct>("/api/products", {
     method: "POST",
-    body: JSON.stringify(product),
+    body: JSON.stringify(payload),
   });
 }
 
-export async function deleteProduct(id: number): Promise<void> {
-  await factoryRequest(`/api/products/${id}`, { method: "DELETE" });
+export async function deleteProduct(
+  id: number,
+  recordVersion: number,
+  idempotencyKey: string,
+): Promise<void> {
+  if (!Number.isInteger(recordVersion) || recordVersion < 1) {
+    throw new Error("停用商品缺少有效记录版本，请刷新目录后重试");
+  }
+  if (idempotencyKey.trim().length < 8) {
+    throw new Error("停用商品缺少有效幂等键");
+  }
+  const query = new URLSearchParams({
+    expected_record_version: String(recordVersion),
+  });
+  await factoryRequest(`/api/products/${id}?${query.toString()}`, {
+    method: "DELETE",
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+export async function reviewProductCommercially(
+  productId: number,
+  payload: {
+    decision: CommercialReviewDecision;
+    expectedRecordVersion: number;
+    note?: string | null;
+  },
+  idempotencyKey: string,
+): Promise<ProductAuditEvent> {
+  if (!Number.isInteger(payload.expectedRecordVersion) || payload.expectedRecordVersion < 1) {
+    throw new Error("商业审核缺少有效记录版本，请刷新目录后重试");
+  }
+  if (idempotencyKey.trim().length < 8) {
+    throw new Error("商业审核缺少有效幂等键");
+  }
+  const body: Record<string, unknown> = {
+    decision: payload.decision,
+    expected_record_version: payload.expectedRecordVersion,
+  };
+  if (payload.note != null) body.note = payload.note;
+  return factoryRequest<ProductAuditEvent>(
+    `/api/products/${productId}/commercial-review`,
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function fetchProductAuditEvents(
+  productId: number,
+  limit = 100,
+): Promise<ProductAuditEventList> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  return factoryRequest<ProductAuditEventList>(
+    `/api/products/${productId}/audit-events?${query.toString()}`,
+  );
 }
 
 export async function uploadProductImage(file: File): Promise<string> {
@@ -1110,6 +1208,26 @@ export async function addCustomFurnitureDraftToScene(
   );
 }
 
+/** 将服务端当前开放几何版本冻结后加入版本化房间。 */
+export async function addOpenGeometryToScene(
+  sceneId: number,
+  payload: {
+    baseVersion: number;
+    clientMutationId: string;
+    openGeometryVersion: number;
+    position: { x: number; z: number };
+    rotationY?: number;
+  },
+): Promise<DesignScene> {
+  return request<DesignScene>(
+    `/api/design/scenes/${sceneId}/open-geometry-items`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 /** 基于已知版本保存场景；服务端会拒绝过期版本，避免静默覆盖。 */
 export async function updateDesignScene(
   sceneId: number,
@@ -1399,6 +1517,7 @@ export interface AgentTurnRequest {
   client_turn_id: string;
   message: string;
   active_mode: AgentActiveMode;
+  base_state_version?: number;
   active_room_id?: string | null;
   scene_id?: number | null;
   base_scene_version?: number | null;
@@ -1497,6 +1616,8 @@ export interface AgentTurnResponse {
   run_id: number | null;
   exit_reason: AgentExitReason;
   result: CustomFurniturePreviewResult | Record<string, unknown> | null;
+  open_geometry: OpenGeometryState | null;
+  partialCompletion: boolean;
 }
 
 export interface DesignAgentStateResponse {
@@ -1534,6 +1655,7 @@ export interface DesignAgentStateResponse {
   turn_execution_deadline_at: string | null;
   exit_reason: AgentExitReason;
   result: CustomFurniturePreviewResult | Record<string, unknown> | null;
+  open_geometry: OpenGeometryState | null;
   /** 服务端持久化历史；刷新时覆盖本地瞬时消息缓存。 */
   messages: { id: number; role: "user" | "ai"; content: string; created_at: string | null }[];
 }
@@ -1653,6 +1775,44 @@ export async function fetchDesignAgentState(
 ): Promise<DesignAgentStateResponse> {
   return request<DesignAgentStateResponse>(
     `/api/design/tasks/${taskId}/agent-state`,
+  );
+}
+
+export async function fetchOpenGeometryState(taskId: number): Promise<OpenGeometryState> {
+  return request<OpenGeometryState>(`/api/design/tasks/${taskId}/open-geometry`);
+}
+
+export async function sendOpenGeometryCommand(
+  taskId: number,
+  payload: { clientMutationId: string; baseVersion: number; instruction: string },
+): Promise<OpenGeometryCommandResult> {
+  return request<OpenGeometryCommandResult>(
+    `/api/design/tasks/${taskId}/open-geometry/commands`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        client_mutation_id: payload.clientMutationId,
+        base_version: payload.baseVersion,
+        instruction: payload.instruction,
+      }),
+    },
+  );
+}
+
+export async function restoreOpenGeometryVersion(
+  taskId: number,
+  payload: { clientMutationId: string; baseVersion: number; targetVersion: number },
+): Promise<OpenGeometryCommandResult> {
+  return request<OpenGeometryCommandResult>(
+    `/api/design/tasks/${taskId}/open-geometry/restore`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        client_mutation_id: payload.clientMutationId,
+        base_version: payload.baseVersion,
+        target_version: payload.targetVersion,
+      }),
+    },
   );
 }
 

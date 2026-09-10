@@ -96,6 +96,7 @@ def test_failure_triage_api_is_admin_only_strict_and_private(monkeypatch):
 
     app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr(settings, "eval_report_signing_key", _SIGNING_KEY)
+    monkeypatch.setattr(settings, "eval_report_signing_key_id", "eval-key-v1")
     try:
         with TestClient(app) as client:
             url = "/api/admin/quality/failure-clusters/sync"
@@ -112,6 +113,14 @@ def test_failure_triage_api_is_admin_only_strict_and_private(monkeypatch):
             forged["failures"][0]["occurrence_count"] = 99
             assert client.post(url, json=forged).status_code == 422
 
+            wrong_key_id = _report()
+            wrong_key_id["signature_key_id"] = "other-eval-key"
+            wrong_key_id["signature"] = sign_failure_triage_payload(
+                wrong_key_id,
+                signing_key=_SIGNING_KEY,
+            )
+            assert client.post(url, json=wrong_key_id).status_code == 422
+
             created = client.post(url, json=_report())
             duplicate = client.post(url, json=_report())
             assert created.status_code == duplicate.status_code == 200
@@ -124,6 +133,7 @@ def test_failure_triage_api_is_admin_only_strict_and_private(monkeypatch):
             assert body["summary"]["by_severity"] == {"critical": 1}
             assert body["summary"]["by_status"] == {"open": 1}
             assert body["items"][0]["code"] == "quote_mismatch"
+            assert body["items"][0]["record_version"] == 1
             cluster_id = body["items"][0]["id"]
             cluster_url = f"/api/admin/quality/failure-clusters/{cluster_id}"
             assert client.patch(
@@ -132,19 +142,53 @@ def test_failure_triage_api_is_admin_only_strict_and_private(monkeypatch):
             ).status_code == 422
             assert client.patch(
                 cluster_url,
-                json={"status": "resolved", "fixed_version": "rules-2"},
+                json={"status": "in_progress", "owner": "missing-version"},
+            ).status_code == 422
+            assert client.patch(
+                cluster_url,
+                json={
+                    "expected_version": 1,
+                    "status": "resolved",
+                    "fixed_version": "rules-2",
+                },
             ).status_code == 409
-            assert client.patch(
+            claimed = client.patch(
                 cluster_url,
-                json={"status": "in_progress", "owner": "quality-admin"},
-            ).status_code == 200
-            assert client.patch(
+                json={
+                    "expected_version": 1,
+                    "status": "in_progress",
+                    "owner": "quality-admin",
+                },
+            )
+            assert claimed.status_code == 200
+            assert claimed.json()["record_version"] == 2
+            stale = client.patch(
                 cluster_url,
-                json={"status": "resolved", "fixed_version": "rules-2"},
-            ).status_code == 200
+                json={
+                    "expected_version": 1,
+                    "status": "in_progress",
+                    "owner": "stale-admin",
+                },
+            )
+            assert stale.status_code == 409
+            assert "版本" in stale.json()["detail"]
+            resolved = client.patch(
+                cluster_url,
+                json={
+                    "expected_version": 2,
+                    "status": "resolved",
+                    "fixed_version": "rules-2",
+                },
+            )
+            assert resolved.status_code == 200
+            assert resolved.json()["record_version"] == 3
             verified = client.patch(
                 cluster_url,
-                json={"status": "verified", "verified_version": "eval-2"},
+                json={
+                    "expected_version": 3,
+                    "status": "verified",
+                    "verified_version": "eval-2",
+                },
             )
             assert verified.status_code == 409
             assert "签名复测证据" in verified.json()["detail"]
@@ -162,6 +206,7 @@ def test_failure_triage_api_is_admin_only_strict_and_private(monkeypatch):
 
 def test_failure_triage_sync_requires_server_signing_key(monkeypatch):
     monkeypatch.setattr(settings, "eval_report_signing_key", "")
+    monkeypatch.setattr(settings, "eval_report_signing_key_id", "")
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -224,6 +269,7 @@ def test_failure_verification_api_is_admin_only_and_requires_signed_resolved_mat
 
     app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr(settings, "eval_report_signing_key", _SIGNING_KEY)
+    monkeypatch.setattr(settings, "eval_report_signing_key_id", "eval-key-v1")
     try:
         with TestClient(app) as client:
             sync_url = "/api/admin/quality/failure-clusters/sync"
@@ -231,14 +277,24 @@ def test_failure_verification_api_is_admin_only_and_requires_signed_resolved_mat
             assert client.post(sync_url, json=_report()).status_code == 200
             cluster = client.get("/api/admin/quality/failure-clusters").json()["items"][0]
             cluster_url = f"/api/admin/quality/failure-clusters/{cluster['id']}"
-            assert client.patch(
+            claimed = client.patch(
                 cluster_url,
-                json={"status": "in_progress", "owner": "quality-admin"},
-            ).status_code == 200
-            assert client.patch(
+                json={
+                    "expected_version": cluster["record_version"],
+                    "status": "in_progress",
+                    "owner": "quality-admin",
+                },
+            )
+            assert claimed.status_code == 200
+            resolved = client.patch(
                 cluster_url,
-                json={"status": "resolved", "fixed_version": "rules-2"},
-            ).status_code == 200
+                json={
+                    "expected_version": claimed.json()["record_version"],
+                    "status": "resolved",
+                    "fixed_version": "rules-2",
+                },
+            )
+            assert resolved.status_code == 200
 
             verify_url = "/api/admin/quality/failure-clusters/verify"
             client.cookies.set(settings.auth_cookie_name, customer_token)
@@ -249,6 +305,13 @@ def test_failure_verification_api_is_admin_only_and_requires_signed_resolved_mat
             forged = _verification_report(cluster["fingerprint"])
             forged["candidate_version"] = "forged"
             assert client.post(verify_url, json=forged).status_code == 422
+            wrong_key_id = _verification_report(cluster["fingerprint"])
+            wrong_key_id["signature_key_id"] = "other-eval-key"
+            wrong_key_id["signature"] = sign_failure_triage_payload(
+                wrong_key_id,
+                signing_key=_SIGNING_KEY,
+            )
+            assert client.post(verify_url, json=wrong_key_id).status_code == 422
             verified = client.post(
                 verify_url, json=_verification_report(cluster["fingerprint"])
             )

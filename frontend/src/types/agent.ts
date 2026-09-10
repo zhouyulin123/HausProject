@@ -65,4 +65,7 @@ export type AgentExitReason =
   | "tool_failed"
   | "generation_queued"
   | "generation_failed"
+  | "unsupported_geometry"
+  | "unsupported_action"
+  | "clarification_required"
   | "cancelled";

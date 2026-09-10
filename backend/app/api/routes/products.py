@@ -5,11 +5,11 @@
 
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, Field, HttpUrl, TypeAdapter, field_validator
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,16 +24,56 @@ from app.schemas.product_asset import (
     ProductAssetResponse,
     ProductAssetReview,
 )
+from app.schemas.product_commercial import (
+    CommercialReviewRequest,
+    CommercialReviewResponse,
+    ProductAuditEventListResponse,
+    ProductAuditEventResponse,
+)
 from app.services.catalog_service import (
     build_catalog_readiness_summary,
     is_product_eligible,
 )
 from app.services.glb_validation import GlbValidationError, validate_glb_upload
 from app.services import product_asset_service
+from app.services import product_commercial_service
 from app.services.product_asset_service import product_asset_contract
 from app.services.upload_validation import UploadValidationError, validate_image_upload
 
 router = APIRouter()
+
+RequestIdHeader = Annotated[
+    str | None,
+    Header(
+        alias="X-Request-ID",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    ),
+]
+IdempotencyKeyHeader = Annotated[
+    str,
+    Header(
+        alias="Idempotency-Key",
+        min_length=8,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    ),
+]
+
+
+def _record_version_conflict_detail(
+    exc: product_commercial_service.ProductCommercialConflict,
+) -> dict[str, object]:
+    detail: dict[str, object] = {
+        "code": "record_version_conflict",
+        "message": str(exc),
+    }
+    if exc.expected_record_version is not None:
+        detail["expected_record_version"] = exc.expected_record_version
+    if exc.current_record_version is not None:
+        detail["current_record_version"] = exc.current_record_version
+    return detail
 
 
 def _validate_product_lifecycle(product: Product) -> None:
@@ -67,52 +107,6 @@ def _validate_product_lifecycle(product: Product) -> None:
         raise HTTPException(status_code=422, detail="价格生效时间不能晚于失效时间")
     if product.price_max is not None and product.price_max < product.price:
         raise HTTPException(status_code=422, detail="价格上限不能低于参考价")
-
-
-def _validate_commercial_verification(product: Product) -> None:
-    """核验状态必须由足以追责和判断可售性的商业事实支撑。"""
-    missing_fields: list[str] = []
-    if product.data_origin not in {"merchant", "merchant_verified"}:
-        missing_fields.append("data_origin")
-    if not (product.source_name or "").strip():
-        missing_fields.append("source_name")
-    if not (product.source_url or "").strip() and not (
-        product.source_product_id or ""
-    ).strip():
-        missing_fields.append("source_reference")
-    if product.source_retrieved_at is None:
-        missing_fields.append("source_retrieved_at")
-    if product.price_observed_at is None:
-        missing_fields.append("price_observed_at")
-    if product.price_valid_from is None or product.price_valid_to is None:
-        missing_fields.append("price_validity")
-    if not product.region_codes:
-        missing_fields.append("region_codes")
-    if product.availability_status in {None, "unknown"}:
-        missing_fields.append("availability_status")
-    elif product.availability_status in {"in_stock", "low_stock"} and (
-        product.stock_quantity is None or product.stock_quantity <= 0
-    ):
-        missing_fields.append("stock_quantity")
-    elif product.availability_status == "preorder" and (
-        not product.lead_time_days_min
-        or not product.lead_time_days_max
-        or product.lead_time_days_min > product.lead_time_days_max
-    ):
-        missing_fields.append("lead_time")
-    if not (product.data_version or "").strip() or product.data_version.lower().startswith(
-        "draft"
-    ):
-        missing_fields.append("data_version")
-    if missing_fields:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "commercial_evidence_incomplete",
-                "message": "商品商业核验事实不完整",
-                "missing_fields": missing_fields,
-            },
-        )
 
 
 def _validate_source_url(value: HttpUrl | str | None) -> str | None:
@@ -381,6 +375,8 @@ def list_quote_rules(db: Session = Depends(get_db)):
 
 
 class ProductCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     category: str
     room: str
@@ -398,7 +394,6 @@ class ProductCreate(BaseModel):
         "merchant",
         "merchant_draft",
         "merchant_verified",
-        "verified",
         "demo",
         "public_reference",
     ] = "unknown"
@@ -414,7 +409,6 @@ class ProductCreate(BaseModel):
     model_depth_mm: Optional[int] = Field(default=None, gt=0)
     model_license: Optional[str] = Field(default=None, max_length=100)
     model_source: Optional[str] = Field(default=None, max_length=255)
-    verification_status: Literal["draft", "verified", "rejected", "expired"] = "draft"
     availability_status: Literal[
         "in_stock", "low_stock", "out_of_stock", "preorder", "unknown"
     ] = "unknown"
@@ -446,23 +440,36 @@ class ProductCreate(BaseModel):
 @router.post("")
 def create_product(
     data: ProductCreate,
+    request_id: RequestIdHeader = None,
     _user: User = Depends(require_factory),
     db: Session = Depends(get_db),
 ):
     payload = data.model_dump()
     product = Product(**payload)
-    if product.verification_status == "verified":
-        _validate_commercial_verification(product)
-        product.verified_at = datetime.now(timezone.utc)
-        product.verified_by = f"user:{_user.id}"
+    product.verification_status = "draft"
+    product.verified_at = None
+    product.verified_by = None
     _validate_product_lifecycle(product)
     db.add(product)
+    db.flush()
+    product_commercial_service.append_product_audit_event(
+        db,
+        product=product,
+        event_type="commercial_created",
+        actor=f"user:{_user.id}",
+        request_id=product_commercial_service.request_id_or_new(request_id),
+        before={
+            field: None for field in product_commercial_service.AUDITED_FIELDS
+        },
+    )
     db.commit()
     db.refresh(product)
     return _product_to_dict(product, expose_pending_model=True)
 
 
 class ProductUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     record_version: int = Field(gt=0)
     name: Optional[str] = None
     category: Optional[str] = None
@@ -482,7 +489,6 @@ class ProductUpdate(BaseModel):
             "merchant",
             "merchant_draft",
             "merchant_verified",
-            "verified",
             "demo",
             "public_reference",
         ]
@@ -499,9 +505,6 @@ class ProductUpdate(BaseModel):
     model_depth_mm: Optional[int] = Field(default=None, gt=0)
     model_license: Optional[str] = Field(default=None, max_length=100)
     model_source: Optional[str] = Field(default=None, max_length=255)
-    verification_status: Optional[
-        Literal["draft", "verified", "rejected", "expired"]
-    ] = None
     availability_status: Optional[
         Literal["in_stock", "low_stock", "out_of_stock", "preorder", "unknown"]
     ] = None
@@ -534,6 +537,7 @@ class ProductUpdate(BaseModel):
 def update_product(
     product_id: int,
     data: ProductUpdate,
+    request_id: RequestIdHeader = None,
     _user: User = Depends(require_factory),
     db: Session = Depends(get_db),
 ):
@@ -556,7 +560,6 @@ def update_product(
                 "current_record_version": product.record_version,
             },
         )
-    requested_verification = submitted.get("verification_status")
     changes = {
         key: value
         for key, value in submitted.items()
@@ -565,29 +568,7 @@ def update_product(
     if not changes:
         return _product_to_dict(product, expose_pending_model=True)
 
-    commercial_fields = {
-        "data_origin",
-        "source_name",
-        "source_url",
-        "source_product_id",
-        "source_retrieved_at",
-        "price_observed_at",
-        "price_note",
-        "source_metadata",
-        "price",
-        "price_max",
-        "availability_status",
-        "stock_quantity",
-        "region_codes",
-        "lead_time_days_min",
-        "lead_time_days_max",
-        "price_valid_from",
-        "price_valid_to",
-        "model_width_mm",
-        "model_height_mm",
-        "model_depth_mm",
-        "data_version",
-    }
+    before = product_commercial_service.snapshot_product_fields(product)
     model_review_fields = {
         "model_width_mm",
         "model_height_mm",
@@ -598,31 +579,29 @@ def update_product(
     for k, v in changes.items():
         setattr(product, k, v)
     product.record_version = (product.record_version or 1) + 1
-    commercial_changed = bool(commercial_fields.intersection(changes))
+    commercial_changed = bool(
+        product_commercial_service.COMMERCIAL_EDIT_FIELDS.intersection(changes)
+    )
     if commercial_changed:
         product.verification_status = "draft"
         product.verified_at = None
         product.verified_by = None
 
     _validate_product_lifecycle(product)
-    if requested_verification == "verified":
-        _validate_commercial_verification(product)
-        product.verification_status = "verified"
-        product.verified_at = datetime.now(timezone.utc)
-        product.verified_by = f"user:{_user.id}"
-    elif requested_verification in {
-        "draft",
-        "rejected",
-        "expired",
-    }:
-        product.verification_status = requested_verification
-        product.verified_at = None
-        product.verified_by = None
     if model_review_fields.intersection(changes) and product.model_url:
         product.model_status = "pending_review"
         product.model_reviewed_at = None
         product.model_reviewed_by = None
         product.model_review_note = None
+    if commercial_changed:
+        product_commercial_service.append_product_audit_event(
+            db,
+            product=product,
+            event_type="commercial_patch",
+            actor=f"user:{_user.id}",
+            request_id=product_commercial_service.request_id_or_new(request_id),
+            before=before,
+        )
     db.commit()
     db.refresh(product)
     return _product_to_dict(product, expose_pending_model=True)
@@ -631,15 +610,103 @@ def update_product(
 @router.delete("/{product_id}")
 def deactivate_product(
     product_id: int,
+    idempotency_key: IdempotencyKeyHeader,
+    expected_record_version: int = Query(..., ge=1),
+    request_id: RequestIdHeader = None,
     _user: User = Depends(require_factory),
     db: Session = Depends(get_db),
 ):
-    product = db.get(Product, product_id)
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    product.is_active = False  # 软删除，保留历史方案引用
-    db.commit()
-    return {"status": "ok"}
+    try:
+        event = product_commercial_service.deactivate_product(
+            db,
+            product_id=product_id,
+            expected_record_version=expected_record_version,
+            actor=f"user:{_user.id}",
+            request_id=product_commercial_service.request_id_or_new(request_id),
+            idempotency_key=idempotency_key,
+        )
+    except product_commercial_service.ProductCommercialNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except product_commercial_service.ProductCommercialIdempotencyConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "idempotency_conflict", "message": str(exc)},
+        ) from exc
+    except product_commercial_service.ProductCommercialConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=_record_version_conflict_detail(exc),
+        ) from exc
+    return ProductAuditEventResponse.model_validate(event)
+
+
+@router.post(
+    "/{product_id}/commercial-review",
+    response_model=CommercialReviewResponse,
+)
+def review_product_commercially(
+    product_id: int,
+    data: CommercialReviewRequest,
+    idempotency_key: IdempotencyKeyHeader,
+    request_id: RequestIdHeader = None,
+    user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> CommercialReviewResponse:
+    try:
+        event = product_commercial_service.review_product(
+            db,
+            product_id=product_id,
+            payload=data,
+            actor=f"user:{user.id}",
+            request_id=product_commercial_service.request_id_or_new(request_id),
+            idempotency_key=idempotency_key,
+        )
+    except product_commercial_service.ProductCommercialNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except product_commercial_service.ProductCommercialEvidenceIncomplete as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "commercial_evidence_incomplete",
+                "message": str(exc),
+                "reason_codes": list(exc.reason_codes),
+            },
+        ) from exc
+    except product_commercial_service.ProductCommercialIdempotencyConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "idempotency_conflict", "message": str(exc)},
+        ) from exc
+    except product_commercial_service.ProductCommercialConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=_record_version_conflict_detail(exc),
+        ) from exc
+    return CommercialReviewResponse.model_validate(event)
+
+
+@router.get(
+    "/{product_id}/audit-events",
+    response_model=ProductAuditEventListResponse,
+)
+def get_product_audit_events(
+    product_id: int,
+    limit: int = Query(default=100, ge=1, le=500),
+    _user: User = Depends(require_factory),
+    db: Session = Depends(get_db),
+) -> ProductAuditEventListResponse:
+    try:
+        events = product_commercial_service.list_product_audit_events(
+            db,
+            product_id=product_id,
+            limit=limit,
+        )
+    except product_commercial_service.ProductCommercialNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ProductAuditEventListResponse(
+        items=[ProductAuditEventResponse.model_validate(event) for event in events],
+        count=len(events),
+    )
 
 
 @router.get(

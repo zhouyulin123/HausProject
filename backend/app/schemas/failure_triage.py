@@ -167,6 +167,7 @@ class FailureVerificationReportRequest(BaseModel):
 class FailureClusterUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    expected_version: int = Field(ge=1)
     status: FailureStatus | None = None
     owner: str | None = Field(default=None, min_length=1, max_length=100)
     fixed_version: str | None = Field(default=None, min_length=1, max_length=100)
@@ -184,7 +185,7 @@ class FailureClusterUpdate(BaseModel):
 
     @model_validator(mode="after")
     def require_an_update(self) -> "FailureClusterUpdate":
-        if not self.model_fields_set:
+        if not (self.model_fields_set - {"expected_version"}):
             raise ValueError("至少提供一个更新字段")
         return self
 
@@ -201,6 +202,7 @@ class FailureClusterResponse(BaseModel):
     severity: FailureSeverity
     status: FailureStatus
     owner: str | None
+    record_version: int
     occurrence_count: int
     affected_count: int
     first_seen_at: datetime

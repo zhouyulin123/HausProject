@@ -107,7 +107,7 @@ def _dataset(tmp_path: Path, *, constraint_type: str = "inside_room"):
 
 def _eligibility_snapshot(sku: str, *, quantity: int, unit_price: int) -> dict:
     return {
-        "schemaVersion": "1.0",
+        "schemaVersion": "1.1",
         "eligible": True,
         "reasonCodes": [],
         "checkedAt": "2026-09-01T00:00:00+00:00",
@@ -125,14 +125,22 @@ def _eligibility_snapshot(sku: str, *, quantity: int, unit_price: int) -> dict:
         "facts": {
             "isActive": True,
             "dataOrigin": "merchant_verified",
+            "sourceName": "受控评测供应商目录",
+            "sourceUrl": None,
+            "sourceProductId": sku,
+            "sourceRetrievedAt": "2026-08-31T22:00:00+00:00",
+            "priceObservedAt": "2026-08-31T23:00:00+00:00",
             "verificationStatus": "verified",
+            "verifiedAt": "2026-08-31T23:30:00+00:00",
+            "verifiedBy": "eval-fixture:catalog-reviewer",
+            "dataVersion": "catalog-data-v1",
             "availabilityStatus": "in_stock",
             "stockQuantity": 10,
             "leadTimeDaysMin": None,
             "leadTimeDaysMax": None,
             "priceValidFrom": "2026-01-01T00:00:00+00:00",
             "priceValidTo": "2027-01-01T00:00:00+00:00",
-            "regionCodes": [],
+            "regionCodes": ["*"],
             "dimensionsMm": {"width": 1000, "depth": 800, "height": 900},
         },
     }

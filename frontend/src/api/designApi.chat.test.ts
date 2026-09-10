@@ -41,6 +41,7 @@ describe("项目级智能体轮次", () => {
       client_turn_id: "turn-42-1",
       message: "沙发换小一点",
       active_mode: "catalog_design",
+      base_state_version: 12,
     });
 
     expect(result.reply).toBe("已保留电视柜");
@@ -49,6 +50,7 @@ describe("项目级智能体轮次", () => {
       client_turn_id: "turn-42-1",
       message: "沙发换小一点",
       active_mode: "catalog_design",
+      base_state_version: 12,
     });
     expect(String(request?.[0])).toBe("/api/design/tasks/42/agent-turns");
   });

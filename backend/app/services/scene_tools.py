@@ -191,7 +191,7 @@ def apply_scene_operations(
                     y=item.dimensions.y * item.transform.scale.y,
                     z=item.dimensions.z * item.transform.scale.z,
                 )
-                if item.source_type == "custom_furniture_draft":
+                if item.source_type != "catalog":
                     item.transform.position.y = scaled_dimensions.y / 2
                 else:
                     product = _find_product(db, item.sku)

@@ -190,9 +190,8 @@ def process_one_run(
                 "before_persist": before_persist,
             }
             if executor is None:
-                executor_kwargs["allow_template_fallback"] = not (
-                    generation_run_service.is_agent_generation_run(run)
-                )
+                # 正式队列只允许真实模型结果；模板降级只能由内部显式调用传入。
+                executor_kwargs["allow_template_fallback"] = False
             if "on_success" in inspect.signature(selected_executor).parameters:
                 executor_kwargs["on_success"] = persist_success
 

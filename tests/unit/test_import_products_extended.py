@@ -1,9 +1,11 @@
+from datetime import datetime, timezone
+
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-import pytest
 
 from app.db.database import Base
-from app.db.models import Product
+from app.db.models import Product, ProductAuditEvent
 from import_products import (
     PRODUCT_HEADERS,
     parse_product_row,
@@ -53,6 +55,7 @@ def _row(**overrides):
         "数据版本": "catalog-2026-q3",
         "替代SKU": "SF-002,SF-003",
         "价格备注": "门店确认价",
+        "record_version": None,
     }
     values.update(overrides)
     return tuple(values.get(header) for header in PRODUCT_HEADERS)
@@ -68,7 +71,9 @@ def test_parse_extended_product_row_keeps_numeric_and_review_fields() -> None:
     assert parsed["product"]["model_height_mm"] == 760
     assert parsed["product"]["is_active"] is True
     assert parsed["review_status"] == "manual_verified"
-    assert parsed["product"]["verification_status"] == "verified"
+    assert parsed["product"]["verification_status"] == "draft"
+    assert "verified_at" not in parsed["product"]
+    assert "verified_by" not in parsed["product"]
     assert parsed["product"]["availability_status"] == "in_stock"
     assert parsed["product"]["region_codes"] == ["CN-SH", "CN-ZJ"]
     assert parsed["product"]["stock_quantity"] == 12
@@ -119,13 +124,22 @@ def test_upsert_updates_draft_and_records_manual_verification(db) -> None:
         style="现代简约",
         material="旧材料",
         price=1000,
-        data_origin="merchant_draft",
+        data_origin="merchant",
+        verification_status="verified",
+        verified_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        verified_by="user:7",
         is_active=True,
     )
     db.add(product)
     db.commit()
 
-    result = upsert_product_rows(db, PRODUCT_HEADERS, [_row()])
+    result = upsert_product_rows(
+        db,
+        PRODUCT_HEADERS,
+        [_row(record_version=1)],
+        actor="user:998",
+        request_id="req-excel-001",
+    )
     db.refresh(product)
 
     assert result == {"added": 0, "updated": 1, "skipped": 0}
@@ -134,9 +148,18 @@ def test_upsert_updates_draft_and_records_manual_verification(db) -> None:
     assert product.data_origin == "merchant_draft"
     assert product.source_name == "内部商品主表"
     assert product.source_metadata["verification_status"] == "manual_verified"
-    assert product.verification_status == "verified"
+    assert product.source_metadata["source_reviewed_by"] == "factory:7"
+    assert product.verification_status == "draft"
+    assert product.verified_at is None
+    assert product.verified_by is None
     assert product.availability_status == "in_stock"
     assert product.record_version == 2
+    event = db.query(ProductAuditEvent).filter_by(product_id=product.id).one()
+    assert event.event_type == "commercial_excel_updated"
+    assert event.actor == "user:998"
+    assert event.request_id == "req-excel-001"
+    assert "price" in event.changed_fields
+    assert "verified_by" in event.changed_fields
 
 
 def test_upsert_refuses_to_overwrite_public_reference(db) -> None:
@@ -170,9 +193,61 @@ def test_json_export_record_round_trips_lifecycle_fields(db) -> None:
     )
 
     assert reparsed is not None
-    assert reparsed["product"]["verification_status"] == "verified"
+    assert reparsed["product"]["verification_status"] == "draft"
     assert reparsed["product"]["availability_status"] == "in_stock"
     assert reparsed["product"]["region_codes"] == ["CN-SH", "CN-ZJ"]
     assert reparsed["product"]["alternative_skus"] == ["SF-002", "SF-003"]
     assert reparsed["product"]["price_valid_from"].replace(tzinfo=None) == product.price_valid_from
     assert reparsed["product"]["price_valid_to"].replace(tzinfo=None) == product.price_valid_to
+
+
+def test_upsert_requires_exported_record_version_for_existing_sku(db) -> None:
+    product = Product(
+        sku="SF-001",
+        name="旧名称",
+        category="沙发",
+        room="客厅",
+        style="现代简约",
+        price=1000,
+        record_version=3,
+    )
+    db.add(product)
+    db.commit()
+
+    with pytest.raises(ValueError, match="SF-001.*record_version"):
+        upsert_product_rows(db, PRODUCT_HEADERS, [_row()])
+
+    db.refresh(product)
+    assert product.name == "旧名称"
+    assert product.record_version == 3
+
+
+def test_stale_version_aborts_entire_product_batch_before_mutation(db) -> None:
+    first = Product(
+        sku="SF-001", name="一号旧名称", category="沙发", room="客厅",
+        style="现代简约", price=1000, record_version=2,
+    )
+    second = Product(
+        sku="SF-002", name="二号旧名称", category="沙发", room="客厅",
+        style="现代简约", price=2000, record_version=4,
+    )
+    db.add_all([first, second])
+    db.commit()
+
+    fresh = _row(record_version=2)
+    stale_values = dict(zip(PRODUCT_HEADERS, _row()))
+    stale_values.update({
+        "sku": "SF-002",
+        "名称": "二号新名称",
+        "替代SKU": "SF-003",
+        "record_version": 3,
+    })
+    stale = tuple(stale_values.get(header) for header in PRODUCT_HEADERS)
+
+    with pytest.raises(ValueError, match="SF-002.*record_version.*4"):
+        upsert_product_rows(db, PRODUCT_HEADERS, [fresh, stale])
+
+    db.refresh(first)
+    db.refresh(second)
+    assert (first.name, first.record_version) == ("一号旧名称", 2)
+    assert (second.name, second.record_version) == ("二号旧名称", 4)

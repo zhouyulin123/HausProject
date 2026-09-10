@@ -2,15 +2,21 @@ from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
-from app.db.models import FailureCluster, FailureVerificationImport
+from app.db.models import (
+    FailureCluster,
+    FailureTriageImport,
+    FailureVerificationImport,
+)
 from app.schemas.failure_triage import (
     FailureClusterUpdate,
     FailureTriageReportRequest,
     FailureVerificationReportRequest,
 )
+from app.services import failure_triage_service
 from app.services.failure_triage_service import (
     FailureTriageConflict,
     FailureTriageSignatureError,
@@ -141,6 +147,13 @@ def _resolved_clusters(db) -> tuple[FailureCluster, FailureCluster]:
     return first, second
 
 
+def _cluster_update(
+    cluster: FailureCluster,
+    **fields,
+) -> FailureClusterUpdate:
+    return FailureClusterUpdate(expected_version=cluster.record_version, **fields)
+
+
 def test_verification_schema_rejects_partial_coverage_and_noncanonical_digests(db):
     clusters = list(_resolved_clusters(db))
     payload = _verification_report("verify-001", clusters).model_dump(mode="json")
@@ -216,6 +229,35 @@ def test_signed_verification_atomically_closes_resolved_clusters_and_is_idempote
     assert imported.report_id == "verify-001"
 
 
+def test_verification_rechecks_idempotency_after_waiting_for_cluster_lock(
+    db,
+    monkeypatch,
+):
+    clusters = list(_resolved_clusters(db))
+    report = _verification_report("verify-001", clusters)
+    sync_failure_verification(db, report, signing_key=_SIGNING_KEY)
+    original = failure_triage_service._existing_verification_result
+    lock_modes: list[bool] = []
+
+    def delayed_visibility(*args, lock: bool, **kwargs):
+        lock_modes.append(lock)
+        if not lock:
+            return None
+        return original(*args, lock=lock, **kwargs)
+
+    monkeypatch.setattr(
+        failure_triage_service,
+        "_existing_verification_result",
+        delayed_visibility,
+    )
+
+    duplicate = sync_failure_verification(db, report, signing_key=_SIGNING_KEY)
+
+    assert duplicate.imported is False
+    assert lock_modes == [False, True]
+    assert {item.status for item in duplicate.clusters} == {"verified"}
+
+
 def test_verification_rejects_forgery_replay_and_report_id_conflict(db):
     clusters = list(_resolved_clusters(db))
     report = _verification_report("verify-001", clusters)
@@ -286,12 +328,12 @@ def test_report_sync_is_idempotent_and_verified_recurrence_reopens(db):
     update_failure_cluster(
         db,
         cluster,
-        FailureClusterUpdate(status="in_progress", owner="quality-admin"),
+        _cluster_update(cluster, status="in_progress", owner="quality-admin"),
     )
     update_failure_cluster(
         db,
         cluster,
-        FailureClusterUpdate(status="resolved", fixed_version="rules-2"),
+        _cluster_update(cluster, status="resolved", fixed_version="rules-2"),
     )
     verification = _verification_report("verify-001", [cluster])
     sync_failure_verification(db, verification, signing_key=_SIGNING_KEY)
@@ -321,48 +363,48 @@ def test_status_machine_rejects_skips_and_requires_versions(db):
         update_failure_cluster(
             db,
             cluster,
-            FailureClusterUpdate(status="resolved", fixed_version="rules-2"),
+            _cluster_update(cluster, status="resolved", fixed_version="rules-2"),
         )
     with pytest.raises(FailureTriageConflict, match="负责人"):
         update_failure_cluster(
             db,
             cluster,
-            FailureClusterUpdate(status="in_progress"),
+            _cluster_update(cluster, status="in_progress"),
         )
     with pytest.raises(FailureTriageConflict, match="修复版本"):
         update_failure_cluster(
             db,
             cluster,
-            FailureClusterUpdate(fixed_version="rules-too-early"),
+            _cluster_update(cluster, fixed_version="rules-too-early"),
         )
 
     update_failure_cluster(
         db,
         cluster,
-        FailureClusterUpdate(status="in_progress", owner="quality-admin"),
+        _cluster_update(cluster, status="in_progress", owner="quality-admin"),
     )
     with pytest.raises(FailureTriageConflict, match="修复版本"):
         update_failure_cluster(
             db,
             cluster,
-            FailureClusterUpdate(status="resolved"),
+            _cluster_update(cluster, status="resolved"),
         )
     update_failure_cluster(
         db,
         cluster,
-        FailureClusterUpdate(status="resolved", fixed_version="rules-2"),
+        _cluster_update(cluster, status="resolved", fixed_version="rules-2"),
     )
     with pytest.raises(FailureTriageConflict, match="签名复测证据"):
         update_failure_cluster(
             db,
             cluster,
-            FailureClusterUpdate(status="verified", verified_version="eval-2"),
+            _cluster_update(cluster, status="verified", verified_version="eval-2"),
         )
     with pytest.raises(FailureTriageConflict, match="签名复测证据"):
         update_failure_cluster(
             db,
             cluster,
-            FailureClusterUpdate(verified_version="operator-claim"),
+            _cluster_update(cluster, verified_version="operator-claim"),
         )
     db.refresh(cluster)
     assert cluster.status == "resolved"
@@ -376,12 +418,12 @@ def test_signed_report_reopens_resolved_cluster_when_failure_recurs(db):
     update_failure_cluster(
         db,
         cluster,
-        FailureClusterUpdate(status="in_progress", owner="quality-admin"),
+        _cluster_update(cluster, status="in_progress", owner="quality-admin"),
     )
     update_failure_cluster(
         db,
         cluster,
-        FailureClusterUpdate(status="resolved", fixed_version="rules-2"),
+        _cluster_update(cluster, status="resolved", fixed_version="rules-2"),
     )
 
     sync_verified_report(
@@ -413,7 +455,7 @@ def test_admin_update_cannot_mutate_verified_cluster(db):
         update_failure_cluster(
             db,
             cluster,
-            FailureClusterUpdate(owner="another-operator"),
+            _cluster_update(cluster, owner="another-operator"),
         )
     db.refresh(cluster)
     assert cluster.owner is None
@@ -443,6 +485,251 @@ def test_same_semantic_report_cannot_be_counted_twice_under_another_id(db):
         )
 
     assert first.imported is True
+    cluster = db.scalar(select(FailureCluster))
+    assert cluster is not None
+    assert cluster.occurrence_count == 3
+
+
+def test_different_reports_accumulate_from_database_state_when_session_is_stale(
+    tmp_path,
+):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'triage-stale.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        with factory() as seed_db:
+            sync_verified_report(
+                seed_db,
+                _report("report-stale-001", "candidate-1"),
+                signing_key=_SIGNING_KEY,
+            )
+
+        with factory() as stale_db:
+            stale_cluster = stale_db.scalar(select(FailureCluster))
+            assert stale_cluster is not None
+            assert stale_cluster.occurrence_count == 3
+
+            with factory() as fresh_db:
+                sync_verified_report(
+                    fresh_db,
+                    _report("report-stale-002", "candidate-2"),
+                    signing_key=_SIGNING_KEY,
+                )
+
+            sync_verified_report(
+                stale_db,
+                _report("report-stale-003", "candidate-3"),
+                signing_key=_SIGNING_KEY,
+            )
+
+        with factory() as check_db:
+            cluster = check_db.scalar(select(FailureCluster))
+            assert cluster is not None
+            assert cluster.occurrence_count == 9
+            assert cluster.affected_count == 6
+    finally:
+        engine.dispose()
+
+
+def test_admin_patch_rejects_a_stale_governance_snapshot(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'triage-admin-stale.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        with factory() as seed_db:
+            sync_verified_report(
+                seed_db,
+                _report("report-admin-stale-001"),
+                signing_key=_SIGNING_KEY,
+            )
+
+        with factory() as stale_db:
+            stale_cluster = stale_db.scalar(select(FailureCluster))
+            assert stale_cluster is not None
+
+            with factory() as winning_db:
+                winning_cluster = winning_db.scalar(select(FailureCluster))
+                assert winning_cluster is not None
+                update_failure_cluster(
+                    winning_db,
+                    winning_cluster,
+                    _cluster_update(
+                        winning_cluster,
+                        status="in_progress",
+                        owner="first-admin",
+                    ),
+                )
+
+            with pytest.raises(FailureTriageConflict, match="版本|并发"):
+                update_failure_cluster(
+                    stale_db,
+                    stale_cluster,
+                    _cluster_update(
+                        stale_cluster,
+                        status="in_progress",
+                        owner="second-admin",
+                    ),
+                )
+
+        with factory() as check_db:
+            cluster = check_db.scalar(select(FailureCluster))
+            assert cluster is not None
+            assert cluster.status == "in_progress"
+            assert cluster.owner == "first-admin"
+    finally:
+        engine.dispose()
+
+
+def test_recurring_report_reopens_a_cluster_from_database_state_when_stale(
+    tmp_path,
+):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'triage-reopen-stale.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    try:
+        with factory() as seed_db:
+            sync_verified_report(
+                seed_db,
+                _report("report-reopen-stale-001", "candidate-1"),
+                signing_key=_SIGNING_KEY,
+            )
+
+        with factory() as stale_db:
+            stale_cluster = stale_db.scalar(select(FailureCluster))
+            assert stale_cluster is not None
+            assert stale_cluster.status == "open"
+
+            with factory() as lifecycle_db:
+                current = lifecycle_db.scalar(select(FailureCluster))
+                assert current is not None
+                update_failure_cluster(
+                    lifecycle_db,
+                    current,
+                    _cluster_update(
+                        current,
+                        status="in_progress",
+                        owner="quality-admin",
+                    ),
+                )
+                update_failure_cluster(
+                    lifecycle_db,
+                    current,
+                    _cluster_update(
+                        current,
+                        status="resolved",
+                        fixed_version="rules-2",
+                    ),
+                )
+                sync_failure_verification(
+                    lifecycle_db,
+                    _verification_report("verify-reopen-stale-001", [current]),
+                    signing_key=_SIGNING_KEY,
+                )
+
+            sync_verified_report(
+                stale_db,
+                _report("report-reopen-stale-002", "candidate-3"),
+                signing_key=_SIGNING_KEY,
+            )
+
+        with factory() as check_db:
+            cluster = check_db.scalar(select(FailureCluster))
+            assert cluster is not None
+            assert cluster.status == "open"
+            assert cluster.occurrence_count == 6
+            assert cluster.affected_count == 4
+            assert cluster.fixed_version is None
+            assert cluster.verified_version is None
+            assert cluster.verification_report_id is None
+            assert cluster.report_digest is None
+            assert cluster.coverage_digest is None
+    finally:
+        engine.dispose()
+
+
+def test_report_sync_retries_a_concurrent_first_insert_without_losing_counts(
+    tmp_path,
+    monkeypatch,
+):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'triage-insert-race.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    primary = _report("report-insert-race-primary", "candidate-primary")
+    competing = _report("report-insert-race-competing", "candidate-competing")
+    original = failure_triage_service._upsert_cluster
+    collision_injected = False
+
+    def inject_first_insert_collision(session, report, failure):
+        nonlocal collision_injected
+        if report.report_id == primary.report_id and not collision_injected:
+            collision_injected = True
+            with factory() as competing_db:
+                sync_verified_report(
+                    competing_db,
+                    competing,
+                    signing_key=_SIGNING_KEY,
+                )
+            raise IntegrityError("INSERT failure_clusters", {}, Exception("unique"))
+        return original(session, report, failure)
+
+    monkeypatch.setattr(
+        failure_triage_service,
+        "_upsert_cluster",
+        inject_first_insert_collision,
+    )
+    try:
+        with factory() as primary_db:
+            result = sync_verified_report(
+                primary_db,
+                primary,
+                signing_key=_SIGNING_KEY,
+            )
+
+        with factory() as check_db:
+            cluster = check_db.scalar(select(FailureCluster))
+            imports = check_db.scalars(select(FailureTriageImport)).all()
+            assert result.imported is True
+            assert collision_injected is True
+            assert cluster is not None
+            assert cluster.occurrence_count == 6
+            assert cluster.affected_count == 4
+            assert {item.report_id for item in imports} == {
+                primary.report_id,
+                competing.report_id,
+            }
+    finally:
+        engine.dispose()
+
+
+def test_report_sync_retries_a_mysql_deadlock_victim(monkeypatch, db):
+    original = failure_triage_service._upsert_cluster
+    attempts = 0
+
+    def deadlock_once(session, report, failure):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OperationalError(
+                "UPDATE failure_clusters",
+                {},
+                Exception(1213, "Deadlock found when trying to get lock"),
+            )
+        return original(session, report, failure)
+
+    monkeypatch.setattr(
+        failure_triage_service,
+        "_upsert_cluster",
+        deadlock_once,
+    )
+
+    result = sync_verified_report(
+        db,
+        _report("report-deadlock-retry-001"),
+        signing_key=_SIGNING_KEY,
+    )
+
+    assert result.imported is True
+    assert attempts == 2
     cluster = db.scalar(select(FailureCluster))
     assert cluster is not None
     assert cluster.occurrence_count == 3

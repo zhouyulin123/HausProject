@@ -30,6 +30,10 @@ VALID_TO = datetime(2100, 1, 1, tzinfo=timezone.utc)
 def _eligible_product(**values) -> Product:
     defaults = {
         "data_origin": "merchant",
+        "source_name": "测试供应商",
+        "source_product_id": "SCENE-TEST-SKU",
+        "source_retrieved_at": VALID_FROM,
+        "price_observed_at": VALID_FROM,
         "verification_status": "verified",
         "availability_status": "in_stock",
         "region_codes": ["*"],
@@ -417,6 +421,53 @@ def test_scene_agent_can_move_and_remove_custom_draft_without_catalog_lookup(sce
     )
     removed = apply_scene_operations(scene_db, moved, remove.operations)
     assert moved_item.instance_id not in {item.instance_id for item in removed.items}
+
+
+@pytest.mark.unit
+def test_scene_agent_can_move_open_geometry_without_catalog_lookup(scene_db):
+    payload = _scene().model_dump(by_alias=True, mode="json")
+    payload["schemaVersion"] = "1.1"
+    payload["items"].append(
+        {
+            "instanceId": "open-geometry-0123456789abcdef",
+            "sku": "OPEN-0123456789ABCDEF",
+            "category": "开放几何家具",
+            "dimensions": {"x": 1, "y": 1, "z": 0.8},
+            "transform": {"position": {"x": 0, "y": 0.5, "z": 0}},
+            "assetMode": "parametric",
+            "sourceType": "open_geometry_draft",
+            "openGeometryRef": {
+                "taskId": 1,
+                "planVersionId": 1,
+                "introducedSceneVersion": 2,
+                "openGeometryVersion": 1,
+                "modelId": "OPEN-0123456789ABCDEF",
+                "specDigest": "sha256:" + "0" * 64,
+            },
+            "openGeometryModelSpec": {"家具类型": "开放几何家具"},
+        }
+    )
+    document = SceneDocument.model_validate(payload)
+    move = SceneOperationBatch.model_validate(
+        {
+            "message": "移动开放几何家具",
+            "operations": [
+                {
+                    "type": "move",
+                    "instanceId": "open-geometry-0123456789abcdef",
+                    "position": {"x": 1.5, "z": 1.25},
+                }
+            ],
+        }
+    )
+
+    moved = apply_scene_operations(scene_db, document, move.operations)
+    item = next(
+        value for value in moved.items if value.source_type == "open_geometry_draft"
+    )
+    assert item.transform.position.x == 1.5
+    assert item.transform.position.z == 1.25
+    assert item.transform.position.y == 0.5
 
 @pytest.mark.unit
 def test_scene_validation_reports_full_footprint_outside_room(scene_db):

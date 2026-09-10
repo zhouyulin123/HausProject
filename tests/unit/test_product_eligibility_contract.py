@@ -10,7 +10,11 @@ from app.services.product_eligibility import (
     ProductEligibilityPolicy,
     evaluate_product_eligibility,
 )
-from evals.trusted_evidence import _frozen_catalog_reasons
+from evals.trusted_evidence import (
+    EvaluationInputError,
+    _consume_valid_frozen_catalog_line,
+    _frozen_catalog_reasons,
+)
 
 
 NOW = datetime(2026, 9, 1, 12, tzinfo=timezone.utc)
@@ -28,7 +32,14 @@ def _product(**overrides) -> Product:
         "price": 5000,
         "is_active": True,
         "data_origin": "merchant",
+        "source_name": "供应商目录",
+        "source_url": "https://supplier.example/products/SOFA-CONTRACT",
+        "source_product_id": "SOFA-CONTRACT",
+        "source_retrieved_at": NOW - timedelta(hours=2),
+        "price_observed_at": NOW - timedelta(hours=1),
         "verification_status": "verified",
+        "verified_at": NOW - timedelta(minutes=30),
+        "verified_by": "user:7",
         "availability_status": "in_stock",
         "stock_quantity": 5,
         "region_codes": ["CN-SH", "CN-ZJ"],
@@ -49,7 +60,15 @@ def _product(**overrides) -> Product:
 BASE_FACTS = ProductEligibilityFacts(
     is_active=True,
     data_origin="merchant",
+    source_name="供应商目录",
+    source_url="https://supplier.example/products/SOFA-CONTRACT",
+    source_product_id="SOFA-CONTRACT",
+    source_retrieved_at=NOW - timedelta(hours=2),
+    price_observed_at=NOW - timedelta(hours=1),
     verification_status="verified",
+    verified_at=NOW - timedelta(minutes=30),
+    verified_by="user:7",
+    data_version="catalog-contract-v1",
     availability_status="in_stock",
     stock_quantity=5,
     lead_time_days_min=3,
@@ -75,7 +94,26 @@ BASE_POLICY = ProductEligibilityPolicy(
     [
         ({"is_active": False}, {}, "inactive"),
         ({"data_origin": "public_reference"}, {}, "public_reference"),
+        ({"data_origin": "verified"}, {}, "provenance_unverified"),
+        ({"source_name": None}, {}, "source_name_missing"),
+        ({"source_url": None, "source_product_id": None}, {}, "source_reference_missing"),
+        ({"source_retrieved_at": None}, {}, "source_retrieved_at_missing"),
+        (
+            {"source_retrieved_at": NOW + timedelta(seconds=1)},
+            {},
+            "source_retrieved_at_future",
+        ),
+        ({"price_observed_at": None}, {}, "price_observed_at_missing"),
+        (
+            {"price_observed_at": NOW + timedelta(seconds=1)},
+            {},
+            "price_observed_at_future",
+        ),
         ({"verification_status": "draft"}, {}, "verification_required"),
+        ({"verified_at": None}, {}, "verified_at_missing"),
+        ({"verified_at": NOW + timedelta(seconds=1)}, {}, "verified_at_future"),
+        ({"verified_by": None}, {}, "verified_by_missing"),
+        ({"data_version": "draft-v2"}, {}, "data_version_unverified"),
         ({"verification_status": "rejected"}, {}, "verification_rejected"),
         ({"verification_status": "expired"}, {}, "verification_expired"),
         ({"verification_status": "unexpected"}, {}, "verification_invalid"),
@@ -105,6 +143,7 @@ BASE_POLICY = ProductEligibilityPolicy(
         ),
         ({}, {"region": None}, "region_required"),
         ({}, {"region": "CN-BJ"}, "region_unavailable"),
+        ({"region_codes": ()}, {}, "region_unknown"),
         (
             {"dimensions_mm": ProductDimensions(width=None, depth=950, height=800)},
             {},
@@ -136,7 +175,18 @@ def test_pure_product_eligibility_rule_covers_each_reason_code(
     [
         ({"is_active": False}, {}),
         ({"data_origin": "public_reference"}, {}),
+        ({"data_origin": "verified"}, {}),
+        ({"source_name": None}, {}),
+        ({"source_url": None, "source_product_id": None}, {}),
+        ({"source_retrieved_at": None}, {}),
+        ({"source_retrieved_at": NOW + timedelta(seconds=1)}, {}),
+        ({"price_observed_at": None}, {}),
+        ({"price_observed_at": NOW + timedelta(seconds=1)}, {}),
         ({"verification_status": "draft"}, {}),
+        ({"verified_at": None}, {}),
+        ({"verified_at": NOW + timedelta(seconds=1)}, {}),
+        ({"verified_by": None}, {}),
+        ({"data_version": "draft-v2"}, {}),
         ({"verification_status": "rejected"}, {}),
         ({"verification_status": "expired"}, {}),
         ({"verification_status": "unexpected"}, {}),
@@ -157,6 +207,7 @@ def test_pure_product_eligibility_rule_covers_each_reason_code(
         ({"price_valid_to": NOW - timedelta(seconds=1)}, {}),
         ({}, {"region": None}),
         ({}, {"region": "CN-BJ"}),
+        ({"region_codes": []}, {}),
         ({"model_width_mm": None}, {}),
         ({"model_width_mm": 2600}, {}),
         ({"price": 9000}, {}),
@@ -190,3 +241,99 @@ def test_online_and_frozen_adapters_recompute_identical_reason_codes(
     frozen_reasons = _frozen_catalog_reasons(snapshot, run_id=7)
 
     assert frozen_reasons == online.reason_codes
+
+
+def test_frozen_snapshot_contains_all_commercial_verification_facts():
+    snapshot = catalog_service._eligibility_snapshot(
+        _product(),
+        checked_at=NOW,
+        region="CN-SH",
+        allow_draft=False,
+        max_unit_price=None,
+        max_dimensions_mm=None,
+        required_quantity=1,
+    )
+
+    assert snapshot["schemaVersion"] == "1.1"
+    assert {
+        key: snapshot["facts"][key]
+        for key in (
+            "sourceName",
+            "sourceUrl",
+            "sourceProductId",
+            "sourceRetrievedAt",
+            "priceObservedAt",
+            "verifiedAt",
+            "verifiedBy",
+            "dataVersion",
+        )
+    } == {
+        "sourceName": "供应商目录",
+        "sourceUrl": "https://supplier.example/products/SOFA-CONTRACT",
+        "sourceProductId": "SOFA-CONTRACT",
+        "sourceRetrievedAt": (NOW - timedelta(hours=2)).isoformat(),
+        "priceObservedAt": (NOW - timedelta(hours=1)).isoformat(),
+        "verifiedAt": (NOW - timedelta(minutes=30)).isoformat(),
+        "verifiedBy": "user:7",
+        "dataVersion": "catalog-contract-v1",
+    }
+
+
+def test_legacy_frozen_snapshot_version_is_not_silently_reinterpreted():
+    snapshot = catalog_service._eligibility_snapshot(
+        _product(),
+        checked_at=NOW,
+        region="CN-SH",
+        allow_draft=False,
+        max_unit_price=None,
+        max_dimensions_mm=None,
+        required_quantity=1,
+    )
+    snapshot["schemaVersion"] = "1.0"
+
+    with pytest.raises(EvaluationInputError, match="版本不受支持"):
+        _consume_valid_frozen_catalog_line(
+            {"catalogEligibility": snapshot},
+            quote_lines=[],
+            run_id=7,
+        )
+
+
+def test_explicit_draft_policy_does_not_require_fabricated_verification_audit():
+    draft = ProductEligibilityFacts(
+        **{
+            **BASE_FACTS.__dict__,
+            "data_origin": "merchant_draft",
+            "verification_status": "draft",
+            "verified_at": None,
+            "verified_by": None,
+            "data_version": "draft-v2",
+        }
+    )
+    policy = ProductEligibilityPolicy(**{**BASE_POLICY.__dict__, "allow_draft": True})
+
+    assert evaluate_product_eligibility(draft, policy).reason_codes == ()
+    missing_version = ProductEligibilityFacts(
+        **{**draft.__dict__, "data_version": None}
+    )
+    assert evaluate_product_eligibility(missing_version, policy).reason_codes == (
+        "data_version_unverified",
+    )
+
+
+def test_verified_product_requires_audit_even_when_drafts_are_allowed():
+    invalid_verified = ProductEligibilityFacts(
+        **{
+            **BASE_FACTS.__dict__,
+            "verified_at": None,
+            "verified_by": None,
+            "data_version": "draft-v2",
+        }
+    )
+    policy = ProductEligibilityPolicy(**{**BASE_POLICY.__dict__, "allow_draft": True})
+
+    assert evaluate_product_eligibility(invalid_verified, policy).reason_codes == (
+        "verified_at_missing",
+        "verified_by_missing",
+        "data_version_unverified",
+    )

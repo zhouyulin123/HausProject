@@ -296,6 +296,7 @@ def test_paid_model_failure_before_template_fallback_accumulates_run_cost(
             db,
             task=task,
             on_meta=persist_meta,
+            allow_template_fallback=True,
         )
         db.refresh(run)
 

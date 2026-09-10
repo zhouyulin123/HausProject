@@ -60,6 +60,8 @@ describe("Agent 执行快照映射", () => {
       run_id: 9,
       exit_reason: "generation_queued",
       result: null,
+      open_geometry: null,
+      partialCompletion: false,
     } satisfies AgentTurnResponse;
 
     expect(agentExecutionFromTurn(response)).toEqual({
@@ -102,6 +104,7 @@ describe("Agent 执行快照映射", () => {
       custom_furniture_draft: null,
       scene_ref: null,
       result: null,
+      open_geometry: null,
       messages: [],
     } satisfies DesignAgentStateResponse;
 

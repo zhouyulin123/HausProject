@@ -126,6 +126,7 @@ describe("运营质量汇总 API", () => {
       failures: [],
     });
     await updateFailureCluster(9, {
+      expected_version: 3,
       status: "in_progress",
       owner: "quality-admin",
     });
@@ -288,5 +289,74 @@ describe("运营质量汇总 API", () => {
       new File(["x".repeat(1024 * 1024 + 1)], "verification.json"),
     )).rejects.toThrow("签名复测证明不能超过 1 MB");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("真实案例治理请求只提交公开 ID、CAS 与受控证据字段", async () => {
+    const response = { items: [], total: 0 };
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(
+      async () => jsonResponse(response),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const {
+      createRealWorldAnnotationRevision,
+      createRealWorldConsentDecision,
+      fetchRealWorldCases,
+      freezeRealWorldDataset,
+      importRealWorldCase,
+      previewRealWorldCaseImport,
+      updateRealWorldCase,
+    } = await import("./adminApi");
+    const importPayload = {
+      client_import_id: "case-import-7201-7301-stable",
+      task_id: 7201,
+      uploaded_image_id: 7301,
+    };
+
+    await fetchRealWorldCases();
+    await previewRealWorldCaseImport(importPayload);
+    await importRealWorldCase(importPayload);
+    await updateRealWorldCase("rwc_public_001", {
+      expected_version: 4,
+      redaction_review: "reviewed",
+    });
+    await createRealWorldConsentDecision("rwc_public_001", {
+      expected_version: 5,
+      decision: "granted",
+      legal_basis: "explicit_consent",
+      allowed_purposes: ["offline_evaluation"],
+      evidence_digest: `sha256:${"e".repeat(64)}`,
+      effective_at: "2026-09-10T08:00:00Z",
+      expires_at: "2027-09-10T08:00:00Z",
+    });
+    await createRealWorldAnnotationRevision("rwc_public_001", {
+      expected_version: 6,
+      annotation: { schema_version: "1.0", annotation_type: "real_world_case_annotation" },
+    });
+    await freezeRealWorldDataset({
+      dataset_version: "dataset-2026-09-10.1",
+      cases: [{ case_ref: "rwc_public_001", expected_version: 7 }],
+    });
+
+    expect(fetchMock.mock.calls.map(([path]) => String(path))).toEqual([
+      "/api/admin/quality/real-world-cases",
+      "/api/admin/quality/real-world-case-imports/preview",
+      "/api/admin/quality/real-world-case-imports",
+      "/api/admin/quality/real-world-cases/rwc_public_001",
+      "/api/admin/quality/real-world-cases/rwc_public_001/consent-decisions",
+      "/api/admin/quality/real-world-cases/rwc_public_001/annotation-revisions",
+      "/api/admin/quality/real-world-dataset-revisions",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual(importPayload);
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      expected_version: 4,
+      redaction_review: "reviewed",
+    });
+    const consentBody = JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body));
+    expect(consentBody).toEqual(expect.objectContaining({
+      evidence_digest: `sha256:${"e".repeat(64)}`,
+      allowed_purposes: ["offline_evaluation"],
+    }));
+    expect(consentBody).not.toHaveProperty("evidence");
+    expect(consentBody).not.toHaveProperty("actor_user_id");
   });
 });

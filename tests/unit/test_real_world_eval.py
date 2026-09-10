@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -42,6 +43,15 @@ def _case(**overrides) -> dict:
         "label_version": "label-1",
         "allowed_purposes": ["offline_evaluation"],
         "failure_tags": [],
+        "task_input": {
+            "raw_user_input": "设计一个已脱敏的测试客厅",
+            "confirmed_requirement": {"space_type": "客厅"},
+            "space_type": "客厅",
+            "style": None,
+            "budget_min": None,
+            "budget_max": None,
+            "image_context": ["已脱敏空间事实"],
+        },
     }
     value.update(overrides)
     return value
@@ -78,6 +88,21 @@ def test_manifest_only_selects_consented_annotated_evaluation_cases(tmp_path):
         "pending-consent": ["consent_not_granted"],
         "pending-label": ["annotation_not_ready"],
     }
+
+
+def test_manifest_case_without_task_input_is_not_evaluation_eligible(tmp_path):
+    asset_dir = tmp_path / "assets"
+    asset_dir.mkdir()
+    (asset_dir / "room.png").write_bytes(b"room")
+    path = _write_manifest(
+        tmp_path,
+        [_case(asset_path="assets/room.png", task_input=None)],
+    )
+
+    dataset = load_case_manifest(path)
+
+    assert dataset.eligible_cases() == []
+    assert dataset.ineligible_reasons == {"rw-001": ["task_input_missing"]}
 
 
 def test_manifest_rejects_synthetic_case_in_blind_split(tmp_path):
@@ -135,6 +160,24 @@ def test_manifest_rejects_same_physical_asset_under_different_case_ids(tmp_path)
 
     with pytest.raises(DatasetValidationError, match="重复物理资产"):
         load_case_manifest(path)
+
+
+def test_static_manifest_cannot_claim_a_governance_revision_digest(tmp_path):
+    path = _write_manifest(tmp_path, [])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["governance_manifest_digest"] = "sha256:" + "a" * 64
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DatasetValidationError, match="治理冻结摘要"):
+        load_case_manifest(path)
+
+
+def test_static_dataset_fingerprint_keeps_the_legacy_case_list_contract(tmp_path):
+    path = _write_manifest(tmp_path, [])
+    dataset = load_case_manifest(path)
+    expected = hashlib.sha256(b"[]").hexdigest()
+
+    assert dataset.fingerprint == f"sha256:{expected}"
 
 
 def test_quality_metrics_and_gates_match_phase_four_acceptance_lines():

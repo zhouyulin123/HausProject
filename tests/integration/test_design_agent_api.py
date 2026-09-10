@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from copy import deepcopy
 
 import pytest
 from datetime import datetime, timezone
@@ -6,11 +7,12 @@ from types import SimpleNamespace
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import TypeAdapter
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api.routes import design_agent, tasks, upload
+from app.api.routes import design_agent, open_geometry as open_geometry_routes, tasks, upload
 from app.db.database import Base, get_db
 from app.db.models import (
     ChatLog,
@@ -19,18 +21,25 @@ from app.db.models import (
     DesignAgentTurn,
     DesignResult,
     DesignRevision,
+    DesignScene,
+    DesignSceneVersion,
     DesignTask,
     GenerationRun,
     Product,
     RoomFactConfirmation,
     UploadedImage,
 )
+from app.schemas.agent_action_plan import AgentActionPlan
+from app.schemas.open_geometry import OpenGeometryOperation
 from app.services.anonymous_session_service import (
     attach_image,
     attach_task,
     create_anonymous_session,
 )
 from app.services import design_version_service, generation_run_service
+from app.services import open_geometry_service
+from app.services.open_geometry_service import prepare_command as prepare_open_geometry_command
+from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
 from tests.scene_fixtures import attach_scene_versions
 
 
@@ -78,6 +87,10 @@ def agent_api_context(monkeypatch):
                 style="现代简约",
                 price=5000,
                 data_origin="merchant",
+                source_name="测试供应商",
+                source_product_id="SOFA-001",
+                source_retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                price_observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
                 verification_status="verified",
                 availability_status="in_stock",
                 stock_quantity=5,
@@ -86,6 +99,7 @@ def agent_api_context(monkeypatch):
                 price_valid_to=datetime(2027, 1, 1, tzinfo=timezone.utc),
                 verified_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
                 verified_by="test:fixture",
+                data_version="catalog-test-v1",
                 model_width_mm=2200,
                 model_height_mm=800,
                 model_depth_mm=950,
@@ -125,8 +139,26 @@ def agent_api_context(monkeypatch):
         design_agent.router,
         prefix="/api/design/tasks",
     )
+    app.include_router(
+        open_geometry_routes.router,
+        prefix="/api/design/tasks",
+    )
     app.include_router(tasks.router, prefix="/api/design/tasks")
     app.include_router(upload.router, prefix="/api/upload")
+    shared_open_geometry_limiter = SceneAgentRateLimiter(
+        max_requests=120,
+        window_seconds=60,
+    )
+    monkeypatch.setattr(
+        design_agent,
+        "open_geometry_rate_limiter",
+        shared_open_geometry_limiter,
+    )
+    monkeypatch.setattr(
+        open_geometry_routes,
+        "open_geometry_rate_limiter",
+        shared_open_geometry_limiter,
+    )
     monkeypatch.setattr(upload.llm_service, "analyze_room_model", lambda *_: None)
     monkeypatch.setattr(
         upload.settings,
@@ -195,6 +227,1088 @@ def test_agent_turn_pauses_persists_checkpoint_and_task_bound_chat(
         assert task.agent_state_version == 1
         assert [log.role for log in logs] == ["user", "ai"]
         assert events
+
+
+@pytest.mark.integration
+def test_agent_open_geometry_turn_returns_compact_result_and_checkpoint(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+
+    def prepare(*, instruction, current_state, planner=None):
+        del planner
+        return prepare_open_geometry_command(
+            instruction=instruction,
+            current_state=current_state,
+            planner=lambda *_: TypeAdapter(OpenGeometryOperation).validate_python(
+                {"operation": "create", "design": _open_geometry_chair_design()}
+            ),
+        )
+
+    monkeypatch.setattr(open_geometry_service, "prepare_command", prepare)
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "agent-open-geometry-001",
+            "message": "创建开放式书柜",
+            "active_mode": "custom_furniture",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["intent"] == "open_geometry"
+    assert payload["result"]["code"] == "completed"
+    assert payload["reply"] == "已生成开放几何版本 1。"
+    assert payload["open_geometry"]["current_version"] == 1
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task.agent_state_json["open_geometry_furniture"]["current_version"] == 1
+
+
+@pytest.mark.integration
+def test_agent_open_geometry_resets_completed_goal_step_budget(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    calls = []
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        task.agent_state_json = {
+            "status": "completed",
+            "exit_reason": "goal_completed",
+            "step_count": 12,
+            "retry_count": 2,
+            "max_steps": 12,
+            "max_retries": 2,
+        }
+        db.commit()
+
+    def prepare(*, instruction, current_state, planner=None):
+        del planner
+        calls.append(True)
+        return prepare_open_geometry_command(
+            instruction=instruction,
+            current_state=current_state,
+            planner=lambda *_: TypeAdapter(OpenGeometryOperation).validate_python(
+                {"operation": "create", "design": _open_geometry_chair_design()}
+            ),
+        )
+
+    monkeypatch.setattr(open_geometry_service, "prepare_command", prepare)
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "agent-open-geometry-reset-001",
+            "message": "再设计一件家具",
+            "active_mode": "custom_furniture",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["state"]["step_count"] < 12
+    assert response.json()["state"]["retry_count"] == 0
+    assert calls == [True]
+
+
+@pytest.mark.integration
+def test_agent_open_geometry_rejects_invalid_private_extension_before_commit(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    prior_extension = {"current_version": 0, "current": None, "history": []}
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        task.agent_state_json = {"open_geometry_furniture": prior_extension}
+        db.commit()
+
+    monkeypatch.setattr(
+        open_geometry_service,
+        "prepare_command",
+        lambda **_: SimpleNamespace(
+            result={
+                "status": "completed",
+                "code": "completed",
+                "message": "候选不应提交",
+                "current_version": 1,
+                "model_id": "OPEN-INVALID",
+                "part_count": 1,
+            },
+            extension={"current_version": "invalid", "current": None, "history": []},
+        ),
+    )
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "agent-open-geometry-invalid-extension-001",
+            "message": "创建一把椅子",
+            "active_mode": "custom_furniture",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["open_geometry"]["current_version"] == 0
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task.agent_state_json["open_geometry_furniture"] == prior_extension
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "result_patch",
+    [
+        {"current_version": 2},
+        {"part_count": 99},
+        {"model_id": "OPEN-WRONG"},
+    ],
+)
+def test_agent_open_geometry_rejects_result_extension_drift_before_commit(
+    agent_api_context,
+    monkeypatch,
+    result_patch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    prepared = prepare_open_geometry_command(
+        instruction="创建概念椅",
+        current_state={"current_version": 0, "current": None, "history": []},
+        planner=lambda *_: TypeAdapter(OpenGeometryOperation).validate_python(
+            {"operation": "create", "design": _open_geometry_chair_design()}
+        ),
+    )
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        task.agent_state_json = {
+            "open_geometry_furniture": {
+                "current_version": 0,
+                "current": None,
+                "history": [],
+            }
+        }
+        db.commit()
+    monkeypatch.setattr(
+        open_geometry_service,
+        "prepare_command",
+        lambda **_: SimpleNamespace(
+            result={**prepared.result, **result_patch},
+            extension=prepared.extension,
+        ),
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "agent-open-geometry-result-drift-001",
+            "message": "创建一把概念椅",
+            "active_mode": "custom_furniture",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["open_geometry"]["current_version"] == 0
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task.agent_state_json["open_geometry_furniture"] == {
+            "current_version": 0,
+            "current": None,
+            "history": [],
+        }
+
+
+@pytest.mark.integration
+def test_agent_open_geometry_stale_base_is_rejected_before_model(
+    agent_api_context,
+    monkeypatch,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+    calls = []
+
+    def prepare(**_kwargs):
+        calls.append(True)
+        raise AssertionError("过期基线不应调用模型")
+
+    monkeypatch.setattr(open_geometry_service, "prepare_command", prepare)
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "agent-open-geometry-stale-001",
+            "message": "创建开放式书柜",
+            "active_mode": "custom_furniture",
+            "base_state_version": 1,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "agent_state_conflict"
+    assert response.json()["detail"]["state_version"] == 0
+    assert calls == []
+
+
+@pytest.mark.integration
+def test_agent_open_geometry_replay_does_not_call_prepare_twice(
+    agent_api_context,
+    monkeypatch,
+):
+    client, _, owner_id, _, task_id = agent_api_context
+    calls = []
+
+    def prepare(*, instruction, current_state, planner=None):
+        del instruction, planner
+        calls.append(True)
+        extension = {
+            "current_version": current_state.get("current_version", 0) + 1,
+            "current": None,
+            "history": [],
+        }
+        return SimpleNamespace(
+            result={
+                "status": "completed",
+                "code": "completed",
+                "message": "已生成开放几何版本。",
+                "current_version": extension["current_version"],
+                "model_id": "OPEN-REPLAY",
+                "part_count": 1,
+            },
+            extension=extension,
+        )
+
+    monkeypatch.setattr(open_geometry_service, "prepare_command", prepare)
+    body = {
+        "client_turn_id": "agent-open-geometry-replay-001",
+        "message": "创建开放式书柜",
+        "active_mode": "custom_furniture",
+    }
+    first = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=body,
+    )
+    replay = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=body,
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.json() == replay.json()
+    assert calls == [True]
+
+
+@pytest.mark.integration
+def test_agent_open_geometry_unsupported_preserves_last_version_without_retry(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    created = open_geometry_service.prepare_command(
+        instruction="创建概念椅",
+        current_state={"current_version": 0, "current": None, "history": []},
+        planner=lambda *_: TypeAdapter(OpenGeometryOperation).validate_python(
+            {"operation": "create", "design": _open_geometry_chair_design()}
+        ),
+    )
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        task.agent_state_json = {
+            "open_geometry_furniture": created.extension,
+        }
+        task.agent_state_version = 1
+        db.commit()
+
+    calls = []
+
+    def unsupported_chat(*_args, **_kwargs):
+        from app.services import llm_service
+
+        llm_service._mark_model_call_attempted()
+        calls.append(True)
+        return {"operation": "unsupported", "reason": "需要 NURBS 自由曲面"}
+
+    monkeypatch.setattr(open_geometry_service.llm_service, "_chat_json", unsupported_chat)
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "agent-open-geometry-unsupported-001",
+            "message": "把椅背改成 NURBS 自由曲面",
+            "active_mode": "custom_furniture",
+            "base_state_version": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["exit_reason"] == "unsupported_geometry"
+    assert payload["approval_required"] is False
+    assert payload["state"]["retry_count"] == 0
+    assert payload["result"]["code"] == "unsupported_geometry"
+    assert payload["open_geometry"]["current_version"] == 1
+    assert "NURBS 自由曲面" in payload["reply"]
+    assert calls == [True]
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task.agent_state_json["open_geometry_furniture"] == created.extension
+
+
+def _open_geometry_chair_design():
+    return {
+        "schema_version": "furniture-open-geometry/1.0",
+        "name": "概念椅",
+        "description": "",
+        "materials": [
+            {
+                "id": "wood",
+                "name": "木材",
+                "base_color": "#8B6A4F",
+                "roughness": 0.7,
+                "metallic": 0.0,
+            }
+        ],
+        "parts": [
+            {
+                "id": "seat",
+                "name": "座面",
+                "material_id": "wood",
+                "parent_id": None,
+                "position_mm": [0.0, 450.0, 0.0],
+                "rotation_deg": [0.0, 0.0, 0.0],
+                "geometry": {
+                    "type": "box",
+                    "size_mm": [600.0, 80.0, 600.0],
+                    "radius_mm": 20.0,
+                },
+            }
+        ],
+    }
+
+
+def _attach_empty_scene(factory, task_id, *, openings=None):
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        revision = design_version_service.persist_generation(
+            db,
+            task=task,
+            generator="llm",
+            plans=[
+                {
+                    "id": "plan-action",
+                    "name": "动作规划测试方案",
+                    "furnitureSuggestions": [{"id": "SOFA-001"}],
+                    "shopQuote": {
+                        "furnitureTotal": 5000,
+                        "customTotal": 0,
+                        "total": 5000,
+                        "lineItems": [
+                            {"sku": "SOFA-001", "unitPrice": 5000, "quantity": 1}
+                        ],
+                        "customLineItems": [],
+                    },
+                }
+            ],
+        )
+        attach_scene_versions(db, revision)
+        scene = db.scalar(
+            select(DesignScene)
+            .join(DesignScene.plan_version)
+            .where(DesignScene.plan_version_id == revision.plans[0].id)
+        )
+        version = db.scalar(
+            select(DesignSceneVersion).where(
+                DesignSceneVersion.scene_id == scene.id,
+                DesignSceneVersion.version == 1,
+            )
+        )
+        document = deepcopy(version.scene_json)
+        document["items"] = []
+        document["openings"] = openings or []
+        version.scene_json = document
+        db.commit()
+        return scene.id, scene.current_version
+
+
+def _mock_open_geometry_create(
+    *,
+    instruction,
+    current_state,
+    planner=None,
+    max_attempts=2,
+):
+    del planner
+    return prepare_open_geometry_command(
+        instruction=instruction,
+        current_state=current_state,
+        max_attempts=max_attempts,
+        planner=lambda *_: TypeAdapter(OpenGeometryOperation).validate_python(
+            {"operation": "create", "design": _open_geometry_chair_design()}
+        ),
+    )
+
+
+@pytest.mark.integration
+def test_action_plan_creates_places_and_replays_without_duplicate(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    scene_id, scene_version = _attach_empty_scene(factory, task_id)
+    planner_calls = []
+    geometry_budgets = []
+
+    def plan(**kwargs):
+        planner_calls.append(kwargs)
+        return AgentActionPlan.model_validate(
+            {
+                "schemaVersion": "agent-action-plan/1.0",
+                "outcome": "execute",
+                "summary": "创建并放到房间中心",
+                "steps": [
+                    {
+                        "id": "shape",
+                        "tool": "open_geometry.edit",
+                        "instruction": "做一把包裹感椅子",
+                    },
+                    {
+                        "id": "place",
+                        "tool": "scene.place_open_geometry",
+                        "dependsOn": ["shape"],
+                        "placement": {"kind": "room_center"},
+                    },
+                ],
+            }
+        )
+
+    def prepare(**kwargs):
+        geometry_budgets.append(kwargs.get("max_attempts"))
+        return _mock_open_geometry_create(**kwargs)
+
+    @contextmanager
+    def captured_calls():
+        yield SimpleNamespace(
+            attempted=True,
+            attempt_count=2,
+            usage={
+                "prompt_tokens": 120,
+                "completion_tokens": 40,
+                "total_tokens": 160,
+            },
+        )
+
+    monkeypatch.setattr(open_geometry_service, "prepare_command", prepare)
+    monkeypatch.setattr(design_agent.design_agent_service.llm_service, "plan_agent_actions", plan)
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "capture_model_call",
+        captured_calls,
+    )
+    monkeypatch.setattr(
+        design_agent.design_agent_service.settings,
+        "llm_input_price_per_mtok",
+        2.0,
+    )
+    monkeypatch.setattr(
+        design_agent.design_agent_service.settings,
+        "llm_output_price_per_mtok",
+        8.0,
+    )
+    body = {
+        "client_turn_id": "action-create-place-001",
+        "message": "做一把包裹感椅子并放到客厅中间",
+        "active_mode": "custom_furniture",
+        "scene_id": scene_id,
+        "base_scene_version": scene_version,
+    }
+
+    first = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=body,
+    )
+    replay = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=body,
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.json() == replay.json()
+    payload = first.json()
+    assert payload["intent"] == "action_plan"
+    assert payload["result"]["partialCompletion"] is False
+    assert payload["scene_ref"] == {"scene_id": scene_id, "version": 2}
+    assert payload["open_geometry"]["current_version"] == 1
+    assert len(planner_calls) == 1
+    assert geometry_budgets == [1]
+    timeline = client.get(
+        f"/api/design/tasks/{task_id}/timeline",
+        headers={"X-Session-ID": owner_id},
+    ).json()
+    assert timeline["events"][-1]["attempt"] == 2
+    assert timeline["events"][-1]["billing_status"] == "metered"
+    assert timeline["events"][-1]["cost_cny"] == pytest.approx(0.00056)
+    with factory() as db:
+        scene = db.get(DesignScene, scene_id)
+        assert scene.current_version == 2
+        current = db.scalar(
+            select(DesignSceneVersion).where(
+                DesignSceneVersion.scene_id == scene_id,
+                DesignSceneVersion.version == 2,
+            )
+        )
+        items = current.scene_json["items"]
+        assert len(items) == 1
+        assert items[0]["sourceType"] == "open_geometry_draft"
+        assert items[0]["transform"]["position"] | {"x": 0.0, "z": 0.0} == items[0]["transform"]["position"]
+
+
+@pytest.mark.integration
+def test_custom_mode_without_scene_stays_in_open_geometry_domain(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    planner_calls = []
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "plan_agent_actions",
+        lambda **_: planner_calls.append("planner"),
+    )
+    monkeypatch.setattr(
+        open_geometry_service,
+        "prepare_command",
+        _mock_open_geometry_create,
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "geometry-without-scene-001",
+            "message": "做一把包裹感椅子",
+            "active_mode": "custom_furniture",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["intent"] == "open_geometry"
+    assert planner_calls == []
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task.agent_state_json["open_geometry_furniture"]["current_version"] == 1
+
+
+@pytest.mark.integration
+def test_action_plan_placement_failure_rolls_back_staged_geometry(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    scene_id, scene_version = _attach_empty_scene(factory, task_id)
+    monkeypatch.setattr(open_geometry_service, "prepare_command", _mock_open_geometry_create)
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "plan_agent_actions",
+        lambda **_: AgentActionPlan.model_validate(
+            {
+                "schemaVersion": "agent-action-plan/1.0",
+                "outcome": "execute",
+                "summary": "创建后放到房间外",
+                "steps": [
+                    {
+                        "id": "shape",
+                        "tool": "open_geometry.edit",
+                        "instruction": "创建一把椅子",
+                    },
+                    {
+                        "id": "place",
+                        "tool": "scene.place_open_geometry",
+                        "dependsOn": ["shape"],
+                        "placement": {
+                            "kind": "explicit",
+                            "position": {"x": 50, "z": 50},
+                        },
+                    },
+                ],
+            }
+        ),
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "action-rollback-001",
+            "message": "创建椅子并放到指定位置",
+            "active_mode": "custom_furniture",
+            "scene_id": scene_id,
+            "base_scene_version": scene_version,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["partialCompletion"] is False
+    assert response.json()["result"]["code"] in {
+        "item_outside_room",
+        "item_exceeds_room",
+    }
+    assert response.json()["result"]["partialCompletion"] is False
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        scene = db.get(DesignScene, scene_id)
+        assert "open_geometry_furniture" not in task.agent_state_json
+        assert scene.current_version == 1
+        assert db.scalar(
+            select(DesignSceneVersion).where(
+                DesignSceneVersion.scene_id == scene_id,
+                DesignSceneVersion.version == 2,
+            )
+        ) is None
+
+
+@pytest.mark.integration
+def test_action_plan_geometry_failure_uses_two_call_budget_and_fails_closed(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    scene_id, scene_version = _attach_empty_scene(factory, task_id)
+    calls = []
+
+    def plan(**_):
+        calls.append("action_planner")
+        return AgentActionPlan.model_validate(
+            {
+                "schemaVersion": "agent-action-plan/1.0",
+                "outcome": "execute",
+                "summary": "创建并放置椅子",
+                "steps": [
+                    {
+                        "id": "shape",
+                        "tool": "open_geometry.edit",
+                        "instruction": "创建一把椅子",
+                    },
+                    {
+                        "id": "place",
+                        "tool": "scene.place_open_geometry",
+                        "dependsOn": ["shape"],
+                        "placement": {"kind": "room_center"},
+                    },
+                ],
+            }
+        )
+
+    def invalid_geometry(*_):
+        calls.append("geometry_planner")
+        raise open_geometry_service.OpenGeometryError(
+            "invalid_model_output",
+            "候选无效",
+        )
+
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "plan_agent_actions",
+        plan,
+    )
+    monkeypatch.setattr(open_geometry_service, "_plan_operation", invalid_geometry)
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "action-two-call-budget-001",
+            "message": "创建一把椅子并放到房间中间",
+            "active_mode": "custom_furniture",
+            "scene_id": scene_id,
+            "base_scene_version": scene_version,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["partialCompletion"] is False
+    assert response.json()["result"]["code"] == "invalid_model_output"
+    assert calls == ["action_planner", "geometry_planner"]
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert "open_geometry_furniture" not in task.agent_state_json
+        assert db.get(DesignScene, scene_id).current_version == 1
+
+
+@pytest.mark.integration
+def test_action_plan_moves_recent_open_geometry_near_known_window(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    scene_id, scene_version = _attach_empty_scene(
+        factory,
+        task_id,
+        openings=[
+            {
+                "id": "window-east",
+                "type": "window",
+                "wallIndex": 1,
+                "offset": 2,
+                "width": 1,
+                "height": 1.2,
+                "sillHeight": 0.8,
+            }
+        ],
+    )
+    monkeypatch.setattr(open_geometry_service, "prepare_command", _mock_open_geometry_create)
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "plan_agent_actions",
+        lambda **_: AgentActionPlan.model_validate(
+            {
+                "schemaVersion": "agent-action-plan/1.0",
+                "outcome": "execute",
+                "summary": "创建并放到房间中心",
+                "steps": [
+                    {
+                        "id": "shape",
+                        "tool": "open_geometry.edit",
+                        "instruction": "做一把包裹感椅子",
+                    },
+                    {
+                        "id": "place",
+                        "tool": "scene.place_open_geometry",
+                        "dependsOn": ["shape"],
+                        "placement": {"kind": "room_center"},
+                    },
+                ],
+            }
+        ),
+    )
+    created = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "action-move-create-001",
+            "message": "做一把包裹感椅子并放到客厅中间",
+            "active_mode": "custom_furniture",
+            "scene_id": scene_id,
+            "base_scene_version": scene_version,
+        },
+    )
+    with factory() as db:
+        current = db.scalar(
+            select(DesignSceneVersion).where(
+                DesignSceneVersion.scene_id == scene_id,
+                DesignSceneVersion.version == 2,
+            )
+        )
+        instance_id = current.scene_json["items"][0]["instanceId"]
+
+    planner_contexts = []
+
+    def move_plan(**kwargs):
+        planner_contexts.append(kwargs["context"])
+        return AgentActionPlan.model_validate(
+            {
+                "schemaVersion": "agent-action-plan/1.0",
+                "outcome": "execute",
+                "summary": "已将椅子移到东侧窗边",
+                "steps": [
+                    {
+                        "id": "move",
+                        "tool": "scene.move_item",
+                        "instanceId": instance_id,
+                        "placement": {
+                            "kind": "near_opening",
+                            "openingId": "window-east",
+                        },
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "plan_agent_actions",
+        move_plan,
+    )
+    moved = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "action-move-window-002",
+            "message": "把刚做的椅子靠窗移动",
+            "active_mode": "custom_furniture",
+            "scene_id": scene_id,
+            "base_scene_version": 2,
+            "base_state_version": created.json()["state_version"],
+        },
+    )
+
+    assert moved.status_code == 200
+    assert moved.json()["status"] == "completed"
+    assert moved.json()["scene_ref"] == {"scene_id": scene_id, "version": 3}
+    assert moved.json()["open_geometry"]["current_version"] == 1
+    assert planner_contexts[0]["scene"]["openings"] == [
+        {"id": "window-east", "type": "window"}
+    ]
+    assert planner_contexts[0]["openGeometryItems"][0]["instanceId"] == instance_id
+    with factory() as db:
+        current = db.scalar(
+            select(DesignSceneVersion).where(
+                DesignSceneVersion.scene_id == scene_id,
+                DesignSceneVersion.version == 3,
+            )
+        )
+        position = current.scene_json["items"][0]["transform"]["position"]
+        assert position["x"] == pytest.approx(2.55)
+        assert position["z"] == pytest.approx(-0.5)
+
+
+@pytest.mark.integration
+def test_action_plan_ambiguous_reference_clarifies_without_scene_write(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    scene_id, scene_version = _attach_empty_scene(factory, task_id)
+    contexts = []
+
+    def clarify(**kwargs):
+        contexts.append(kwargs["context"])
+        return AgentActionPlan.model_validate(
+            {
+                "schemaVersion": "agent-action-plan/1.0",
+                "outcome": "clarify",
+                "summary": "无法唯一确定目标",
+                "steps": [],
+                "question": {
+                    "field": "target_instance",
+                    "prompt": "要移动哪一件家具？",
+                    "candidateIds": [],
+                },
+            }
+        )
+
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "plan_agent_actions",
+        clarify,
+    )
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "action-clarify-target-001",
+            "message": "把刚才那个往旁边挪一下",
+            "active_mode": "custom_furniture",
+            "scene_id": scene_id,
+            "base_scene_version": scene_version,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "waiting_user"
+    assert response.json()["exit_reason"] == "clarification_required"
+    assert response.json()["pending_questions"][0]["field"] == "target_instance"
+    assert response.json()["result"]["partialCompletion"] is False
+    assert len(contexts) == 1
+    with factory() as db:
+        assert db.get(DesignScene, scene_id).current_version == 1
+
+
+@pytest.mark.integration
+def test_pure_geometry_edit_preserves_prior_scene_reference(
+    agent_api_context,
+    monkeypatch,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    scene_id, scene_version = _attach_empty_scene(factory, task_id)
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        task.agent_state_json = {
+            "scene_ref": {"scene_id": scene_id, "version": scene_version}
+        }
+        db.commit()
+    monkeypatch.setattr(open_geometry_service, "prepare_command", _mock_open_geometry_create)
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service,
+        "plan_agent_actions",
+        lambda **_: AgentActionPlan.model_validate(
+            {
+                "schemaVersion": "agent-action-plan/1.0",
+                "outcome": "execute",
+                "summary": "创建包裹感椅子",
+                "steps": [
+                    {
+                        "id": "shape",
+                        "tool": "open_geometry.edit",
+                        "instruction": "做一把包裹感椅子",
+                    }
+                ],
+            }
+        ),
+    )
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "pure-geometry-scene-ref-001",
+            "message": "做一把包裹感椅子",
+            "active_mode": "custom_furniture",
+            "scene_id": scene_id,
+            "base_scene_version": scene_version,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["intent"] == "action_plan"
+    assert response.json()["scene_ref"] == {
+        "scene_id": scene_id,
+        "version": scene_version,
+    }
+
+
+@pytest.mark.integration
+def test_open_geometry_rate_limit_is_shared_across_agent_and_legacy_routes(
+    agent_api_context,
+    monkeypatch,
+):
+    from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
+
+    client, _, owner_id, _, task_id = agent_api_context
+    limiter = SceneAgentRateLimiter(max_requests=1, window_seconds=60)
+    monkeypatch.setattr(design_agent, "open_geometry_rate_limiter", limiter)
+    monkeypatch.setattr(open_geometry_routes, "open_geometry_rate_limiter", limiter)
+    calls = []
+
+    def prepare(*, instruction, current_state, planner=None):
+        del instruction, planner
+        calls.append(True)
+        next_version = current_state.get("current_version", 0) + 1
+        return SimpleNamespace(
+            result={
+                "status": "completed",
+                "code": "completed",
+                "message": f"已生成开放几何版本 {next_version}。",
+                "current_version": next_version,
+                "model_id": "OPEN-LIMIT",
+                "part_count": 1,
+            },
+            extension={
+                "current_version": next_version,
+                "current": None,
+                "history": [],
+            },
+        )
+
+    monkeypatch.setattr(open_geometry_service, "prepare_command", prepare)
+    agent_body = {
+        "client_turn_id": "agent-open-geometry-limit-001",
+        "message": "创建一把椅子",
+        "active_mode": "custom_furniture",
+    }
+    first = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=agent_body,
+    )
+    replay = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json=agent_body,
+    )
+    limited = client.post(
+        f"/api/design/tasks/{task_id}/open-geometry/commands",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_mutation_id": "legacy-open-geometry-limit-002",
+            "base_version": 1,
+            "instruction": "靠背更弯",
+        },
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.json() == first.json()
+    assert limited.status_code == 429
+    assert limited.json()["detail"]["code"] == "rate_limited"
+    assert int(limited.headers["Retry-After"]) >= 1
+    assert calls == [True]
+
+
+@pytest.mark.integration
+def test_agent_turn_preserves_open_geometry_extension_checkpoint(
+    agent_api_context,
+):
+    client, factory, owner_id, _, task_id = agent_api_context
+    open_geometry_state = {
+        "current_version": 1,
+        "current": {
+            "version": 1,
+            "source": "llm",
+            "instruction": "生成一组开放式书柜",
+            "design": {
+                "schema_version": "furniture-open-geometry/1.0",
+                "name": "开放式书柜",
+                "description": "",
+                "scale": [1.0, 1.0, 1.0],
+                "materials": [
+                    {
+                        "id": "wood",
+                        "name": "木饰面",
+                        "base_color": "#8B5A2B",
+                        "roughness": 0.6,
+                        "metallic": 0.0,
+                    }
+                ],
+                "parts": [
+                    {
+                        "id": "shelf",
+                        "name": "书柜主体",
+                        "material_id": "wood",
+                        "position_mm": [0.0, 1000.0, 0.0],
+                        "rotation_deg": [0.0, 0.0, 0.0],
+                        "geometry": {
+                            "type": "box",
+                            "size_mm": [1200.0, 2000.0, 350.0],
+                            "radius_mm": 8.0,
+                        },
+                    }
+                ],
+            },
+            "model_spec": {"生成器": "open_geometry_v1"},
+        },
+        "history": [],
+    }
+    open_geometry_state["history"] = [open_geometry_state["current"]]
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        task.agent_state_json = {"open_geometry_furniture": open_geometry_state}
+        db.commit()
+
+    response = client.post(
+        f"/api/design/tasks/{task_id}/agent-turns",
+        headers={"X-Session-ID": owner_id},
+        json={
+            "client_turn_id": "preserve-open-geometry-001",
+            "message": "继续设计",
+            "active_mode": "catalog_design",
+        },
+    )
+
+    assert response.status_code == 200
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task.agent_state_json["open_geometry_furniture"] == open_geometry_state
 
 
 @pytest.mark.integration
@@ -1530,6 +2644,15 @@ def test_unexpected_failure_is_persisted_and_idempotently_replayed(
 ):
     client, factory, owner_id, _, task_id = agent_api_context
     calls = []
+    open_geometry_state = {
+        "current_version": 1,
+        "current": {"version": 1, "model_spec": {"generator": "open_geometry_v1"}},
+        "history": [{"version": 1}],
+    }
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        task.agent_state_json = {"open_geometry_furniture": open_geometry_state}
+        db.commit()
 
     def crash(*_):
         calls.append("called")
@@ -1577,6 +2700,8 @@ def test_unexpected_failure_is_persisted_and_idempotently_replayed(
         ).one()
         assert turn.status == "failed"
         assert turn.response_json is not None
+        task = db.get(DesignTask, task_id)
+        assert task.agent_state_json["open_geometry_furniture"] == open_geometry_state
         assert len(
             db.scalars(select(ChatLog).where(ChatLog.task_id == task_id)).all()
         ) == 2
@@ -1716,9 +2841,10 @@ def test_custom_furniture_agent_collects_partial_spec_across_turns(
         f"/api/design/tasks/{task_id}/agent-turns",
         headers={"X-Session-ID": owner_id},
         json={
-            "client_turn_id": "custom-missing-family-001",
-            "message": "我想定制一件家具",
+            "client_turn_id": "custom-missing-name-001",
+            "message": "我想按柜体模板定制家具",
             "active_mode": "custom_furniture",
+            "custom_furniture_spec": {"family": "cabinet"},
         },
     )
     second = client.post(
@@ -1765,7 +2891,11 @@ def test_custom_furniture_agent_collects_partial_spec_across_turns(
     assert first.status_code == second.status_code == third.status_code == 200
     assert first.json()["intent"] == "custom_furniture"
     assert [question["field"] for question in first.json()["pending_questions"]] == [
-        "custom_furniture_spec.family"
+        "custom_furniture_spec.name",
+        "custom_furniture_spec.purpose",
+        "custom_furniture_spec.material",
+        "custom_furniture_spec.dimensions",
+        "custom_furniture_spec.structure",
     ]
     assert [question["field"] for question in second.json()["pending_questions"]] == [
         "custom_furniture_spec.structure"

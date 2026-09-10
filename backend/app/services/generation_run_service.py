@@ -597,13 +597,6 @@ def synchronize_agent_checkpoint(db: Session, *, task: DesignTask) -> bool:
     return changed
 
 
-def is_agent_generation_run(run: GenerationRun) -> bool:
-    return bool(
-        run.idempotency_key
-        and run.idempotency_key.startswith("agent-generation:")
-    )
-
-
 def _mark_dead_letter(
     db: Session,
     *,

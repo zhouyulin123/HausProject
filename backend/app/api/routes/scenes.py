@@ -30,6 +30,7 @@ from app.schemas.blender_render import (
 from app.schemas.design_agent import AgentTurnRequest
 from app.schemas.scenes import (
     CustomFurnitureSceneItemRequest,
+    OpenGeometrySceneItemRequest,
     SceneCreateRequest,
     SceneDocument,
     SceneResponse,
@@ -44,6 +45,7 @@ from app.schemas.scene_agent import (
 )
 from app.schemas.feedback import DesignFeedbackEventRequest
 from app.services import (
+    blender_render_service,
     blender_job_service,
     aggregate_lock_service,
     design_version_service,
@@ -194,6 +196,15 @@ def create_plan_scene(
     except scene_tools.SceneCatalogEligibilityError as error:
         db.rollback()
         raise _catalog_error(error) from error
+    except (
+        scene_service.CustomSceneBindingError,
+        scene_service.OpenGeometrySceneBindingError,
+    ) as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except scene_service.SceneConflictError as error:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -375,7 +386,10 @@ def add_custom_furniture_item(
         db.refresh(scene)
         db.refresh(version)
         return _scene_response(scene, version)
-    except scene_service.CustomSceneBindingError as error:
+    except (
+        scene_service.CustomSceneBindingError,
+        scene_service.OpenGeometrySceneBindingError,
+    ) as error:
         db.rollback()
         raise HTTPException(
             status_code=422,
@@ -384,6 +398,92 @@ def add_custom_furniture_item(
     except scene_service.SceneConflictError as error:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except scene_service.SceneValidationError as error:
+        db.rollback()
+        raise _validation_error(error) from error
+    except aggregate_lock_service.AggregateLockBusy as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "aggregate_busy", "message": str(error)},
+        ) from error
+
+
+@router.post(
+    "/scenes/{scene_id}/open-geometry-items",
+    response_model=SceneResponse,
+)
+def add_open_geometry_item(
+    scene_id: int,
+    payload: OpenGeometrySceneItemRequest,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
+):
+    require_active_session(db, x_session_id)
+    try:
+        locked = aggregate_lock_service.lock_owned_scene(
+            db,
+            session_id=x_session_id,
+            scene_id=scene_id,
+        )
+        if locked is None:
+            raise _not_found("3D 场景")
+        task, scene = locked
+        version, created = scene_service.add_open_geometry_to_scene(
+            db,
+            task=task,
+            scene=scene,
+            payload=payload,
+        )
+        if created:
+            design_agent_service.record_scene_reference(
+                db,
+                task_id=task.id,
+                scene_id=scene.id,
+                version=version.version,
+            )
+        db.commit()
+        db.refresh(scene)
+        db.refresh(version)
+        return _scene_response(scene, version)
+    except scene_service.OpenGeometrySceneBindingError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
+    except scene_service.ScenePlacementError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": error.code,
+                "message": str(error),
+                "issues": [
+                    issue.model_dump(mode="json") for issue in error.issues
+                ],
+            },
+        ) from error
+    except scene_service.SceneIdempotencyConflict as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "idempotency_conflict",
+                "message": str(error),
+                "currentVersion": scene.current_version,
+            },
+        ) from error
+    except scene_service.SceneConflictError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "scene_version_conflict",
+                "message": str(error),
+                "currentVersion": scene.current_version,
+            },
+        ) from error
     except scene_service.SceneValidationError as error:
         db.rollback()
         raise _validation_error(error) from error
@@ -469,7 +569,10 @@ def update_scene(
     except scene_tools.SceneCatalogEligibilityError as error:
         db.rollback()
         raise _catalog_error(error) from error
-    except scene_service.CustomSceneBindingError as error:
+    except (
+        scene_service.CustomSceneBindingError,
+        scene_service.OpenGeometrySceneBindingError,
+    ) as error:
         db.rollback()
         raise HTTPException(
             status_code=422,
@@ -570,11 +673,22 @@ def queue_blender_render(
             detail=f"场景已经更新到版本 {scene.current_version}，请刷新后重试",
         )
     version = scene_service.get_current_version(db, scene)
+    document = SceneDocument.model_validate(version.scene_json)
+    try:
+        blender_render_service.assert_scene_renderable(document)
+    except blender_render_service.OpenGeometryRenderUnsupported as error:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "open_geometry_render_unsupported",
+                "message": str(error),
+            },
+        ) from error
     if payload.profile == "final":
         try:
             scene_service.assert_scene_catalog_deliverable(
                 db,
-                SceneDocument.model_validate(version.scene_json),
+                document,
                 region=scene_service.scene_delivery_region(db, scene),
             )
         except scene_tools.SceneCatalogEligibilityError as error:

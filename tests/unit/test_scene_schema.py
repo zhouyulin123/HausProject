@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import pytest
 from pydantic import ValidationError
 
@@ -120,3 +122,51 @@ def test_scene_document_rejects_opening_for_unknown_wall():
 
     with pytest.raises(ValidationError, match="wallIndex"):
         SceneDocument.model_validate(payload)
+
+
+def test_scene_document_11_requires_complete_open_geometry_snapshot():
+    payload = _valid_scene()
+    payload["schemaVersion"] = "1.1"
+    payload["items"] = [
+        {
+            "instanceId": "open-chair-1",
+            "sku": "OPEN-CHAIR-1",
+            "category": "开放几何家具",
+            "sourceType": "open_geometry_draft",
+            "assetMode": "parametric",
+            "transform": {
+                "position": {"x": 2, "y": 0.5, "z": 2},
+                "rotation": {"x": 0, "y": 0, "z": 0},
+                "scale": {"x": 1, "y": 1, "z": 1},
+            },
+            "dimensions": {"x": 1, "y": 1, "z": 1},
+            "openGeometryRef": {
+                "taskId": 1,
+                "planVersionId": 2,
+                "introducedSceneVersion": 3,
+                "openGeometryVersion": 4,
+                "modelId": "OPEN-ABCDEF0123456789",
+                "specDigest": "sha256:" + "a" * 64,
+            },
+            "openGeometryModelSpec": {
+                "家具类型": "开放几何家具",
+                "确定性建模规则": {"规则状态": "ready"},
+            },
+        }
+    ]
+
+    document = SceneDocument.model_validate(payload)
+
+    assert document.schema_version == "1.1"
+    assert document.items[0].open_geometry_ref.open_geometry_version == 4
+    assert document.items[0].open_geometry_model_spec["家具类型"] == "开放几何家具"
+
+    legacy = deepcopy(payload)
+    legacy["schemaVersion"] = "1.0"
+    with pytest.raises(ValidationError, match="1.1"):
+        SceneDocument.model_validate(legacy)
+
+    incomplete = deepcopy(payload)
+    incomplete["items"][0].pop("openGeometryModelSpec")
+    with pytest.raises(ValidationError, match="openGeometryModelSpec"):
+        SceneDocument.model_validate(incomplete)

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -15,11 +15,18 @@ import {
 } from "lucide-react";
 import {
   AdminApiError,
+  createRealWorldAnnotationRevision,
+  createRealWorldConsentDecision,
   fetchFailureClusters,
   fetchQualitySummary,
+  fetchRealWorldCases,
   fetchRealWorldReadiness,
+  freezeRealWorldDataset,
+  importRealWorldCase,
   importFailureTriageReportFile,
   importFailureVerificationReportFile,
+  previewRealWorldCaseImport,
+  updateRealWorldCase,
   updateFailureCluster,
 } from "@/api/adminApi";
 import type { RealWorldReadiness, RealWorldSplit } from "@/api/adminApi";
@@ -43,6 +50,16 @@ import type {
   QualityWindowDays,
   QualityRenderQueueMetrics,
 } from "@/types/quality";
+import type {
+  CaseImportPayload,
+  CaseImportResponse,
+  ConsentDecision,
+  ConsentLegalBasis,
+  GovernanceCase,
+  GovernanceCaseSplit,
+  GovernanceCaseUpdate,
+  GovernanceRedactionReview,
+} from "@/types/admin";
 
 const integerFormatter = new Intl.NumberFormat("zh-CN");
 const currencyFormatter = new Intl.NumberFormat("zh-CN", {
@@ -71,16 +88,47 @@ const REAL_WORLD_SPLIT_LABELS: Record<RealWorldSplit, string> = {
 };
 
 const REAL_WORLD_BLOCKER_LABELS: Record<string, string> = {
+  redaction_not_reviewed: "脱敏复核未通过",
   consent_not_granted: "未取得授权",
   consent_expired: "授权已过期",
   annotation_not_ready: "人工标注未就绪",
   purpose_not_allowed: "使用目的不在授权范围",
   split_not_assigned: "未分配评测分组",
+  task_input_not_ready: "任务输入未就绪",
   duplicate_case: "案例重复",
   case_not_private_real: "不是真实私有案例",
   trusted_schema_required: "清单版本不支持可信证据",
   synthetic_release_case: "发布分组混入合成案例",
 };
+
+const GOVERNANCE_SPLIT_LABELS: Record<GovernanceCaseSplit, string> = {
+  unassigned: "未分组",
+  development: "开发集",
+  regression: "回归集",
+  blind: "盲测集",
+};
+
+const REDACTION_LABELS: Record<GovernanceRedactionReview, string> = {
+  pending: "待复核",
+  reviewed: "已复核",
+  rejected: "已驳回",
+};
+
+const CONSENT_LABELS: Record<GovernanceCase["consent_status"], string> = {
+  pending: "授权待处理",
+  granted: "已授权",
+  denied: "已拒绝",
+  revoked: "已撤回",
+  expired: "授权过期",
+};
+
+const ANNOTATION_LABELS: Record<GovernanceCase["annotation_status"], string> = {
+  pending: "标注待处理",
+  ready: "标注就绪",
+};
+
+const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const MAX_ANNOTATION_BYTES = 1024 * 1024;
 
 export function failureTriageImportErrorMessage(error: unknown): string {
   if (error instanceof AdminApiError && error.status === 409) {
@@ -278,6 +326,664 @@ export function RealWorldReadinessContent({
   );
 }
 
+export interface StableImportAttempt extends CaseImportPayload {}
+
+export function createStableImportAttempt(
+  taskId: number,
+  uploadedImageId: number,
+  nonce?: string,
+): StableImportAttempt {
+  const generatedNonce = nonce ?? globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`;
+  const normalizedNonce = generatedNonce.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 36);
+  return {
+    client_import_id: `case-import-${taskId}-${uploadedImageId}-${normalizedNonce || Date.now()}`,
+    task_id: taskId,
+    uploaded_image_id: uploadedImageId,
+  };
+}
+
+export async function executeImportAttempt(
+  attempt: StableImportAttempt,
+  importer: (payload: CaseImportPayload) => Promise<CaseImportResponse> = importRealWorldCase,
+): Promise<
+  | { outcome: "success"; result: CaseImportResponse }
+  | { outcome: "error"; error: unknown }
+> {
+  try {
+    return { outcome: "success", result: await importer(attempt) };
+  } catch (error) {
+    return { outcome: "error", error };
+  }
+}
+
+interface GovernanceMutation {
+  caseRef: string;
+  payload: GovernanceCaseUpdate;
+}
+
+export async function submitGovernanceMutation(
+  mutation: GovernanceMutation,
+  mutate: (
+    caseRef: string,
+    payload: GovernanceCaseUpdate,
+  ) => Promise<GovernanceCase> = updateRealWorldCase,
+  refresh: () => Promise<void> = async () => undefined,
+): Promise<
+  | { outcome: "success"; result: GovernanceCase }
+  | { outcome: "conflict"; error: AdminApiError }
+  | { outcome: "error"; error: unknown }
+> {
+  try {
+    const result = await mutate(mutation.caseRef, mutation.payload);
+    await refresh();
+    return { outcome: "success", result };
+  } catch (error) {
+    if (error instanceof AdminApiError && error.status === 409) {
+      await refresh();
+      return { outcome: "conflict", error };
+    }
+    return { outcome: "error", error };
+  }
+}
+
+function messageFromError(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function parsePositiveInteger(value: string): number | null {
+  if (!/^\d+$/.test(value.trim())) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseAnnotationJson(text: string): Record<string, unknown> {
+  if (new Blob([text]).size > MAX_ANNOTATION_BYTES) {
+    throw new Error("标注 JSON 不能超过 1 MB");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("标注 JSON 解析失败");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("标注 JSON 顶层必须是对象");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function isFreezeEligible(item: GovernanceCase): boolean {
+  return item.blockers.length === 0 && item.split !== "unassigned";
+}
+
+export function GovernanceCaseTable({
+  cases,
+  selectedRefs,
+  activeCaseRef,
+  busyCaseRef,
+  onSelect,
+  onActivate,
+  onPatch,
+}: {
+  cases: GovernanceCase[];
+  selectedRefs: Set<string>;
+  activeCaseRef: string | null;
+  busyCaseRef: string | null;
+  onSelect: (caseRef: string, selected: boolean) => void;
+  onActivate: (caseRef: string) => void;
+  onPatch: (caseRef: string, update: GovernanceCaseUpdate) => void;
+}) {
+  if (cases.length === 0) {
+    return (
+      <p className="border border-dashed border-cream-300 px-4 py-6 text-sm text-stone-400">
+        暂无治理候选案例
+      </p>
+    );
+  }
+  return (
+    <div className="overflow-x-auto border-y border-cream-200 bg-white/70">
+      <table className="w-full min-w-[980px] border-collapse text-left text-xs">
+        <thead className="bg-cream-50 text-stone-500">
+          <tr>
+            <th className="w-10 px-3 py-3 font-medium">选</th>
+            <th className="px-3 py-3 font-medium">公共编号</th>
+            <th className="px-3 py-3 font-medium">准入状态</th>
+            <th className="px-3 py-3 font-medium">阻塞项</th>
+            <th className="w-32 px-3 py-3 font-medium">评测分组</th>
+            <th className="w-32 px-3 py-3 font-medium">脱敏复核</th>
+            <th className="w-14 px-3 py-3 font-medium">版本</th>
+            <th className="w-24 px-3 py-3 font-medium">操作</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-cream-100">
+          {cases.map((item) => {
+            const eligible = isFreezeEligible(item);
+            const busy = busyCaseRef === item.case_ref;
+            return (
+              <tr key={item.case_ref} className={activeCaseRef === item.case_ref ? "bg-sage-50/60" : ""}>
+                <td className="px-3 py-3">
+                  <input
+                    type="checkbox"
+                    aria-label={`选择 ${item.case_ref} 用于冻结`}
+                    checked={selectedRefs.has(item.case_ref)}
+                    disabled={!eligible || busy}
+                    onChange={(event) => onSelect(item.case_ref, event.target.checked)}
+                  />
+                </td>
+                <td className="px-3 py-3"><code className="text-stone-700">{item.case_ref}</code></td>
+                <td className="px-3 py-3 text-stone-500">
+                  <span className="block">{CONSENT_LABELS[item.consent_status]}</span>
+                  <span className="mt-1 block">{ANNOTATION_LABELS[item.annotation_status]}</span>
+                </td>
+                <td className="max-w-72 px-3 py-3 text-terra-700">
+                  {item.blockers.length === 0
+                    ? <span className="text-sage-700">可冻结</span>
+                    : item.blockers.map((code) => REAL_WORLD_BLOCKER_LABELS[code] ?? code).join(" · ")}
+                </td>
+                <td className="px-3 py-3">
+                  <select
+                    aria-label={`${item.case_ref} 评测分组`}
+                    value={item.split}
+                    disabled={busy}
+                    onChange={(event) => onPatch(item.case_ref, {
+                      expected_version: item.record_version,
+                      split: event.target.value as GovernanceCaseSplit,
+                    })}
+                    className="min-h-9 w-full border border-cream-300 bg-white px-2 text-xs outline-none focus:border-sage-500"
+                  >
+                    {(Object.entries(GOVERNANCE_SPLIT_LABELS) as Array<[GovernanceCaseSplit, string]>).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </td>
+                <td className="px-3 py-3">
+                  <select
+                    aria-label={`${item.case_ref} 脱敏复核`}
+                    value={item.redaction_review}
+                    disabled={busy}
+                    onChange={(event) => onPatch(item.case_ref, {
+                      expected_version: item.record_version,
+                      redaction_review: event.target.value as GovernanceRedactionReview,
+                    })}
+                    className="min-h-9 w-full border border-cream-300 bg-white px-2 text-xs outline-none focus:border-sage-500"
+                  >
+                    {(Object.entries(REDACTION_LABELS) as Array<[GovernanceRedactionReview, string]>).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </td>
+                <td className="px-3 py-3 font-mono text-stone-500">r{item.record_version}</td>
+                <td className="px-3 py-3">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onActivate(item.case_ref)}
+                    className="min-h-9 border border-stone-300 px-2 font-medium text-stone-600 hover:border-sage-500 hover:text-sage-700 disabled:opacity-50"
+                  >
+                    录入治理
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function GovernanceNotice({ error, success }: { error: string; success: string }) {
+  if (error) {
+    return <p role="alert" className="border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">{error}</p>;
+  }
+  if (success) {
+    return <p role="status" className="border border-sage-200 bg-sage-50 px-4 py-3 text-xs text-sage-700">{success}</p>;
+  }
+  return null;
+}
+
+export function RealWorldGovernanceWorkspace({ onChanged }: { onChanged: () => void }) {
+  const [cases, setCases] = useState<GovernanceCase[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [actionSuccess, setActionSuccess] = useState("");
+  const [busyCaseRef, setBusyCaseRef] = useState<string | null>(null);
+  const [activeCaseRef, setActiveCaseRef] = useState<string | null>(null);
+  const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
+  const [taskIdInput, setTaskIdInput] = useState("");
+  const [imageIdInput, setImageIdInput] = useState("");
+  const [importAttempt, setImportAttempt] = useState<StableImportAttempt | null>(null);
+  const [preview, setPreview] = useState<{
+    attemptId: string;
+    taskInputReady: boolean;
+    assetAvailable: boolean;
+    duplicateAsset: boolean;
+  } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [consentDecision, setConsentDecision] = useState<ConsentDecision>("granted");
+  const [legalBasis, setLegalBasis] = useState<ConsentLegalBasis>("explicit_consent");
+  const [evidenceDigest, setEvidenceDigest] = useState("");
+  const [effectiveAt, setEffectiveAt] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [annotationLoaded, setAnnotationLoaded] = useState(false);
+  const annotationRef = useRef<Record<string, unknown> | null>(null);
+  const [datasetVersion, setDatasetVersion] = useState("");
+  const [freezing, setFreezing] = useState(false);
+
+  const loadCases = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const result = await fetchRealWorldCases();
+      setCases(result.items);
+      const eligibleRefs = new Set(result.items.filter(isFreezeEligible).map((item) => item.case_ref));
+      setSelectedRefs((current) => new Set([...current].filter((ref) => eligibleRefs.has(ref))));
+      setActiveCaseRef((current) => current && result.items.some((item) => item.case_ref === current) ? current : null);
+    } catch (error) {
+      setLoadError(messageFromError(error, "治理案例加载失败"));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCases();
+  }, [loadCases]);
+
+  const activeCase = cases.find((item) => item.case_ref === activeCaseRef) ?? null;
+
+  const clearActionNotice = () => {
+    setActionError("");
+    setActionSuccess("");
+  };
+
+  const handleImportFieldChange = (
+    setter: (value: string) => void,
+    value: string,
+  ) => {
+    setter(value);
+    setImportAttempt(null);
+    setPreview(null);
+    clearActionNotice();
+  };
+
+  const resolveImportAttempt = (): StableImportAttempt | null => {
+    const taskId = parsePositiveInteger(taskIdInput);
+    const imageId = parsePositiveInteger(imageIdInput);
+    if (taskId === null || imageId === null) {
+      setActionError("task_id 和 image_id 必须是正整数");
+      return null;
+    }
+    if (
+      importAttempt
+      && importAttempt.task_id === taskId
+      && importAttempt.uploaded_image_id === imageId
+    ) return importAttempt;
+    const created = createStableImportAttempt(taskId, imageId);
+    setImportAttempt(created);
+    return created;
+  };
+
+  const handlePreview = async () => {
+    clearActionNotice();
+    const attempt = resolveImportAttempt();
+    if (!attempt) return;
+    setPreviewing(true);
+    try {
+      const result = await previewRealWorldCaseImport(attempt);
+      setPreview({
+        attemptId: attempt.client_import_id,
+        taskInputReady: result.task_input_ready,
+        assetAvailable: result.asset_available,
+        duplicateAsset: result.duplicate_asset,
+      });
+    } catch (error) {
+      setPreview(null);
+      setActionError(messageFromError(error, "导入预检失败"));
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const handleImport = async () => {
+    clearActionNotice();
+    const attempt = resolveImportAttempt();
+    if (!attempt || preview?.attemptId !== attempt.client_import_id) {
+      setActionError("请先完成当前 task_id 与 image_id 的预检");
+      return;
+    }
+    if (!preview.taskInputReady || !preview.assetAvailable || preview.duplicateAsset) {
+      setActionError("预检未通过，未写入治理收件箱");
+      return;
+    }
+    setImporting(true);
+    const outcome = await executeImportAttempt(attempt);
+    if (outcome.outcome === "success") {
+      setActionSuccess(outcome.result.created ? "候选案例已导入" : "该导入请求已存在，已返回原记录");
+      setTaskIdInput("");
+      setImageIdInput("");
+      setPreview(null);
+      setImportAttempt(null);
+      await loadCases();
+      onChanged();
+    } else {
+      setActionError(messageFromError(outcome.error, "候选案例导入失败"));
+    }
+    setImporting(false);
+  };
+
+  const handlePatch = async (caseRef: string, update: GovernanceCaseUpdate) => {
+    clearActionNotice();
+    setBusyCaseRef(caseRef);
+    const result = await submitGovernanceMutation(
+      { caseRef, payload: update },
+      updateRealWorldCase,
+      loadCases,
+    );
+    if (result.outcome === "success") {
+      setActionSuccess("治理状态已更新");
+      onChanged();
+    } else if (result.outcome === "conflict") {
+      setActionError("记录版本已变化，已刷新权威状态；未自动重放操作");
+    } else {
+      setActionError(messageFromError(result.error, "治理状态更新失败"));
+    }
+    setBusyCaseRef(null);
+  };
+
+  const handleConsentDecisionChange = (decision: ConsentDecision) => {
+    setConsentDecision(decision);
+    setLegalBasis(decision === "revoked" ? "withdrawal_request" : "explicit_consent");
+    clearActionNotice();
+  };
+
+  const handleConsent = async () => {
+    if (!activeCase) return;
+    clearActionNotice();
+    if (!SHA256_PATTERN.test(evidenceDigest)) {
+      setActionError("证据摘要必须为 sha256: 加 64 位小写十六进制");
+      return;
+    }
+    if (!effectiveAt) {
+      setActionError("请选择授权决定生效时间");
+      return;
+    }
+    setBusyCaseRef(activeCase.case_ref);
+    try {
+      await createRealWorldConsentDecision(activeCase.case_ref, {
+        expected_version: activeCase.record_version,
+        decision: consentDecision,
+        legal_basis: legalBasis,
+        allowed_purposes: consentDecision === "granted" ? ["offline_evaluation"] : [],
+        evidence_digest: evidenceDigest,
+        effective_at: new Date(effectiveAt).toISOString(),
+        expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+      });
+      setActionSuccess("授权决定已追加");
+      setEvidenceDigest("");
+      await loadCases();
+      onChanged();
+    } catch (error) {
+      if (error instanceof AdminApiError && error.status === 409) {
+        await loadCases();
+        setActionError("记录版本已变化，已刷新权威状态；授权决定未自动重放");
+      } else {
+        setActionError(messageFromError(error, "授权决定提交失败"));
+      }
+    } finally {
+      setBusyCaseRef(null);
+    }
+  };
+
+  const loadAnnotation = (text: string) => {
+    clearActionNotice();
+    try {
+      annotationRef.current = parseAnnotationJson(text);
+      setAnnotationLoaded(true);
+      setActionSuccess("标注 JSON 已载入内存，页面不会回显内容");
+    } catch (error) {
+      annotationRef.current = null;
+      setAnnotationLoaded(false);
+      setActionError(messageFromError(error, "标注 JSON 无效"));
+    }
+  };
+
+  const handleAnnotationFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith(".json")) {
+      setActionError("标注仅支持 JSON 文件");
+      return;
+    }
+    if (file.size > MAX_ANNOTATION_BYTES) {
+      setActionError("标注 JSON 不能超过 1 MB");
+      return;
+    }
+    loadAnnotation(await file.text());
+  };
+
+  const handleAnnotation = async () => {
+    if (!activeCase || !annotationRef.current) return;
+    clearActionNotice();
+    setBusyCaseRef(activeCase.case_ref);
+    try {
+      await createRealWorldAnnotationRevision(activeCase.case_ref, {
+        expected_version: activeCase.record_version,
+        annotation: annotationRef.current,
+      });
+      annotationRef.current = null;
+      setAnnotationLoaded(false);
+      setActionSuccess("标注修订已保存");
+      await loadCases();
+      onChanged();
+    } catch (error) {
+      if (error instanceof AdminApiError && error.status === 409) {
+        await loadCases();
+        setActionError("记录版本已变化，已刷新权威状态；标注未自动重放");
+      } else {
+        setActionError(messageFromError(error, "标注提交失败"));
+      }
+    } finally {
+      setBusyCaseRef(null);
+    }
+  };
+
+  const handleFreeze = async () => {
+    clearActionNotice();
+    const targets = cases
+      .filter((item) => selectedRefs.has(item.case_ref) && isFreezeEligible(item))
+      .map((item) => ({ case_ref: item.case_ref, expected_version: item.record_version }));
+    if (!datasetVersion.trim() || targets.length === 0) {
+      setActionError("请填写数据集版本并选择可冻结案例");
+      return;
+    }
+    setFreezing(true);
+    try {
+      const result = await freezeRealWorldDataset({
+        dataset_version: datasetVersion.trim(),
+        cases: targets,
+      });
+      setActionSuccess(`数据集 ${result.dataset_version} 已冻结，共 ${result.case_count} 例`);
+      setDatasetVersion("");
+      setSelectedRefs(new Set());
+      await loadCases();
+    } catch (error) {
+      if (error instanceof AdminApiError && error.status === 409) await loadCases();
+      setActionError(messageFromError(error, "数据集冻结失败"));
+    } finally {
+      setFreezing(false);
+    }
+  };
+
+  return (
+    <section className="mt-9 border-t border-cream-300 pt-7" aria-label="真实案例治理收件箱">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-stone-800">真实案例治理收件箱</h2>
+          <p className="mt-1 text-xs text-stone-400">匿名状态、授权证据、人工标注与数据集冻结</p>
+        </div>
+        <Button variant="outline" size="sm" disabled={loading} onClick={() => void loadCases()}>
+          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> 刷新
+        </Button>
+      </div>
+
+      <div className="mt-4 grid gap-3 border-y border-cream-200 bg-white/60 px-4 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <label className="text-xs font-medium text-stone-600">
+          Design task ID
+          <input
+            inputMode="numeric"
+            value={taskIdInput}
+            onChange={(event) => handleImportFieldChange(setTaskIdInput, event.target.value)}
+            className="mt-1 min-h-9 w-full border border-cream-300 bg-white px-3 outline-none focus:border-sage-500"
+          />
+        </label>
+        <label className="text-xs font-medium text-stone-600">
+          Uploaded image ID
+          <input
+            inputMode="numeric"
+            value={imageIdInput}
+            onChange={(event) => handleImportFieldChange(setImageIdInput, event.target.value)}
+            className="mt-1 min-h-9 w-full border border-cream-300 bg-white px-3 outline-none focus:border-sage-500"
+          />
+        </label>
+        <div className="flex items-end gap-2">
+          <Button variant="outline" size="sm" disabled={previewing || importing} onClick={() => void handlePreview()}>
+            {previewing && <Loader2 className="h-4 w-4 animate-spin" />} 预检
+          </Button>
+          <Button
+            size="sm"
+            disabled={
+              previewing || importing || !preview || !preview.taskInputReady
+              || !preview.assetAvailable || preview.duplicateAsset
+            }
+            onClick={() => void handleImport()}
+          >
+            {importing && <Loader2 className="h-4 w-4 animate-spin" />} 导入
+          </Button>
+        </div>
+      </div>
+      {preview && (
+        <div className="flex flex-wrap gap-x-5 gap-y-2 border-b border-cream-200 px-4 py-3 text-xs text-stone-500">
+          <span>任务输入 {preview.taskInputReady ? "就绪" : "缺失"}</span>
+          <span>受控资产 {preview.assetAvailable ? "可用" : "不可用"}</span>
+          <span className={preview.duplicateAsset ? "text-red-700" : "text-sage-700"}>
+            物理资产 {preview.duplicateAsset ? "已存在" : "未重复"}
+          </span>
+        </div>
+      )}
+      <div className="mt-3"><GovernanceNotice error={loadError || actionError} success={actionSuccess} /></div>
+
+      <div className="mt-4">
+        {loading && cases.length === 0
+          ? <div className="h-28 animate-pulse border-y border-cream-200 bg-white/70" />
+          : <GovernanceCaseTable
+            cases={cases}
+            selectedRefs={selectedRefs}
+            activeCaseRef={activeCaseRef}
+            busyCaseRef={busyCaseRef}
+            onSelect={(caseRef, selected) => setSelectedRefs((current) => {
+              const next = new Set(current);
+              if (selected) next.add(caseRef); else next.delete(caseRef);
+              return next;
+            })}
+            onActivate={(caseRef) => {
+              setActiveCaseRef(caseRef);
+              setConsentDecision("granted");
+              setLegalBasis("explicit_consent");
+              setEvidenceDigest("");
+              setEffectiveAt("");
+              setExpiresAt("");
+              annotationRef.current = null;
+              setAnnotationLoaded(false);
+              clearActionNotice();
+            }}
+            onPatch={(caseRef, update) => void handlePatch(caseRef, update)}
+          />}
+      </div>
+
+      {activeCase && (
+        <div className="mt-5 grid gap-5 border-t border-cream-200 pt-5 xl:grid-cols-2">
+          <section aria-label="追加授权决定">
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-sm font-semibold text-stone-700">授权决定</h3>
+              <code className="text-[10px] text-stone-400">{activeCase.case_ref} · r{activeCase.record_version}</code>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-stone-500">决定
+                <select value={consentDecision} disabled={busyCaseRef !== null} onChange={(event) => handleConsentDecisionChange(event.target.value as ConsentDecision)} className="mt-1 min-h-9 w-full border border-cream-300 bg-white px-2">
+                  <option value="granted">授权</option><option value="denied">拒绝</option><option value="revoked">撤回</option>
+                </select>
+              </label>
+              <label className="text-xs text-stone-500">法律依据
+                <select value={legalBasis} disabled={busyCaseRef !== null} onChange={(event) => setLegalBasis(event.target.value as ConsentLegalBasis)} className="mt-1 min-h-9 w-full border border-cream-300 bg-white px-2">
+                  {consentDecision === "revoked"
+                    ? <option value="withdrawal_request">撤回请求</option>
+                    : <><option value="explicit_consent">明确同意</option><option value="contract">合同</option></>}
+                </select>
+              </label>
+              <label className="text-xs text-stone-500 sm:col-span-2">证据摘要
+                <input value={evidenceDigest} onChange={(event) => setEvidenceDigest(event.target.value.trim())} placeholder="sha256:..." spellCheck={false} className="mt-1 min-h-9 w-full border border-cream-300 bg-white px-3 font-mono text-xs" />
+              </label>
+              <label className="text-xs text-stone-500">生效时间
+                <input type="datetime-local" value={effectiveAt} onChange={(event) => setEffectiveAt(event.target.value)} className="mt-1 min-h-9 w-full border border-cream-300 bg-white px-2" />
+              </label>
+              <label className="text-xs text-stone-500">失效时间（可选）
+                <input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} className="mt-1 min-h-9 w-full border border-cream-300 bg-white px-2" />
+              </label>
+            </div>
+            <Button className="mt-3" size="sm" disabled={busyCaseRef !== null || !evidenceDigest || !effectiveAt} onClick={() => void handleConsent()}>
+              {busyCaseRef === activeCase.case_ref && <Loader2 className="h-4 w-4 animate-spin" />} 追加决定
+            </Button>
+          </section>
+
+          <section aria-label="提交人工标注">
+            <h3 className="text-sm font-semibold text-stone-700">人工标注修订</h3>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <label className={`inline-flex min-h-9 items-center gap-2 border border-stone-300 bg-white px-3 text-xs font-medium text-stone-600 ${busyCaseRef ? "pointer-events-none opacity-50" : "cursor-pointer"}`}>
+                <FileUp className="h-4 w-4" /> 上传 JSON
+                <input type="file" accept="application/json,.json" className="sr-only" disabled={busyCaseRef !== null} onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  event.currentTarget.value = "";
+                  if (file) void handleAnnotationFile(file);
+                }} />
+              </label>
+              <textarea
+                aria-label="粘贴标注 JSON"
+                value=""
+                readOnly
+                disabled={busyCaseRef !== null}
+                placeholder="在此粘贴 JSON（内容不回显）"
+                onPaste={(event) => {
+                  event.preventDefault();
+                  loadAnnotation(event.clipboardData.getData("text"));
+                }}
+                className="h-9 min-h-9 min-w-64 flex-1 resize-none border border-cream-300 bg-white px-3 py-2 text-xs outline-none focus:border-sage-500"
+              />
+            </div>
+            <p className={`mt-3 text-xs ${annotationLoaded ? "text-sage-700" : "text-stone-400"}`}>
+              {annotationLoaded ? "标注 JSON 已载入，内容未显示" : "尚未载入标注 JSON"}
+            </p>
+            <Button className="mt-3" size="sm" disabled={busyCaseRef !== null || !annotationLoaded} onClick={() => void handleAnnotation()}>
+              {busyCaseRef === activeCase.case_ref && <Loader2 className="h-4 w-4 animate-spin" />} 保存标注修订
+            </Button>
+          </section>
+        </div>
+      )}
+
+      <div className="mt-5 flex flex-col gap-3 border-t border-cream-200 pt-5 lg:flex-row lg:items-end">
+        <label className="min-w-0 flex-1 text-xs font-medium text-stone-600">
+          冻结数据集版本
+          <input value={datasetVersion} maxLength={100} onChange={(event) => setDatasetVersion(event.target.value)} placeholder="例如 real-world-2026.09.1" className="mt-1 min-h-9 w-full border border-cream-300 bg-white px-3 outline-none focus:border-sage-500" />
+        </label>
+        <span className="text-xs text-stone-500">已选 {selectedRefs.size} 例</span>
+        <Button size="sm" disabled={freezing || selectedRefs.size === 0 || !datasetVersion.trim()} onClick={() => void handleFreeze()}>
+          {freezing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />} 冻结版本
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function FailureClusterRow({
   cluster,
   busy,
@@ -326,6 +1032,7 @@ function FailureClusterRow({
               size="sm"
               disabled={busy || !owner.trim()}
               onClick={() => onUpdate(cluster.id, {
+                expected_version: cluster.record_version,
                 status: "in_progress",
                 owner: owner.trim(),
               })}
@@ -348,6 +1055,7 @@ function FailureClusterRow({
               size="sm"
               disabled={busy || !fixedVersion.trim()}
               onClick={() => onUpdate(cluster.id, {
+                expected_version: cluster.record_version,
                 status: "resolved",
                 fixed_version: fixedVersion.trim(),
               })}
@@ -799,6 +1507,9 @@ export default function AdminQualityPage() {
       setFailureActionError(
         reason instanceof Error ? reason.message : "失败簇更新失败",
       );
+      if (reason instanceof AdminApiError && reason.status === 409) {
+        await loadFailureClusters();
+      }
     } finally {
       setBusyClusterId(null);
     }
@@ -898,6 +1609,9 @@ export default function AdminQualityPage() {
         loading={realWorldLoading}
         error={realWorldError}
         onRetry={() => setRealWorldReloadKey((value) => value + 1)}
+      />
+      <RealWorldGovernanceWorkspace
+        onChanged={() => setRealWorldReloadKey((value) => value + 1)}
       />
       <FailureTriageImportControl
         importing={failureImporting}

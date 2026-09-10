@@ -1,11 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AdminProduct } from "@/api/designApi";
 import {
   CatalogReadinessSummary,
   ProductCommercialFacts,
+  submitProductDeactivation,
   filterAdminProducts,
 } from "./AdminPage";
+import { ApiError } from "@/api/designApi";
 
 function product(
   id: number,
@@ -85,6 +87,34 @@ describe("商品商业核验列表", () => {
     expect(html).toContain("r2");
   });
 
+  it("把商业证据阻断码显示为可执行的中文原因", () => {
+    const incomplete = {
+      ...products[1],
+      eligibility: {
+        eligible: false,
+        reason_codes: [
+          "source_name_missing",
+          "source_reference_missing",
+          "source_retrieved_at_missing",
+          "price_observed_at_future",
+          "verified_by_missing",
+          "data_version_unverified",
+          "region_unknown",
+        ],
+      },
+    };
+
+    const html = renderToStaticMarkup(<ProductCommercialFacts product={incomplete} />);
+
+    expect(html).toContain("缺少来源名称");
+    expect(html).toContain("缺少来源编号或链接");
+    expect(html).toContain("缺少来源采集时间");
+    expect(html).toContain("价格观察时间晚于检查时间");
+    expect(html).toContain("缺少核验负责人");
+    expect(html).toContain("数据版本尚未正式发布");
+    expect(html).toContain("销售地区未知");
+  });
+
   it("就绪摘要显示地区、可推荐数量和真实阻断原因", () => {
     const html = renderToStaticMarkup(
       <CatalogReadinessSummary
@@ -125,5 +155,47 @@ describe("商品商业核验列表", () => {
     expect(html).toContain("目录就绪度加载失败");
     expect(html).toContain("重试");
     expect(html).not.toContain("可推荐 0");
+  });
+
+  it("停用遇到 409 时刷新权威列表且不自动重放", async () => {
+    const remove = vi.fn().mockRejectedValue(
+      new ApiError("conflict", 409, { code: "record_version_conflict" }),
+    );
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const pending = {
+      productId: 1,
+      recordVersion: 2,
+      idempotencyKey: "deactivate-1-v2-operation-1",
+    };
+
+    const result = await submitProductDeactivation(pending, remove, refresh);
+
+    expect(result.outcome).toBe("conflict");
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith(1, 2, pending.idempotencyKey);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("网络结果未知时保留原请求，人工重试复用同一幂等键", async () => {
+    const remove = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce(undefined);
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const pending = {
+      productId: 1,
+      recordVersion: 2,
+      idempotencyKey: "deactivate-1-v2-operation-1",
+    };
+
+    const unknown = await submitProductDeactivation(pending, remove, refresh);
+    const retried = await submitProductDeactivation(pending, remove, refresh);
+
+    expect(unknown.outcome).toBe("retryable_error");
+    expect(retried.outcome).toBe("success");
+    expect(remove.mock.calls).toEqual([
+      [1, 2, pending.idempotencyKey],
+      [1, 2, pending.idempotencyKey],
+    ]);
   });
 });

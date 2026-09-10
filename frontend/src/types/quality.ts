@@ -91,6 +91,7 @@ export interface FailureCluster {
   severity: FailureSeverity;
   status: FailureStatus;
   owner: string | null;
+  record_version: number;
   occurrence_count: number;
   affected_count: number;
   first_seen_at: string;
@@ -115,6 +116,7 @@ export interface FailureClusterListResponse {
 }
 
 export interface FailureClusterUpdate {
+  expected_version: number;
   status?: FailureStatus;
   owner?: string | null;
   fixed_version?: string | null;
