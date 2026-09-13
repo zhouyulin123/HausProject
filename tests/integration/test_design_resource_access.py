@@ -7,13 +7,15 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api.routes import chat, proposal, render
+from app.api.routes import chat, proposal, render, shares
 from app.db.database import Base, get_db
 from app.db.models import (
     DesignScene,
     DesignSceneVersion,
     DesignTask,
     EffectRenderJob,
+    PlanShare,
+    QuoteSnapshot,
     RenderedImage,
 )
 from app.services import design_version_service, llm_service, sd_service
@@ -21,6 +23,48 @@ from app.services.anonymous_session_service import (
     attach_task,
     create_anonymous_session,
 )
+from tests.real_world_fixtures import frozen_catalog_quote_line, frozen_catalog_suggestion
+
+
+def _deliverable_plan(
+    *,
+    name: str,
+    style: str,
+    total: int,
+    valid_to: str = "2027-01-01T00:00:00+00:00",
+) -> dict:
+    suggestion = frozen_catalog_suggestion(unit_price=total)
+    eligibility = suggestion["catalogEligibility"]
+    eligibility["facts"]["priceValidTo"] = valid_to
+    suggestion.update(
+        {
+            "name": "三人沙发",
+            "subtotal": total,
+            "dataStatus": "verified",
+            "sourceName": eligibility["facts"]["sourceName"],
+            "verifiedAt": eligibility["facts"]["verifiedAt"],
+        }
+    )
+    quote_line = frozen_catalog_quote_line(suggestion)
+    quote_line["subtotal"] = total
+    return {
+        "id": "plan-a",
+        "name": name,
+        "style": style,
+        "furnitureSuggestions": [suggestion],
+        "customItems": [],
+        "shopQuote": {
+            "furnitureTotal": total,
+            "customTotal": 0,
+            "total": total,
+            "catalogVersion": "catalog-v1",
+            "priceVersion": "prices-v1",
+            "ruleVersion": "rules-v1",
+            "pricedAt": "2026-09-01T00:00:00+00:00",
+            "lineItems": [quote_line],
+            "customLineItems": [],
+        },
+    }
 
 
 @pytest.fixture
@@ -174,14 +218,13 @@ def test_proposal_uses_server_plan_snapshot(monkeypatch):
             db,
             task=task,
             plans=[
-                {
-                    "id": "plan-a",
-                    "name": "服务端可信方案",
-                    "style": "原木风",
-                    "shopQuote": {"total": 128000},
-                }
+                _deliverable_plan(
+                    name="服务端可信方案",
+                    style="原木风",
+                    total=128000,
+                )
             ],
-            generator="test",
+            generator="llm",
         )
         first_plan_version_id = first_revision.plans[0].id
         design_version_service.persist_generation(
@@ -203,8 +246,10 @@ def test_proposal_uses_server_plan_snapshot(monkeypatch):
 
     captured: dict = {}
 
-    def fake_build(plan, effect_path, shop):
+    def fake_build(plan, effect_path, shop, *, quote_valid_until=None, development_preview=False):
+        assert development_preview is False
         captured["plan"] = plan
+        captured["quote_valid_until"] = quote_valid_until
         return b"%PDF-1.4 test"
 
     artifact_dir = Path(__file__).resolve().parents[2] / ".test_artifacts" / "proposal"
@@ -234,6 +279,7 @@ def test_proposal_uses_server_plan_snapshot(monkeypatch):
     assert response.status_code == 200
     assert captured["plan"]["name"] == "服务端可信方案"
     assert captured["plan"]["shopQuote"]["total"] == 128000
+    assert captured["quote_valid_until"].isoformat() == "2027-01-01T00:00:00+00:00"
     for generated_file in set(artifact_dir.glob("*.pdf")) - files_before:
         generated_file.unlink()
 
@@ -258,14 +304,13 @@ def test_render_and_proposal_require_exact_plan_version(monkeypatch):
             db,
             task=task,
             plans=[
-                {
-                    "id": "plan-a",
-                    "name": "版本化方案",
-                    "style": "原木风",
-                    "shopQuote": {"total": 128000},
-                }
+                _deliverable_plan(
+                    name="版本化方案",
+                    style="原木风",
+                    total=128000,
+                )
             ],
-            generator="test",
+            generator="llm",
         )
         plan_version = revision.plans[0]
         scene = DesignScene(plan_version_id=plan_version.id, current_version=1)
@@ -369,3 +414,81 @@ def test_render_and_proposal_require_exact_plan_version(monkeypatch):
     for generated_file in artifact_dir.iterdir():
         if generated_file.is_file():
             generated_file.unlink()
+
+
+@pytest.mark.integration
+def test_pdf_and_share_use_same_fail_closed_delivery_gate(monkeypatch):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    with factory() as db:
+        owner = create_anonymous_session(db)
+        task = DesignTask(status="completed", progress=100)
+        db.add(task)
+        db.flush()
+        attach_task(db, owner.id, task.id)
+        revision = design_version_service.persist_generation(
+            db,
+            task=task,
+            plans=[
+                _deliverable_plan(
+                    name="缺报价快照方案",
+                    style="现代风",
+                    total=5000,
+                )
+            ],
+            generator="llm",
+        )
+        plan_version_id = revision.plans[0].id
+        quote = db.query(QuoteSnapshot).filter_by(
+            plan_version_id=plan_version_id
+        ).one()
+        db.delete(quote)
+        db.commit()
+        owner_id = owner.id
+        task_id = task.id
+
+    monkeypatch.setattr(
+        proposal.pdf_service,
+        "build_proposal_pdf",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("交付门禁失败后不得生成 PDF")
+        ),
+    )
+    app = FastAPI()
+    app.include_router(proposal.router, prefix="/api/design")
+    app.include_router(shares.owner_router, prefix="/api/design/shares")
+
+    def override_db():
+        with factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    with TestClient(app, raise_server_exceptions=False) as client:
+        pdf_response = client.post(
+            "/api/design/proposal-pdf",
+            headers={"X-Session-ID": owner_id},
+            json={"task_id": task_id, "plan_version_id": plan_version_id},
+        )
+        share_response = client.post(
+            "/api/design/shares",
+            headers={"X-Session-ID": owner_id},
+            json={"plan_version_id": plan_version_id, "expires_in_hours": 24},
+        )
+
+    expected = {
+        "code": "plan_delivery_blocked",
+        "message": "方案未通过正式交付门禁",
+        "reason_codes": ["quote_snapshot_missing"],
+    }
+    assert pdf_response.status_code == share_response.status_code == 409
+    assert pdf_response.json()["detail"] == expected
+    assert share_response.json()["detail"] == expected
+    with factory() as db:
+        assert db.query(PlanShare).count() == 0
+    engine.dispose()

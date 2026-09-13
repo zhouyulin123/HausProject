@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Any, Dict
 
 # In-memory storage
 tasks: Dict[int, Dict[str, Any]] = {}

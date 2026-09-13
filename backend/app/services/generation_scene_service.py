@@ -50,7 +50,10 @@ def prepare_revision_scenes(
             raise generation_output_service.GenerationOutputValidationError(
                 f"方案 {plan.plan_key} 没有可冻结的布局商品"
             )
-        geometry = layout_service.room_geometry_from_plan_version(db, plan)
+        try:
+            geometry = layout_service.room_geometry_from_plan_version(db, plan)
+        except layout_service.ConfirmedRoomDimensionsError as exc:
+            raise generation_output_service.GenerationOutputValidationError(str(exc)) from exc
         room_name = task.space_type or "客厅"
         room, openings = geometry or layout_service.default_room_geometry(room_name)
         started = time.monotonic()

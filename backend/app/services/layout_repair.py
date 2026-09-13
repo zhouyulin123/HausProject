@@ -11,7 +11,7 @@ generate → evaluate → repair → 重新评估，最多迭代 max_rounds 轮�
 
 from __future__ import annotations
 
-from math import hypot
+from math import hypot, pi
 
 from app.schemas.scenes import SceneDocument
 from app.services.layout_evaluator import (
@@ -72,24 +72,30 @@ def _item_by_id(scene: SceneDocument, instance_id: str):
 
 
 def _fix_out_of_bounds(scene: SceneDocument, item) -> bool:
-    """把家具完整占地夹回房间内；家具过大无法夹回时返回 False。"""
-    footprint = item_footprint(item)
-    if footprint is None:
-        return False
-    polygon = _room_polygon(scene)
+    """尝试原朝向及正交朝向的可行平移，不缩放家具；失败恢复原变换。"""
     min_x, max_x, min_z, max_z = _room_bounds(scene)
-    half_w = (max(p[0] for p in footprint) - min(p[0] for p in footprint)) / 2
-    half_d = (max(p[1] for p in footprint) - min(p[1] for p in footprint)) / 2
-    if half_w * 2 >= max_x - min_x or half_d * 2 >= max_z - min_z:
-        return False
-
-    item.transform.position.x = _clamp(
-        item.transform.position.x, min_x + half_w + 0.05, max_x - half_w - 0.05
-    )
-    item.transform.position.z = _clamp(
-        item.transform.position.z, min_z + half_d + 0.05, max_z - half_d - 0.05
-    )
-    return True
+    original = item.transform.model_copy(deep=True)
+    for rotation in (original.rotation.y, original.rotation.y + pi / 2):
+        item.transform = original.model_copy(deep=True)
+        item.transform.rotation.y = rotation
+        footprint = item_footprint(item)
+        if footprint is None:
+            continue
+        half_w = (max(p[0] for p in footprint) - min(p[0] for p in footprint)) / 2
+        half_d = (max(p[1] for p in footprint) - min(p[1] for p in footprint)) / 2
+        if half_w * 2 > max_x - min_x or half_d * 2 > max_z - min_z:
+            continue
+        margin_x = min(0.05, (max_x - min_x - half_w * 2) / 2)
+        margin_z = min(0.05, (max_z - min_z - half_d * 2) / 2)
+        item.transform.position.x = _clamp(original.position.x,
+            min_x + half_w + margin_x, max_x - half_w - margin_x)
+        item.transform.position.z = _clamp(original.position.z,
+            min_z + half_d + margin_z, max_z - half_d - margin_z)
+        candidate = item_footprint(item)
+        if candidate and all(point_in_polygon(p, _room_polygon(scene)) for p in candidate):
+            return True
+    item.transform = original
+    return False
 
 
 def _find_non_colliding_position(scene, mover, fixed) -> bool:
@@ -180,7 +186,6 @@ def _fix_viewing_distance(scene, tv_id: str, sofa_id: str) -> bool:
     sofa = _item_by_id(scene, sofa_id)
     if tv is None or sofa is None:
         return False
-    polygon = _room_polygon(scene)
     footprint = item_footprint(tv)
     if footprint is None:
         return False

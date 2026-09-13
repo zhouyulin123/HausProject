@@ -142,8 +142,10 @@ describe("运营质量汇总 API", () => {
 
   it("通过管理员资源读取真实案例就绪度聚合", async () => {
     const readiness = {
-      manifest_version: "1.0",
-      dataset_id: "private-real-2026-q3",
+      source: "governance_database",
+      frozen_dataset_count: 0,
+      manifest_version: null,
+      dataset_id: null,
       total: 4,
       eligible_total: 0,
       private_real_eligible_total: 0,

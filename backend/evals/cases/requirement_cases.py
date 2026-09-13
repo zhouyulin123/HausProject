@@ -3,7 +3,7 @@
 ground truth 由人工标注；run_requirement_eval.py 负责逐项打分。
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

@@ -38,3 +38,8 @@ class TaskTimelineResponse(BaseModel):
     known_cost_cny: float | None = None
     has_unknown_cost: bool
     unknown_cost_event_count: int
+    model_cost_limit_cny: float | None = None
+    model_cost_allocated_cny: float | None = None
+    model_actual_cost_cny: float | None = None
+    model_unknown_cost_call_count: int = 0
+    model_call_count: int = 0

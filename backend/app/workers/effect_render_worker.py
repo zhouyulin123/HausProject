@@ -24,7 +24,7 @@ from app.db.models import (
     UploadedImage,
 )
 from app.schemas.scenes import SceneDocument
-from app.services import effect_render_job_service, sd_service
+from app.services import effect_render_job_service, sd_service, worker_presence_service
 from app.services.sd_service import SDUnavailable
 
 
@@ -286,12 +286,17 @@ def main() -> int:
     parser.add_argument("--worker-id", default=_default_worker_id())
     args = parser.parse_args()
     configure_logging()
-    while True:
-        processed = process_one_job(worker_id=args.worker_id)
-        if args.once:
-            return 0
-        if not processed:
-            time.sleep(settings.effect_render_worker_poll_seconds)
+    with worker_presence_service.WorkerPresenceReporter(
+        worker_type="effect_render",
+        worker_id=args.worker_id,
+        heartbeat_seconds=settings.worker_presence_heartbeat_seconds,
+    ):
+        while True:
+            processed = process_one_job(worker_id=args.worker_id)
+            if args.once:
+                return 0
+            if not processed:
+                time.sleep(settings.effect_render_worker_poll_seconds)
 
 
 if __name__ == "__main__":

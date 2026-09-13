@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     LargeBinary,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -383,6 +384,50 @@ class CustomFurnitureDraftMutation(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class OpenGeometryRateLimitBucket(Base):
+    """跨 API 进程共享的开放几何滑动窗口状态。"""
+
+    __tablename__ = "open_geometry_rate_limit_buckets"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "task_id",
+            name="uq_open_geometry_rate_limit_scope",
+        ),
+        CheckConstraint(
+            "record_version > 0",
+            name="ck_open_geometry_rate_limit_record_version",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(
+        String(36),
+        ForeignKey("anonymous_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id = Column(
+        Integer,
+        ForeignKey("design_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    attempted_at_json = Column(JSON, nullable=False, default=list)
+    record_version = Column(Integer, nullable=False, default=1, server_default="1")
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class DesignAgentEvent(Base):
     """不含思维链的可审计 Agent 工具与状态事件。"""
 
@@ -447,6 +492,116 @@ class TaskExecutionEvent(Base):
         server_default=func.now(),
         index=True,
     )
+
+
+class ModelCallCostAccount(Base):
+    """模型调用成本聚合根；同一任务或会话只允许一个冻结上限。"""
+
+    __tablename__ = "model_call_cost_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_kind",
+            "scope_id",
+            name="uq_model_call_cost_accounts_scope",
+        ),
+        CheckConstraint(
+            "scope_kind IN ('task', 'session')",
+            name="ck_model_call_cost_account_scope_kind",
+        ),
+        CheckConstraint(
+            "cost_limit_cny > 0",
+            name="ck_model_call_cost_account_limit",
+        ),
+        CheckConstraint(
+            "allocated_cost_cny >= 0 AND actual_cost_cny >= 0",
+            name="ck_model_call_cost_account_costs",
+        ),
+        CheckConstraint(
+            "unknown_cost_call_count >= 0",
+            name="ck_model_call_cost_account_unknown_count",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope_kind = Column(String(20), nullable=False, index=True)
+    scope_id = Column(String(100), nullable=False, index=True)
+    task_id = Column(
+        Integer,
+        nullable=True,
+        index=True,
+    )
+    cost_limit_cny = Column(Numeric(18, 6), nullable=False)
+    allocated_cost_cny = Column(
+        Numeric(18, 6), nullable=False, default=0.0, server_default="0"
+    )
+    actual_cost_cny = Column(
+        Numeric(18, 6), nullable=False, default=0.0, server_default="0"
+    )
+    unknown_cost_call_count = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ModelCallLedger(Base):
+    """逐次模型供应商调用账本，不保存 Prompt、图片或用户输入。"""
+
+    __tablename__ = "model_call_ledgers"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "operation_key",
+            "call_index",
+            name="uq_model_call_ledgers_operation_call",
+        ),
+        CheckConstraint(
+            "status IN ('reserved', 'succeeded', 'failed', 'blocked')",
+            name="ck_model_call_ledger_status",
+        ),
+        CheckConstraint(
+            "modality IN ('text', 'vision')",
+            name="ck_model_call_ledger_modality",
+        ),
+        CheckConstraint(
+            "estimated_cost_cny IS NULL OR estimated_cost_cny >= 0",
+            name="ck_model_call_ledger_estimated_cost",
+        ),
+        CheckConstraint(
+            "actual_cost_cny IS NULL OR actual_cost_cny >= 0",
+            name="ck_model_call_ledger_actual_cost",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(
+        Integer,
+        ForeignKey("model_call_cost_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id = Column(
+        Integer,
+        nullable=True,
+        index=True,
+    )
+    request_id = Column(String(100), nullable=True, index=True)
+    operation_key = Column(String(150), nullable=False)
+    call_index = Column(Integer, nullable=False)
+    provider_key = Column(String(100), nullable=False, index=True)
+    model = Column(String(100), nullable=False)
+    modality = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, index=True)
+    estimated_cost_cny = Column(Numeric(18, 6), nullable=True)
+    actual_cost_cny = Column(Numeric(18, 6), nullable=True)
+    billing_status = Column(String(20), nullable=False, default="not_billable")
+    usage_json = Column(JSON, nullable=False, default=dict)
+    failure_code = Column(String(50), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class DesignFeedbackEvent(Base):
@@ -1714,6 +1869,26 @@ class ModelProviderCircuit(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class WorkerHeartbeat(Base):
+    """跨进程 Worker 存活状态；任务租约心跳不能替代空闲进程心跳。"""
+
+    __tablename__ = "worker_heartbeats"
+    __table_args__ = (
+        UniqueConstraint(
+            "worker_type",
+            "worker_id",
+            name="uq_worker_heartbeats_type_identity",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    worker_type = Column(String(30), nullable=False, index=True)
+    worker_id = Column(String(200), nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    stopped_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class SmsCode(Base):

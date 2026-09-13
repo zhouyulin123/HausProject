@@ -13,10 +13,7 @@ from app.schemas.open_geometry import (
 )
 from app.services import open_geometry_service
 from app.services.aggregate_lock_service import AggregateLockBusy
-from app.services.open_geometry_rate_limit import (
-    open_geometry_rate_key,
-    open_geometry_rate_limiter,
-)
+from app.services.open_geometry_rate_limit import open_geometry_rate_limiter
 
 
 router = APIRouter()
@@ -82,7 +79,9 @@ def command_open_geometry(
         if replay is not None:
             return replay
         retry_after = open_geometry_rate_limiter.retry_after(
-            open_geometry_rate_key(task_id),
+            db,
+            session_id=x_session_id,
+            task_id=task_id,
         )
         if retry_after is not None:
             raise HTTPException(

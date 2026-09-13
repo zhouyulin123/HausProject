@@ -31,6 +31,7 @@ from app.schemas.product_commercial import (
     ProductAuditEventResponse,
 )
 from app.services.catalog_service import (
+    development_catalog_enabled,
     build_catalog_readiness_summary,
     is_product_eligible,
 )
@@ -77,6 +78,8 @@ def _record_version_conflict_detail(
 
 
 def _validate_product_lifecycle(product: Product) -> None:
+    if product.data_origin == "development_fixture" and not development_catalog_enabled():
+        raise HTTPException(status_code=422, detail="开发样本只能在已启用开发目录的开发环境维护")
     product.region_codes = list(
         dict.fromkeys(
             str(code).strip().upper()
@@ -390,6 +393,7 @@ class ProductCreate(BaseModel):
     alternative: Optional[str] = None
     image_url: Optional[str] = None
     data_origin: Literal[
+        "development_fixture",
         "unknown",
         "merchant",
         "merchant_draft",
@@ -485,6 +489,7 @@ class ProductUpdate(BaseModel):
     image_url: Optional[str] = None
     data_origin: Optional[
         Literal[
+            "development_fixture",
             "unknown",
             "merchant",
             "merchant_draft",

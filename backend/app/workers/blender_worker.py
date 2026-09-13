@@ -23,7 +23,12 @@ from app.core.request_context import bind_request_id
 from app.db.database import SessionLocal
 from app.db.models import BlenderRenderJob, DesignScene, DesignSceneVersion, Product
 from app.schemas.scenes import SceneDocument
-from app.services import blender_job_service, product_asset_service, scene_service
+from app.services import (
+    blender_job_service,
+    product_asset_service,
+    scene_service,
+    worker_presence_service,
+)
 from app.services.scene_tools import SceneCatalogEligibilityError
 from app.services.blender_render_service import (
     BlenderOutputError,
@@ -461,15 +466,20 @@ def main() -> int:
         logger.error("%s", error)
         return 2
 
-    while True:
-        processed = process_one_job(
-            worker_id=args.worker_id,
-            executable=executable,
-        )
-        if args.once:
-            return 0
-        if not processed:
-            time.sleep(settings.blender_worker_poll_seconds)
+    with worker_presence_service.WorkerPresenceReporter(
+        worker_type="blender",
+        worker_id=args.worker_id,
+        heartbeat_seconds=settings.worker_presence_heartbeat_seconds,
+    ):
+        while True:
+            processed = process_one_job(
+                worker_id=args.worker_id,
+                executable=executable,
+            )
+            if args.once:
+                return 0
+            if not processed:
+                time.sleep(settings.blender_worker_poll_seconds)
 
 
 if __name__ == "__main__":

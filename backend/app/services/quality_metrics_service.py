@@ -20,6 +20,7 @@ from app.db.models import (
     GenerationRun,
     GenerationRunEvent,
     LayoutRun,
+    ModelCallLedger,
 )
 
 
@@ -34,6 +35,12 @@ _GENERATION_FAILURE_STATUSES = (
 )
 _FAILED_EVENT_STATUSES = {"failed", "error", "rejected"}
 _CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_:-]{0,99}$")
+_VERSION_DIMENSIONS = (
+    "model",
+    "prompt_digest",
+    "rules_digest",
+    "data_digest",
+)
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
@@ -65,6 +72,83 @@ def _total_tokens(run: GenerationRun) -> int:
         return 0
     value = usage.get("total_tokens")
     return value if isinstance(value, int) and value >= 0 else 0
+
+
+def _is_missing_version(value: str | None) -> bool:
+    return value is None or not value.strip()
+
+
+def _version_cohort_metrics(
+    runs: list[GenerationRun],
+    *,
+    limit: int,
+) -> dict[str, Any]:
+    grouped: dict[tuple[str | None, ...], list[GenerationRun]] = {}
+    for run in runs:
+        key = tuple(getattr(run, dimension) for dimension in _VERSION_DIMENSIONS)
+        grouped.setdefault(key, []).append(run)
+
+    items: list[dict[str, Any]] = []
+    for key, cohort_runs in grouped.items():
+        statuses = Counter(run.status for run in cohort_runs)
+        completed = statuses["completed"]
+        failed = sum(statuses[status] for status in _GENERATION_FAILURE_STATUSES)
+        completed_runs = [run for run in cohort_runs if run.status == "completed"]
+        durations = [
+            duration
+            for run in cohort_runs
+            if (duration := _duration_ms(run)) is not None
+        ]
+        missing_dimensions = [
+            dimension
+            for dimension, value in zip(_VERSION_DIMENSIONS, key, strict=True)
+            if _is_missing_version(value)
+        ]
+        items.append(
+            {
+                **dict(zip(_VERSION_DIMENSIONS, key, strict=True)),
+                "version_complete": not missing_dimensions,
+                "missing_dimensions": missing_dimensions,
+                "total": len(cohort_runs),
+                "completed": completed,
+                "failed": failed,
+                "cancelled": statuses["cancelled"],
+                "active": statuses["queued"] + statuses["running"],
+                "success_rate": _rate(completed, completed + failed),
+                "fallback_rate": _rate(
+                    sum(1 for run in completed_runs if run.generator == "template"),
+                    len(completed_runs),
+                ),
+                "duration_p50_ms": _percentile(durations, 0.5),
+                "duration_p95_ms": _percentile(durations, 0.95),
+                "total_tokens": sum(_total_tokens(run) for run in cohort_runs),
+                "known_cost_cny": sum(
+                    float(run.cost_cny)
+                    for run in cohort_runs
+                    if run.cost_cny is not None and run.cost_cny >= 0
+                ),
+                "unknown_cost_run_count": sum(
+                    1
+                    for run in cohort_runs
+                    if run.cost_cny is None or run.cost_cny < 0
+                ),
+            }
+        )
+
+    items.sort(
+        key=lambda item: (
+            -item["total"],
+            *(item[dimension] or "" for dimension in _VERSION_DIMENSIONS),
+            *(item[dimension] is not None for dimension in _VERSION_DIMENSIONS),
+        )
+    )
+    selected = items[:limit]
+    return {
+        "total_cohorts": len(items),
+        "returned_cohorts": len(selected),
+        "truncated": len(selected) < len(items),
+        "items": selected,
+    }
 
 
 def _node_latency(events: list[GenerationRunEvent]) -> dict[str, dict[str, int]]:
@@ -177,9 +261,12 @@ def build_quality_summary(
     *,
     now: datetime | None = None,
     window_days: int = 30,
+    version_cohort_limit: int = 20,
 ) -> dict[str, Any]:
     if window_days < 1 or window_days > 365:
         raise ValueError("window_days 必须在 1 到 365 之间")
+    if version_cohort_limit < 1 or version_cohort_limit > 100:
+        raise ValueError("version_cohort_limit 必须在 1 到 100 之间")
     current = now or datetime.now(timezone.utc)
     cutoff = current - timedelta(days=window_days)
 
@@ -206,6 +293,9 @@ def build_quality_summary(
     ).all()
     blender_render_jobs = db.scalars(
         select(BlenderRenderJob).where(BlenderRenderJob.created_at >= cutoff)
+    ).all()
+    model_calls = db.scalars(
+        select(ModelCallLedger).where(ModelCallLedger.created_at >= cutoff)
     ).all()
     feedback_rows = db.execute(
         select(
@@ -270,6 +360,14 @@ def build_quality_summary(
     )
     if glb_load_failure_total:
         failure_codes[_ASSET_FAILURE_ACTION] += glb_load_failure_total
+    model_call_statuses = Counter(call.status for call in model_calls)
+    provider_failures = Counter(
+        f"{call.provider_key}:{call.failure_code}"
+        for call in model_calls
+        if call.failure_code
+        and call.status == "failed"
+        and _CODE_PATTERN.fullmatch(call.failure_code)
+    )
 
     return {
         "generated_at": current.isoformat(),
@@ -295,11 +393,36 @@ def build_quality_summary(
             ),
             "node_latency": _node_latency(generation_events),
         },
+        "version_cohorts": _version_cohort_metrics(
+            generation_runs,
+            limit=version_cohort_limit,
+        ),
         "agent": {
             "turn_total": len(agent_turns),
             "handoff_total": handoff_total,
             "handoff_rate": _rate(handoff_total, len(agent_turns)),
             "statuses": dict(sorted(agent_statuses.items())),
+        },
+        "model_calls": {
+            "total": len(model_calls),
+            "succeeded": model_call_statuses["succeeded"],
+            "failed": model_call_statuses["failed"],
+            "blocked": model_call_statuses["blocked"],
+            "total_tokens": sum(
+                int((call.usage_json or {}).get("total_tokens", 0))
+                for call in model_calls
+                if isinstance((call.usage_json or {}).get("total_tokens", 0), int)
+            ),
+            "known_actual_cost_cny": sum(
+                float(call.actual_cost_cny)
+                for call in model_calls
+                if call.actual_cost_cny is not None
+                and call.actual_cost_cny >= 0
+            ),
+            "unknown_cost_call_count": sum(
+                1 for call in model_calls if call.billing_status == "unknown"
+            ),
+            "provider_failures": dict(sorted(provider_failures.items())),
         },
         "layout": {
             "total": len(layout_runs),

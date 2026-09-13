@@ -20,6 +20,7 @@ from app.db.models import (
     PlanShare,
 )
 from app.schemas.shares import PublicPlanSnapshot
+from app.services import aggregate_lock_service, plan_delivery_service
 
 
 _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -165,11 +166,16 @@ def _budget_snapshot(plan: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
-def _quote_snapshot(plan_version: DesignPlanVersion) -> dict[str, Any] | None:
+def _quote_snapshot(
+    plan_version: DesignPlanVersion,
+    plan: dict[str, Any],
+) -> dict[str, Any] | None:
     quote_row = plan_version.quote_snapshot
     if quote_row is None:
         return None
-    quote = quote_row.quote_json if isinstance(quote_row.quote_json, dict) else {}
+    quote = plan.get("shopQuote")
+    if not isinstance(quote, dict):
+        return None
     line_items = []
     for item in _dict_items(quote.get("lineItems")):
         sku = _text(item.get("sku"), limit=100)
@@ -194,9 +200,7 @@ def _quote_snapshot(plan_version: DesignPlanVersion) -> dict[str, Any] | None:
             _integer(item.get("unitPrice")),
         ): item
         for item in _dict_items(
-            (plan_version.plan_json or {}).get("customItems")
-            if isinstance(plan_version.plan_json, dict)
-            else None
+            plan.get("customItems")
         )
     }
     custom_lines = []
@@ -229,8 +233,18 @@ def _quote_snapshot(plan_version: DesignPlanVersion) -> dict[str, Any] | None:
     }
 
 
-def build_public_snapshot(plan_version: DesignPlanVersion) -> dict[str, Any]:
-    plan = plan_version.plan_json if isinstance(plan_version.plan_json, dict) else {}
+def build_public_snapshot(
+    plan_version: DesignPlanVersion,
+    *,
+    plan_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    plan = (
+        plan_snapshot
+        if isinstance(plan_snapshot, dict)
+        else plan_version.plan_json
+        if isinstance(plan_version.plan_json, dict)
+        else {}
+    )
     snapshot = PublicPlanSnapshot(
         name=_text(plan.get("name"), limit=200) or plan_version.plan_name,
         style=_text(plan.get("style"), limit=100) or plan_version.style,
@@ -245,7 +259,7 @@ def build_public_snapshot(plan_version: DesignPlanVersion) -> dict[str, Any]:
         materials=_materials_snapshot(plan),
         lighting=_lighting_snapshot(plan),
         budget_breakdown=_budget_snapshot(plan),
-        quote=_quote_snapshot(plan_version),
+        quote=_quote_snapshot(plan_version, plan),
     )
     return snapshot.model_dump(mode="json")
 
@@ -263,24 +277,62 @@ def create_share(
     plan_version: DesignPlanVersion,
     expires_in_hours: int,
 ) -> tuple[PlanShare, str]:
-    snapshot = build_public_snapshot(plan_version)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=expires_in_hours)
+    plan_version_id = plan_version.id
+    try:
+        locked_plan = plan_delivery_service.lock_delivery_aggregate(
+            db,
+            plan_version_id=plan_version_id,
+        )
+    except aggregate_lock_service.AggregateLockBusy as exc:
+        raise plan_delivery_service.PlanDeliveryBlocked(
+            ("delivery_snapshot_busy",)
+        ) from exc
+    if locked_plan is None:
+        db.rollback()
+        raise plan_delivery_service.PlanDeliveryBlocked(
+            ("delivery_snapshot_changed",)
+        )
+
+    current = datetime.now(timezone.utc)
+    delivery = plan_delivery_service.require_deliverable(
+        locked_plan,
+        now=current,
+    )
+    snapshot = build_public_snapshot(
+        locked_plan,
+        plan_snapshot=delivery.plan_snapshot,
+    )
+    snapshot["delivery_mode"] = delivery.delivery_mode
+    try:
+        plan_delivery_service.assert_snapshot_unchanged(locked_plan, delivery)
+    except plan_delivery_service.PlanDeliveryBlocked:
+        db.rollback()
+        raise
+    requested_expiry = current + timedelta(hours=expires_in_hours)
+    expires_at = (
+        min(requested_expiry, delivery.quote_valid_until)
+        if delivery.quote_valid_until is not None
+        else requested_expiry
+    )
     for _ in range(3):
         token = secrets.token_urlsafe(32)
         share = PlanShare(
-            plan_version_id=plan_version.id,
+            plan_version_id=locked_plan.id,
             token_digest=token_digest(token),
             snapshot_json=snapshot,
             snapshot_digest=_snapshot_digest(snapshot),
             expires_at=expires_at,
         )
-        db.add(share)
         try:
-            db.commit()
-            db.refresh(share)
-            return share, token
+            with db.begin_nested():
+                db.add(share)
+                db.flush()
         except IntegrityError:
-            db.rollback()
+            continue
+        db.commit()
+        db.refresh(share)
+        return share, token
+    db.rollback()
     raise RuntimeError("无法生成唯一分享凭证")
 
 

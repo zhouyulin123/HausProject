@@ -450,7 +450,7 @@ def compile_round_rect_coffee_table_rule(spec: dict[str, Any]) -> dict[str, Any]
     structure = _require_mapping(spec, "结构参数")
     shape = _require_mapping(spec, "造型参数")
     materials = _require_list(spec, "材质参数")
-    craft = _require_mapping(spec, "工艺细节")
+    _require_mapping(spec, "工艺细节")
     mesh = _require_mapping(spec, "网格与贴图")
 
     length = _require_number(dimensions, "长")

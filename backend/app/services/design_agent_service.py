@@ -6,7 +6,6 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import logging
 from math import hypot, isclose
-import re
 from typing import Any, Callable
 
 from pydantic import ValidationError
@@ -38,6 +37,7 @@ from app.db.models import (
     UploadedImage,
 )
 from app.schemas.design_agent import AgentTurnRequest, CustomFurnitureDraftRequest
+from app.schemas.design_agent import AgentFactsPatch
 from app.schemas.agent_action_plan import (
     AgentActionPlan,
     ExplicitPlacement,
@@ -58,12 +58,15 @@ from app.schemas.scenes import (
 )
 from app.services import (
     agent_approval_service,
+    agent_fact_extraction_service,
     aggregate_lock_service,
     catalog_service,
     custom_furniture_service,
+    generation_constraints_service,
     generation_request_service,
     generation_run_service,
     llm_service,
+    model_call_governance_service,
     open_geometry_service,
     plan_refine_service,
     scene_service,
@@ -162,48 +165,7 @@ def is_open_geometry_turn(payload: AgentTurnRequest) -> bool:
 
 
 def _normalize_requirement_facts(requirement: dict[str, Any]) -> dict[str, Any]:
-    facts: dict[str, Any] = {}
-    aliases = {
-        "space_type": ("space_type", "spaceType"),
-        "style": ("style",),
-        "budget_min": ("budget_min", "budgetMin"),
-        "budget_max": ("budget_max", "budgetMax", "budget"),
-        "room_width_m": ("room_width_m", "roomWidthM", "roomWidth"),
-        "room_depth_m": ("room_depth_m", "roomDepthM", "roomDepth"),
-        "ceiling_height_m": (
-            "ceiling_height_m",
-            "ceilingHeightM",
-            "ceilingHeight",
-        ),
-        "delivery_region": (
-            "delivery_region",
-            "deliveryRegion",
-            "region_code",
-            "regionCode",
-        ),
-    }
-    for target, keys in aliases.items():
-        for key in keys:
-            value = requirement.get(key)
-            if value not in (None, "", 0):
-                facts[target] = value
-                break
-    rooms = requirement.get("rooms")
-    if "space_type" not in facts and isinstance(rooms, list) and rooms:
-        if isinstance(rooms[0], str) and rooms[0].strip():
-            facts["space_type"] = rooms[0].strip()
-    styles = requirement.get("styles")
-    if "style" not in facts and isinstance(styles, list) and styles:
-        if isinstance(styles[0], str) and styles[0].strip():
-            facts["style"] = styles[0].strip()
-    budget_min, budget_max = _parse_budget_range(requirement.get("budgetRange"))
-    if "budget_min" not in facts and budget_min is not None:
-        facts["budget_min"] = budget_min
-    if "budget_max" not in facts and budget_max is not None:
-        facts["budget_max"] = budget_max
-    if "delivery_region" in facts:
-        facts["delivery_region"] = str(facts["delivery_region"]).strip().upper()
-    return facts
+    return generation_constraints_service.normalize_requirement_facts(requirement)
 
 
 def confirmed_generation_facts(task: DesignTask) -> dict[str, Any]:
@@ -216,43 +178,18 @@ def confirmed_generation_facts(task: DesignTask) -> dict[str, Any]:
 
 def missing_confirmed_generation_facts(task: DesignTask) -> list[str]:
     """返回旧生成入口缺失的已确认硬事实，语义与 Agent 事实门禁一致。"""
-    facts = confirmed_generation_facts(task)
-
-    def positive_number(value: Any) -> bool:
-        return (
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and value > 0
-        )
+    constraints = generation_constraints_service.constraints_for_task(task)
 
     missing: list[str] = []
-    if not positive_number(facts.get("budget_max")):
+    if constraints.budget_max is None:
         missing.append("budget_max")
-    if not (
-        positive_number(facts.get("room_width_m"))
-        and positive_number(facts.get("room_depth_m"))
-    ):
+    if constraints.max_dimensions_mm() is None:
         missing.append("room_dimensions")
     return missing
 
 
 def _parse_budget_range(value: Any) -> tuple[int | None, int | None]:
-    """解析现有 UserRequirement 的中文预算范围，不从面积推测预算。"""
-    if not isinstance(value, str) or not value.strip():
-        return None, None
-    normalized = value.replace("，", "").replace(",", "").strip()
-    numbers = [float(item) for item in re.findall(r"\d+(?:\.\d+)?", normalized)]
-    if not numbers:
-        return None, None
-    multiplier = 10_000 if "万" in normalized else 1
-    amounts = [round(number * multiplier) for number in numbers]
-    if len(amounts) >= 2 and any(mark in normalized for mark in ("-", "~", "至")):
-        low, high = amounts[0], amounts[1]
-        return min(low, high), max(low, high)
-    amount = amounts[0]
-    if any(mark in normalized for mark in ("以上", "起")):
-        return amount, None
-    return None, amount
+    return generation_constraints_service.parse_budget_range(value)
 
 
 def _room_facts(
@@ -399,6 +336,11 @@ def _facts_for_turn(
     if task.budget_max:
         task_values["budget_max"] = task.budget_max
     apply_confirmed(task_values, "task_confirmation")
+    # 保留明确撤回的 tombstone，防止图像事实或旧字段别名恢复已否定值。
+    for field_name, value in prior_facts.items():
+        if field_name in AgentFactsPatch.model_fields and value is None:
+            facts[field_name] = None
+            evidence[field_name] = deepcopy(prior_evidence.get(field_name) or {})
     if payload.answers is not None:
         for field_name, value in payload.answers.model_dump(
             exclude_none=True
@@ -1058,18 +1000,9 @@ def _custom_spec_for_turn(
 def _max_dimensions_from_facts(
     facts: dict[str, Any],
 ) -> dict[str, int] | None:
-    width = facts.get("room_width_m")
-    depth = facts.get("room_depth_m")
-    if not isinstance(width, (int, float)) or not isinstance(depth, (int, float)):
-        return None
-    dimensions = {
-        "width": round(float(width) * 1000),
-        "depth": round(float(depth) * 1000),
-    }
-    height = facts.get("ceiling_height_m")
-    if isinstance(height, (int, float)):
-        dimensions["height"] = round(float(height) * 1000)
-    return dimensions
+    return generation_constraints_service.constraints_from_facts(
+        facts
+    ).max_dimensions_mm()
 
 
 def _catalog_tool(db: Session):
@@ -1763,6 +1696,29 @@ def _turn_lease_expired(turn: DesignAgentTurn, *, now: datetime) -> bool:
     return deadline <= _as_utc(now)
 
 
+def replay_turn(
+    db: Session,
+    *,
+    task_id: int,
+    payload: AgentTurnRequest,
+) -> dict[str, Any] | None:
+    """在任何开放几何额度消耗前返回已持久化的幂等结果。"""
+    turn = db.scalar(
+        select(DesignAgentTurn).where(
+            DesignAgentTurn.task_id == task_id,
+            DesignAgentTurn.client_turn_id == payload.client_turn_id,
+        )
+    )
+    if turn is None:
+        return None
+    _assert_same_turn_request(turn, payload)
+    if turn.response_json is not None:
+        return _existing_turn_result(turn, payload)
+    if not _turn_lease_expired(turn, now=_utc_now()):
+        raise AgentTurnInProgress("相同 client_turn_id 的请求仍在处理中")
+    return None
+
+
 def _turn_execution_deadline(turn: DesignAgentTurn) -> datetime:
     if turn.created_at is None:
         return _utc_now()
@@ -2205,6 +2161,40 @@ def _run_turn(
         model_attempted = True
 
     registry = DesignAgentToolRegistry()
+
+    def resolve_facts(state: dict[str, Any]) -> dict[str, Any]:
+        mark_model_attempted()
+        extracted = agent_fact_extraction_service.extract_fact_patch(
+            message=payload.message,
+            current_facts=state.get("facts") or {},
+            pending_questions=prior_checkpoint.get("pending_questions") or [],
+        )
+        values = deepcopy(state.get("facts") or {})
+        evidence = deepcopy(state.get("fact_evidence") or {})
+        for field_name, value in extracted.patch.model_dump(exclude_unset=True).items():
+            values[field_name] = value
+            evidence[field_name] = {
+                "source": "user_message", "confidence": 1.0, "turn_id": turn.id,
+                "accepted": value is not None, "confirmation_required": value is None,
+                "quote": extracted.evidence[field_name],
+            }
+        if payload.answers is not None:
+            for field_name, value in payload.answers.model_dump(exclude_none=True).items():
+                values[field_name] = value
+                evidence[field_name] = {
+                    "source": "user_turn", "confidence": 1.0, "turn_id": turn.id,
+                    "accepted": True, "confirmation_required": False,
+                }
+        try:
+            AgentFactsPatch.model_validate({key: value for key, value in values.items()
+                                           if key in AgentFactsPatch.model_fields})
+        except ValidationError as exc:
+            raise agent_fact_extraction_service.FactExtractionError(
+                "新需求与已确认需求存在冲突，请明确预算区间或尺寸。"
+            ) from exc
+        return {"facts": values, "fact_evidence": evidence,
+                "model_call_capture": _runtime_model_call_capture(model_capture)}
+
     registry.register("catalog_search", _catalog_tool(db))
     registry.register(
         "design_generation",
@@ -2268,6 +2258,7 @@ def _run_turn(
         execute_custom=registry.get("custom_furniture_preview"),
         execute_open_geometry=registry.get("open_geometry_edit"),
         execute_action_plan=registry.get("action_plan"),
+        resolve_facts=resolve_facts,
         max_steps=max_steps,
         max_retries=max_retries,
         checkpointer=checkpoint_saver,
@@ -2314,6 +2305,8 @@ def _run_turn(
     )
     if intent == "action_plan" and state.get("hard_errors"):
         raise AgentActionPlanFailed(state.get("hard_errors") or [])
+    facts = deepcopy(state.get("facts") or facts)
+    fact_evidence = deepcopy(state.get("fact_evidence") or fact_evidence)
     effective_model_capture = _effective_model_call_capture(
         state,
         model_capture,
@@ -2508,6 +2501,12 @@ def _persist_failed_turn(
     failure_codes = (
         error.codes
         if isinstance(error, AgentActionPlanFailed)
+        else ["fact_extraction_failed"]
+        if isinstance(error, agent_fact_extraction_service.FactExtractionError)
+        else ["llm_unavailable"]
+        if isinstance(error, LLMUnavailable)
+        else ["tool_timeout"]
+        if isinstance(error, TimeoutError)
         else ["internal_error"]
     )
     step_count = prior_checkpoint.get("step_count", 0)
@@ -2644,7 +2643,14 @@ def run_turn(
     task: DesignTask,
     payload: AgentTurnRequest,
 ) -> dict[str, Any]:
-    with llm_service.capture_model_call() as model_capture:
+    with (
+        model_call_governance_service.govern_task_model_calls(
+            db,
+            task_id=task.id,
+            operation_key=f"agent-turn:{payload.client_turn_id}",
+        ),
+        llm_service.capture_model_call() as model_capture,
+    ):
         try:
             return _run_turn(
                 db,

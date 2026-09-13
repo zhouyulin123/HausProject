@@ -65,6 +65,7 @@ export interface SharedQuote {
 }
 
 export interface PublicPlanSnapshot {
+  delivery_mode?: "commercial" | "development_preview";
   name: string;
   style: string | null;
   description: string | null;

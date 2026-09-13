@@ -14,7 +14,18 @@ from app.db.models import (
 
 
 class AggregateLockBusy(ValueError):
-    """SQLite 写锁在连接等待窗口内未取得。"""
+    """聚合写锁在等待窗口内未取得，或数据库检测到死锁。"""
+
+
+def _locked_scalar(db: Session, statement):
+    try:
+        return db.scalar(statement)
+    except OperationalError as exc:
+        arguments = getattr(exc.orig, "args", ())
+        if db.get_bind().dialect.name == "mysql" and arguments and arguments[0] in {1205, 1213}:
+            db.rollback()
+            raise AggregateLockBusy("业务状态正在被其他请求更新，请重试") from exc
+        raise
 
 
 def _begin_sqlite_write(db: Session) -> bool:
@@ -43,7 +54,7 @@ def lock_task(db: Session, task_id: int) -> DesignTask | None:
     )
     if not sqlite:
         statement = statement.with_for_update()
-    return db.scalar(statement)
+    return _locked_scalar(db, statement)
 
 
 def lock_owned_task(
@@ -68,7 +79,7 @@ def lock_owned_task(
     )
     if not sqlite:
         statement = statement.with_for_update()
-    return db.scalar(statement)
+    return _locked_scalar(db, statement)
 
 
 def lock_owned_scene(
@@ -99,7 +110,7 @@ def lock_owned_scene(
     )
     if not sqlite:
         task_statement = task_statement.with_for_update()
-    task = db.scalar(task_statement)
+    task = _locked_scalar(db, task_statement)
     if task is None:
         return None
 
@@ -110,5 +121,5 @@ def lock_owned_scene(
     )
     if not sqlite:
         scene_statement = scene_statement.with_for_update()
-    scene = db.scalar(scene_statement)
+    scene = _locked_scalar(db, scene_statement)
     return (task, scene) if scene is not None else None

@@ -22,6 +22,7 @@ from app.schemas.room_model import RoomModel, RoomModelCalibrationRequest
 from app.services import (
     anonymous_session_service,
     llm_service,
+    model_call_governance_service,
     prediction_evidence_service,
     room_model_service,
     task_timeline_service,
@@ -167,7 +168,24 @@ async def upload_image(
     # Qwen3-VL 输出统一空间事实模型 RoomModel；不可用或结构无效时降级占位
     source = "vl"
     room_model = None
-    with llm_service.capture_model_call() as model_call:
+    vision_operation_key = f"vision:{image.id}:{content_digest}"
+    governance = (
+        model_call_governance_service.govern_task_model_calls(
+            db,
+            task_id=task_id,
+            operation_key=vision_operation_key,
+        )
+        if task_id is not None
+        else model_call_governance_service.govern_session_model_calls(
+            db,
+            session_id=x_session_id,
+            operation_key=vision_operation_key,
+        )
+    )
+    with (
+        governance,
+        llm_service.capture_model_call() as model_call,
+    ):
         try:
             room_model = llm_service.analyze_room_model(content, file.filename or "")
         except LLMUnavailable as exc:

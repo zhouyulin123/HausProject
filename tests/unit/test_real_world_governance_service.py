@@ -143,11 +143,118 @@ def _grant(version: int, *, expires_at: datetime | None = None):
     )
 
 
+def test_database_readiness_ignores_reference_manifest_and_has_no_frozen_version(
+    governance_db,
+):
+    from app.services.real_world_readiness_service import build_governance_readiness
+
+    factory, _ = governance_db
+    with factory() as db:
+        result = build_governance_readiness(db, checked_at=NOW)
+    assert result["source"] == "governance_database"
+    assert result["total"] == 0
+    assert result["minimum_met"] is False
+    assert result["dataset_id"] is None
+    assert result["manifest_version"] is None
+    assert result["frozen_dataset_count"] == 0
+
+
+def test_database_readiness_follows_governance_updates_and_consent_expiry(
+    governance_db,
+):
+    import json
+    from app.services.real_world_readiness_service import build_governance_readiness
+
+    factory, upload_root = governance_db
+    with factory() as db:
+        case = create_case_import(
+            db,
+            _import_request(),
+            actor_user_id=7101,
+            request_id="readiness-import",
+            upload_root=upload_root,
+        ).case
+        initial = build_governance_readiness(db, checked_at=NOW)
+        assert initial["total"] == 1
+        assert initial["eligible_total"] == 0
+        for field, value in (
+            ("redaction_review", "reviewed"),
+            ("split", "development"),
+        ):
+            case = update_case_governance(
+                db,
+                case.case_ref,
+                CaseGovernanceUpdate(
+                    expected_version=case.record_version, **{field: value}
+                ),
+                actor_user_id=7101,
+                request_id="readiness-update",
+            )
+        case = add_consent_decision(
+            db,
+            case.case_ref,
+            _grant(case.record_version),
+            actor_user_id=7101,
+            request_id="readiness-consent",
+            now=NOW,
+        )
+        case = add_annotation_revision(
+            db,
+            case.case_ref,
+            _annotation(case.case_ref, case.asset_digest, case.record_version),
+            actor_user_id=7101,
+            request_id="readiness-annotation",
+        )
+        ready = build_governance_readiness(db, checked_at=NOW)
+        assert ready["eligible_total"] == 1
+        assert ready["split_counts"]["development"] == {"total": 1, "eligible": 1}
+        assert ready["minimum_met"] is False
+        serialized = json.dumps(ready, default=str)
+        for private in (
+            case.case_ref,
+            case.asset_digest,
+            "case-1.png",
+            "task_input",
+            "SOFA-001",
+        ):
+            assert private not in serialized
+        expired = build_governance_readiness(db, checked_at=NOW + timedelta(days=31))
+        assert expired["eligible_total"] == 0
+        assert expired["consent_status_counts"] == {"expired": 1}
+        assert expired["blocker_counts"]["consent_not_granted"] == 1
+
+
+@pytest.mark.parametrize(
+    "field,value,blocker",
+    [
+        ("origin", "synthetic", "case_not_private_real"),
+        ("task_input_digest", None, "task_input_not_ready"),
+    ],
+)
+def test_governance_projection_includes_freeze_integrity_blockers(
+    governance_db, field, value, blocker
+):
+    from app.services.real_world_governance_service import project_case_record
+
+    factory, upload_root = governance_db
+    with factory() as db:
+        case = create_case_import(
+            db,
+            _import_request(),
+            actor_user_id=7101,
+            request_id="readiness-invalid",
+            upload_root=upload_root,
+        ).case
+        setattr(case, field, value)
+        with db.no_autoflush:
+            assert blocker in project_case_record(db, case, now=NOW).blockers
+
+
 def test_preview_is_read_only_and_recomputes_asset_and_task_input(governance_db):
     factory, upload_root = governance_db
-    expected_asset_digest = "sha256:" + hashlib.sha256(
-        b"deidentified-real-room"
-    ).hexdigest()
+    expected_asset_digest = (
+        "sha256:" + hashlib.sha256(b"deidentified-real-room").hexdigest()
+    )
 
     with factory() as db:
         preview = preview_case_import(db, _import_request(), upload_root=upload_root)
@@ -170,7 +277,9 @@ def test_preview_fails_closed_when_stored_asset_digest_does_not_match(governance
             preview_case_import(db, _import_request(), upload_root=upload_root)
 
 
-@pytest.mark.parametrize("file_url", ["/uploads/../outside.png", "/uploads/missing.png"])
+@pytest.mark.parametrize(
+    "file_url", ["/uploads/../outside.png", "/uploads/missing.png"]
+)
 def test_preview_rejects_path_escape_and_missing_controlled_asset(
     governance_db,
     file_url,
@@ -391,8 +500,16 @@ def test_granted_consent_requires_evidence_purpose_and_valid_window(governance_d
 @pytest.mark.parametrize(
     "override",
     [
-        {"decision": "denied", "legal_basis": "explicit_consent", "evidence_digest": None},
-        {"decision": "revoked", "legal_basis": "withdrawal_request", "evidence_digest": None},
+        {
+            "decision": "denied",
+            "legal_basis": "explicit_consent",
+            "evidence_digest": None,
+        },
+        {
+            "decision": "revoked",
+            "legal_basis": "withdrawal_request",
+            "evidence_digest": None,
+        },
         {"decision": "revoked", "legal_basis": "contract"},
         {"decision": "denied", "legal_basis": "withdrawal_request"},
     ],
@@ -520,12 +637,17 @@ def test_dataset_freeze_rejects_stale_case_versions(governance_db):
                 now=NOW,
             )
         assert db.scalar(select(RealWorldDatasetRevision)) is None
-        assert db.scalar(
-            select(GovernanceEvent).where(GovernanceEvent.action == "dataset_frozen")
-        ) is None
+        assert (
+            db.scalar(
+                select(GovernanceEvent).where(
+                    GovernanceEvent.action == "dataset_frozen"
+                )
+            )
+            is None
+        )
 
 
-def test_dataset_freeze_creates_an_immutable_digest_only_snapshot(governance_db):
+def test_dataset_freeze_creates_an_immutable_digest_only_snapshot(governance_db, monkeypatch):
     factory, upload_root = governance_db
     targets: list[DatasetFreezeTarget] = []
     with factory() as db:
@@ -604,6 +726,13 @@ def test_dataset_freeze_creates_an_immutable_digest_only_snapshot(governance_db)
                 )
             )
 
+        from app.services.real_world_readiness_service import build_governance_readiness
+
+        before_freeze = build_governance_readiness(db, checked_at=NOW)
+        assert before_freeze["minimum_met"] is True
+        assert before_freeze["eligible_total"] == 20
+        assert before_freeze["frozen_dataset_count"] == 0
+        assert before_freeze["dataset_id"] is None
         revision = freeze_dataset_revision(
             db,
             DatasetFreezeRequest(
@@ -616,6 +745,10 @@ def test_dataset_freeze_creates_an_immutable_digest_only_snapshot(governance_db)
         )
 
         assert revision.schema_version == "2.0"
+        after_freeze = build_governance_readiness(db, checked_at=NOW)
+        assert after_freeze["dataset_id"] == revision.dataset_version
+        assert after_freeze["manifest_version"] == "2.0"
+        assert after_freeze["frozen_dataset_count"] == 1
         assert revision.case_count == 20
         assert revision.manifest_digest.startswith("sha256:")
         assert set(revision.split_counts) == {"development", "regression", "blind"}
@@ -656,11 +789,14 @@ def test_dataset_freeze_creates_an_immutable_digest_only_snapshot(governance_db)
         )
         assert replayed.revision_ref == revision.revision_ref
         assert replayed.manifest_digest == revision.manifest_digest
-        assert db.scalar(
-            select(func.count(GovernanceEvent.id)).where(
-                GovernanceEvent.action == "dataset_frozen"
+        assert (
+            db.scalar(
+                select(func.count(GovernanceEvent.id)).where(
+                    GovernanceEvent.action == "dataset_frozen"
+                )
             )
-        ) == 1
+            == 1
+        )
 
         conflicting_targets = list(targets)
         conflicting_targets[0] = conflicting_targets[0].model_copy(
@@ -719,12 +855,16 @@ def test_dataset_freeze_creates_an_immutable_digest_only_snapshot(governance_db)
             case for case in frozen.cases if case.id == first_case.case_ref
         )
         frozen_first_snapshot = next(
-            item for item in revision.snapshot if item["case_ref"] == first_case.case_ref
+            item
+            for item in revision.snapshot
+            if item["case_ref"] == first_case.case_ref
         )
         assert frozen_first.label_version == "labels-2026-09-10.1"
         assert frozen_first.split == frozen_first_snapshot["split"]
         assert frozen.governance_manifest_digest == revision.manifest_digest
-        assert dataset_fingerprint(frozen, split=frozen_first.split).startswith("sha256:")
+        assert dataset_fingerprint(frozen, split=frozen_first.split).startswith(
+            "sha256:"
+        )
         public_response = DatasetRevisionResponse(
             revision_ref=revision.revision_ref,
             schema_version="2.0",
@@ -742,6 +882,54 @@ def test_dataset_freeze_creates_an_immutable_digest_only_snapshot(governance_db)
                 revision.dataset_version,
                 upload_root=upload_root,
                 now=NOW + timedelta(days=31),
+            )
+
+        # 冻结保存历史证据，但不能绕过后来撤回或拒绝的当前授权。
+        from app.services import real_world_governance_service as governance
+
+        for decision, basis in (("revoked", "withdrawal_request"), ("denied", "explicit_consent")):
+            db.refresh(first_case)
+            first_case = add_consent_decision(
+                db,
+                first_case.case_ref,
+                ConsentDecisionCreate(
+                    expected_version=first_case.record_version,
+                    decision=decision,
+                    legal_basis=basis,
+                    allowed_purposes=[],
+                    evidence_digest="sha256:" + "f" * 64,
+                    effective_at=NOW,
+                ),
+                actor_user_id=7101,
+                request_id=f"frozen-{decision}",
+                now=NOW,
+            )
+            with monkeypatch.context() as blocked_assets:
+                def reject_asset_read(*args, **kwargs):
+                    pytest.fail("当前授权无效时不得读取任何私有资产")
+
+                blocked_assets.setattr(governance, "_controlled_upload_path", reject_asset_read)
+                with pytest.raises(RealWorldGovernanceValidationError, match="当前授权已失效"):
+                    load_frozen_dataset_for_evaluation(
+                        db, revision.dataset_version, upload_root=upload_root, now=NOW,
+                    )
+            first_case = add_consent_decision(
+                db, first_case.case_ref, _grant(first_case.record_version),
+                actor_user_id=7101, request_id=f"regrant-after-{decision}", now=NOW,
+            )
+            assert load_frozen_dataset_for_evaluation(
+                db, revision.dataset_version, upload_root=upload_root, now=NOW,
+            ).governance_manifest_digest == revision.manifest_digest
+
+        first_case = add_consent_decision(
+            db, first_case.case_ref,
+            _grant(first_case.record_version, expires_at=NOW + timedelta(minutes=1)),
+            actor_user_id=7101, request_id="short-lived-current-consent", now=NOW,
+        )
+        with pytest.raises(RealWorldGovernanceValidationError, match="当前授权已失效"):
+            load_frozen_dataset_for_evaluation(
+                db, revision.dataset_version, upload_root=upload_root,
+                now=NOW + timedelta(minutes=1),
             )
 
         (upload_root / "ready-0.png").write_bytes(b"tampered-private-room")

@@ -32,7 +32,9 @@ def test_generate_design_persists_failed_status(monkeypatch):
         monkeypatch.setattr(
             task_routes.catalog_service,
             "build_catalog_context",
-            lambda _: (_ for _ in ()).throw(RuntimeError("商品库暂时不可用")),
+            lambda _db, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("商品库暂时不可用")
+            ),
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -71,7 +73,7 @@ def test_agent_worker_generation_does_not_turn_llm_failure_into_template_success
         monkeypatch.setattr(
             task_routes.catalog_service,
             "build_catalog_context",
-            lambda _: "",
+            lambda _db, **_kwargs: "",
         )
 
         with pytest.raises(HTTPException):
@@ -136,7 +138,7 @@ def test_generate_design_persists_langgraph_node_trace(monkeypatch):
         monkeypatch.setattr(
             task_routes.catalog_service,
             "build_catalog_context",
-            lambda _: "SOFA-001|原木沙发",
+            lambda _db, **_kwargs: "SOFA-001|原木沙发",
         )
 
         response = task_routes._execute_generation(db, task=task)
@@ -177,8 +179,11 @@ def test_generation_emits_provenance_from_actual_prompt_rules_and_catalog(monkey
             }
         ]
 
+        observed = {}
+
         class FakeWorkflow:
-            def run(self, **_):
+            def run(self, **kwargs):
+                observed["catalog_context"] = kwargs["catalog_context"]
                 return {
                     "plans": plans,
                     "generator": "llm",
@@ -191,7 +196,7 @@ def test_generation_emits_provenance_from_actual_prompt_rules_and_catalog(monkey
         monkeypatch.setattr(
             task_routes.catalog_service,
             "build_catalog_context",
-            lambda _: catalog_context,
+            lambda _db, **_kwargs: catalog_context,
         )
         monkeypatch.setattr(
             task_routes.llm_service,
@@ -211,8 +216,9 @@ def test_generation_emits_provenance_from_actual_prompt_rules_and_catalog(monkey
         expected = build_generation_provenance(
             prompt_snapshot=prompt_snapshot,
             input_snapshot={"requirement": {"rooms": ["客厅"]}},
-            catalog_context=catalog_context,
+            catalog_context=observed["catalog_context"],
         )
+        assert catalog_context in observed["catalog_context"]
         assert emitted[0]["meta"] == {
             "model": "model-runtime-v3",
             "prompt_snapshot": prompt_snapshot,
@@ -255,7 +261,7 @@ def test_paid_model_failure_before_template_fallback_accumulates_run_cost(
     monkeypatch.setattr(
         task_routes.catalog_service,
         "build_catalog_context",
-        lambda _: "catalog",
+        lambda _db, **_kwargs: "catalog",
     )
     monkeypatch.setattr(
         task_routes.llm_service,
@@ -343,7 +349,7 @@ def test_generation_replans_once_when_first_deterministic_quote_exceeds_budget(
     monkeypatch.setattr(
         task_routes.catalog_service,
         "build_catalog_context",
-        lambda _: "SOFA-001|测试沙发",
+        lambda _db, **_kwargs: "SOFA-001|测试沙发",
     )
     monkeypatch.setattr(
         task_routes.llm_service,
@@ -433,7 +439,7 @@ def test_generation_budget_replan_exhaustion_is_not_wrapped_as_http_500(monkeypa
     monkeypatch.setattr(
         task_routes.catalog_service,
         "build_catalog_context",
-        lambda _: "SOFA-001|测试沙发",
+        lambda _db, **_kwargs: "SOFA-001|测试沙发",
     )
     with session_factory() as db:
         task = DesignTask(

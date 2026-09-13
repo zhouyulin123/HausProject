@@ -6,7 +6,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes import tasks
 from app.db.database import Base, get_db
-from app.db.models import DesignTask
+from app.db.models import DesignTask, ModelCallCostAccount, ModelCallLedger
 from app.core.request_context import bind_request_id
 from app.services import task_timeline_service
 from app.services.anonymous_session_service import attach_task, create_anonymous_session
@@ -60,6 +60,33 @@ def test_task_timeline_is_owner_scoped_paginated_and_returns_safe_summaries():
             billing_status="unknown",
             cost_cny=None,
             event_key="effect:3:a1:failed",
+        )
+        account = ModelCallCostAccount(
+            scope_kind="task",
+            scope_id=str(task.id),
+            task_id=task.id,
+            cost_limit_cny=5.0,
+            allocated_cost_cny=1.25,
+            actual_cost_cny=1.0,
+            unknown_cost_call_count=1,
+        )
+        db.add(account)
+        db.flush()
+        db.add(
+            ModelCallLedger(
+                account_id=account.id,
+                task_id=task.id,
+                operation_key="agent:1",
+                call_index=1,
+                provider_key="primary-llm",
+                model="model-v1",
+                modality="text",
+                status="succeeded",
+                estimated_cost_cny=1.25,
+                actual_cost_cny=1.0,
+                billing_status="metered",
+                usage_json={"total_tokens": 10},
+            )
         )
         db.commit()
         owner_id = owner.id
@@ -119,6 +146,11 @@ def test_task_timeline_is_owner_scoped_paginated_and_returns_safe_summaries():
     assert first.json()["known_cost_cny"] == 2.5
     assert first.json()["has_unknown_cost"] is True
     assert first.json()["unknown_cost_event_count"] == 1
+    assert first.json()["model_cost_limit_cny"] == 5.0
+    assert first.json()["model_cost_allocated_cny"] == 1.25
+    assert first.json()["model_actual_cost_cny"] == 1.0
+    assert first.json()["model_unknown_cost_call_count"] == 1
+    assert first.json()["model_call_count"] == 1
     assert first.json()["events"][0]["request_id"] == "timeline-request-002"
     assert first.json()["events"][1]["request_id"] is None
     assert before_cursor == first.json()["events"][0]["event_id"]

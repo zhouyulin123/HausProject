@@ -308,18 +308,23 @@ def _validate_current_generation_facts(
 ) -> None:
     """Worker 领取前复算当前部署的完整生成事实，防止绑定后混版。"""
     from app.core.config import settings
-    from app.services import catalog_service, llm_service
+    from app.services import generation_constraints_service, llm_service
     from app.services.generation_provenance import build_generation_provenance
 
     payload = task_input_payload(db, task)
     requirement = payload.get("confirmed_requirement")
     if not isinstance(requirement, dict) or not requirement:
         raise EvaluationBindingError("正式评测缺少冻结的 confirmed_requirement")
-    requirement_for_llm = dict(requirement)
+    generation_context = generation_constraints_service.build_generation_context(
+        db,
+        task,
+        requirement=requirement,
+    )
+    requirement_for_llm = dict(generation_context.requirement)
     image_context = payload.get("image_context") or []
     if image_context:
         requirement_for_llm["image_analysis"] = list(image_context)
-    catalog_context = catalog_service.build_catalog_context(db)
+    catalog_context = generation_context.catalog_context
     prompt_snapshot = llm_service.generation_prompt_snapshot()
     input_snapshot = llm_service.generation_input_snapshot(
         requirement_for_llm,

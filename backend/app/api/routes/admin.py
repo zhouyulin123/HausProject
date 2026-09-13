@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import require_admin
@@ -30,8 +31,7 @@ from app.services import auth_service
 from app.services.quality_metrics_service import build_quality_summary
 from app.services import failure_triage_service
 from app.services.real_world_readiness_service import (
-    RealWorldReadinessError,
-    build_real_world_readiness,
+    build_governance_readiness,
 )
 
 router = APIRouter()
@@ -51,11 +51,16 @@ def _require_eval_report_verifier(signature_key_id: str) -> None:
 @router.get("/quality/summary", response_model=QualitySummaryResponse)
 def get_quality_summary(
     window_days: int = Query(default=30, ge=1, le=365),
+    version_cohort_limit: int = Query(default=20, ge=1, le=100),
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> QualitySummaryResponse:
     return QualitySummaryResponse.model_validate(
-        build_quality_summary(db, window_days=window_days)
+        build_quality_summary(
+            db,
+            window_days=window_days,
+            version_cohort_limit=version_cohort_limit,
+        )
     )
 
 
@@ -65,11 +70,12 @@ def get_quality_summary(
 )
 def get_real_world_readiness(
     _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
 ) -> RealWorldReadinessResponse:
     try:
-        readiness = build_real_world_readiness()
-    except RealWorldReadinessError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        readiness = build_governance_readiness(db)
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="真实案例治理数据库不可用") from exc
     return RealWorldReadinessResponse.model_validate(readiness)
 
 
@@ -96,7 +102,9 @@ def sync_failure_clusters(
     return FailureTriageSyncResponse(
         imported=result.imported,
         cluster_count=len(result.clusters),
-        clusters=[FailureClusterResponse.model_validate(item) for item in result.clusters],
+        clusters=[
+            FailureClusterResponse.model_validate(item) for item in result.clusters
+        ],
     )
 
 
@@ -125,7 +133,9 @@ def verify_failure_clusters(
         cluster_count=len(result.clusters),
         report_digest=result.report_digest,
         coverage_digest=result.coverage_digest,
-        clusters=[FailureClusterResponse.model_validate(item) for item in result.clusters],
+        clusters=[
+            FailureClusterResponse.model_validate(item) for item in result.clusters
+        ],
     )
 
 
@@ -172,8 +182,12 @@ def patch_failure_cluster(
 
 def _user_to_dict(user: User) -> dict:
     return auth_service.user_to_dict(user) | {
-        "created_at": user.created_at.strftime("%Y-%m-%d %H:%M") if user.created_at else None,
-        "last_login_at": user.last_login_at.strftime("%Y-%m-%d %H:%M") if user.last_login_at else None,
+        "created_at": user.created_at.strftime("%Y-%m-%d %H:%M")
+        if user.created_at
+        else None,
+        "last_login_at": user.last_login_at.strftime("%Y-%m-%d %H:%M")
+        if user.last_login_at
+        else None,
     }
 
 

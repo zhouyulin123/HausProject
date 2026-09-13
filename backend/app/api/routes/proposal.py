@@ -18,7 +18,12 @@ from app.api.dependencies import (
 from app.core.config import settings
 from app.db.database import get_db
 from app.db.models import RenderedImage
-from app.services import pdf_service, scene_service, shop_service
+from app.services import (
+    pdf_service,
+    plan_delivery_service,
+    scene_service,
+    shop_service,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -55,7 +60,12 @@ def export_proposal_pdf(
     ):
         raise HTTPException(status_code=404, detail="方案版本不存在")
 
-    plan = plan_version.plan_json
+    try:
+        delivery_facts = plan_delivery_service.require_deliverable(plan_version)
+    except plan_delivery_service.PlanDeliveryBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
+
+    plan = delivery_facts.plan_snapshot
     if not plan.get("name"):
         raise HTTPException(status_code=422, detail="服务端方案缺少名称")
 
@@ -82,7 +92,13 @@ def export_proposal_pdf(
             shop["_logo_path"] = str(logo_file)
 
     try:
-        pdf_bytes = pdf_service.build_proposal_pdf(plan, effect_path, shop)
+        pdf_bytes = pdf_service.build_proposal_pdf(
+            plan,
+            effect_path,
+            shop,
+            quote_valid_until=delivery_facts.quote_valid_until,
+            development_preview=delivery_facts.delivery_mode == "development_preview",
+        )
     except Exception as exc:
         logger.exception("提案 PDF 生成失败")
         raise HTTPException(status_code=500, detail=f"PDF 生成失败: {exc}")

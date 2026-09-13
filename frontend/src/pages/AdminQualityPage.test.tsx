@@ -13,7 +13,11 @@ import {
   executeImportAttempt,
   submitGovernanceMutation,
 } from "./AdminQualityPage";
-import { AdminApiError, type RealWorldReadiness } from "@/api/adminApi";
+import {
+  AdminApiError,
+  fetchQualitySummary,
+  type RealWorldReadiness,
+} from "@/api/adminApi";
 import type { FailureClusterListResponse } from "@/types/quality";
 import type { QualitySummary } from "@/types/quality";
 import type { GovernanceCase } from "@/types/admin";
@@ -42,6 +46,16 @@ const summary: QualitySummary = {
     handoff_total: 39,
     handoff_rate: 0.0802,
     statuses: { completed: 401, needs_human: 39 },
+  },
+  model_calls: {
+    total: 540,
+    succeeded: 501,
+    failed: 31,
+    blocked: 8,
+    total_tokens: 1_234_567,
+    known_actual_cost_cny: 130.5,
+    unknown_cost_call_count: 4,
+    provider_failures: { "primary-llm:timeout": 3 },
   },
   layout: {
     total: 96,
@@ -78,6 +92,53 @@ const summary: QualitySummary = {
     queue_wait_p50_ms: 1500, queue_wait_p95_ms: 5000,
     execution_p50_ms: 18000, execution_p95_ms: 45000,
   },
+  version_cohorts: {
+    total_cohorts: 2,
+    returned_cohorts: 2,
+    truncated: false,
+    items: [
+      {
+        model: "deepseek-chat-v3",
+        prompt_digest: `sha256:${"a".repeat(64)}`,
+        rules_digest: `sha256:${"b".repeat(64)}`,
+        data_digest: `sha256:${"c".repeat(64)}`,
+        version_complete: true,
+        missing_dimensions: [],
+        total: 12,
+        completed: 11,
+        failed: 1,
+        cancelled: 0,
+        active: 0,
+        success_rate: 11 / 12,
+        fallback_rate: 0,
+        duration_p50_ms: 3_100,
+        duration_p95_ms: 8_200,
+        total_tokens: 88_000,
+        known_cost_cny: 42.3,
+        unknown_cost_run_count: 3,
+      },
+      {
+        model: "   ",
+        prompt_digest: `sha256:${"d".repeat(64)}`,
+        rules_digest: null,
+        data_digest: null,
+        version_complete: false,
+        missing_dimensions: ["model", "rules_digest", "data_digest"],
+        total: 2,
+        completed: 0,
+        failed: 1,
+        cancelled: 0,
+        active: 1,
+        success_rate: null,
+        fallback_rate: null,
+        duration_p50_ms: null,
+        duration_p95_ms: null,
+        total_tokens: 0,
+        known_cost_cny: 0,
+        unknown_cost_run_count: 2,
+      },
+    ],
+  },
   failure_codes: { invalid_quote: 7, tool_failed: 5 },
 };
 
@@ -88,6 +149,9 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("89.5%");
     expect(html).toContain("P95 9.12 秒");
     expect(html).toContain("128.46");
+    expect(html).toContain("130.50");
+    expect(html).toContain("全模型调用");
+    expect(html).toContain("4 次成本未知");
     expect(html).toContain("invalid_quote");
     expect(html).toContain(">7<");
     expect(html).toContain("GLB 加载失败");
@@ -105,6 +169,49 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("最终选择");
     expect(html).toContain("37.5%");
     expect(html).toContain("4.25 / 5");
+    expect(html).toContain("质量版本组合对比");
+    expect(html).toContain("deepseek-chat-v3");
+    expect(html).toContain(`title="sha256:${"a".repeat(64)}"`);
+    expect(html).toContain("版本完整");
+    expect(html).toContain("缺失 模型、规则版本、数据版本");
+    expect(html).not.toContain(">   </code>");
+    expect(html).toContain("91.7%");
+    expect(html).toContain("8.20 秒");
+    expect(html).toContain("42.30");
+    expect(html).toContain("3 次未知");
+    expect(html).not.toContain("private prompt body");
+  });
+
+  it("版本组合空态不伪造指标，截断时明确返回范围", () => {
+    const emptyHtml = renderToStaticMarkup(
+      <QualitySummaryContent
+        summary={{
+          ...summary,
+          version_cohorts: {
+            total_cohorts: 0,
+            returned_cohorts: 0,
+            truncated: false,
+            items: [],
+          },
+        }}
+      />,
+    );
+    expect(emptyHtml).toContain("当前周期没有版本组合样本");
+
+    const truncatedHtml = renderToStaticMarkup(
+      <QualitySummaryContent
+        summary={{
+          ...summary,
+          version_cohorts: {
+            ...summary.version_cohorts,
+            total_cohorts: 23,
+            returned_cohorts: 2,
+            truncated: true,
+          },
+        }}
+      />,
+    );
+    expect(truncatedHtml).toContain("仅显示 2 / 23 组");
   });
 
   it("反馈零分母显示缺少样本，而不是 0% 的错误结论", () => {
@@ -122,6 +229,12 @@ describe("运营质量看板内容", () => {
             satisfaction_mean: null,
             glb_load_failure_total: 0,
           },
+          version_cohorts: {
+            total_cohorts: 0,
+            returned_cohorts: 0,
+            truncated: false,
+            items: [],
+          },
         }}
       />,
     );
@@ -130,6 +243,25 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("--");
     expect(html).not.toContain("0.0%");
     expect(html).not.toContain("0 / 5");
+  });
+
+  it("版本组合查询显式发送受控上限", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(summary), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await fetchQualitySummary(30, 20);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/admin/quality/summary?window_days=30&version_cohort_limit=20",
+        expect.any(Object),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("失败簇展示严重度、状态和当前阶段的明确动作", () => {
@@ -255,8 +387,10 @@ describe("运营质量看板内容", () => {
 
   it("真实案例就绪度展示 20 例门槛、三组准入数和主要阻断项", () => {
     const readiness: RealWorldReadiness = {
-      manifest_version: "1.0",
-      dataset_id: "private-real-2026-q3",
+      source: "governance_database",
+      frozen_dataset_count: 0,
+      manifest_version: null,
+      dataset_id: null,
       total: 4,
       eligible_total: 0,
       private_real_eligible_total: 0,
@@ -288,6 +422,10 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("真实案例就绪度");
     expect(html).toContain("0 / 20");
     expect(html).toContain("尚缺 20 例");
+    expect(html).toContain("候选冻结门槛");
+    expect(html).toContain("尚无冻结数据集");
+    expect(html).toContain("冻结不代表真实评测通过");
+    expect(html).not.toContain("发布门槛");
     expect(html).toContain("开发集");
     expect(html).toContain("回归集");
     expect(html).toContain("盲测集");
@@ -295,6 +433,29 @@ describe("运营质量看板内容", () => {
     expect(html).toContain("人工标注未就绪");
     expect(html).not.toContain("case_id");
     expect(html).not.toContain("private-real-2026-q3");
+
+    const emptyHtml = renderToStaticMarkup(
+      <RealWorldReadinessContent
+        data={{ ...readiness, total: 0, blocked_total: 0, blocker_counts: {} }}
+        loading={false}
+        error=""
+        onRetry={() => undefined}
+      />,
+    );
+    expect(emptyHtml).toContain("治理收件箱暂无案例");
+    expect(emptyHtml).not.toContain("当前没有案例准入阻断项");
+
+    const frozenHtml = renderToStaticMarkup(
+      <RealWorldReadinessContent
+        data={{ ...readiness, frozen_dataset_count: 2, dataset_id: "private-version" }}
+        loading={false}
+        error=""
+        onRetry={() => undefined}
+      />,
+    );
+    expect(frozenHtml).toContain("已有 2 个冻结数据集");
+    expect(frozenHtml).toContain("发布须通过受保护评测");
+    expect(frozenHtml).not.toContain("private-version");
   });
 
   it("真实案例就绪度加载失败时只显示错误和重试，不伪造零值", () => {

@@ -37,6 +37,7 @@ const availabilityStatuses: Array<{
 ];
 
 const dataOrigins = [
+  ["development_fixture", "开发样本（模拟业务数据）"],
   ["unknown", "未知"],
   ["merchant_draft", "商家草稿"],
   ["merchant", "商家提供"],

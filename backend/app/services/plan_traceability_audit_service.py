@@ -15,6 +15,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import DesignPlanVersion
+from app.services import (
+    custom_quote_evidence_service,
+    frozen_product_eligibility_service,
+    generation_constraints_service,
+    generation_source_service,
+)
 from app.services.design_version_service import recalculate_quote_snapshot
 
 
@@ -236,17 +242,24 @@ def _line_identity(item: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _audit_plan(plan: DesignPlanVersion) -> PlanTraceabilityResult:
+def audit_plan_snapshot(
+    plan: DesignPlanVersion, *, allow_development: bool = False
+) -> PlanTraceabilityResult:
+    """核验一条不可变方案及其报价快照，不查询当前商品事实。"""
     reasons: list[str] = []
+    source_reason = generation_source_service.validate_source_chain(plan.revision)
+    if source_reason is not None:
+        reasons.append(source_reason)
     snapshot = plan.quote_snapshot
     if snapshot is None:
+        reasons.append("quote_snapshot_missing")
         return PlanTraceabilityResult(
             plan_version_id=plan.id,
             task_id=plan.revision.task_id,
             revision_version=plan.revision.version,
             plan_key=plan.plan_key,
             passed=False,
-            reason_codes=("quote_snapshot_missing",),
+            reason_codes=tuple(dict.fromkeys(reasons)),
         )
 
     for field_name, value in (
@@ -262,6 +275,17 @@ def _audit_plan(plan: DesignPlanVersion) -> PlanTraceabilityResult:
         reasons.append("quote_payload_invalid")
         quote = {}
     plan_payload = plan.plan_json if isinstance(plan.plan_json, dict) else {}
+    revision_constraints = generation_constraints_service.constraints_from_facts(
+        plan.revision.requirement_snapshot or {}
+    )
+    eligibility_expectation = (
+        frozen_product_eligibility_service.FrozenEligibilityPolicyExpectation(
+            region=revision_constraints.delivery_region,
+            max_unit_price=revision_constraints.max_unit_price,
+            max_dimensions_mm=revision_constraints.max_dimensions_mm(),
+            allow_development=allow_development,
+        )
+    )
     if plan_payload.get("shopQuote") != quote:
         reasons.append("quote_payload_mismatch")
 
@@ -312,6 +336,8 @@ def _audit_plan(plan: DesignPlanVersion) -> PlanTraceabilityResult:
     if not isinstance(custom_lines, list):
         reasons.append("custom_quote_lines_invalid")
         custom_lines = []
+    if custom_lines and not _nonlegacy_text(quote.get("pricedAt")):
+        reasons.append("custom_rule_policy_mismatch")
     for raw_line in custom_lines:
         if not isinstance(raw_line, dict):
             reasons.append("custom_quote_line_invalid")
@@ -322,6 +348,73 @@ def _audit_plan(plan: DesignPlanVersion) -> PlanTraceabilityResult:
             reasons.append("custom_rule_data_version_missing")
         if not _positive_int(raw_line.get("recordVersion")):
             reasons.append("custom_rule_record_version_invalid")
+        try:
+            verified_rule = custom_quote_evidence_service.verify_evidence(
+                raw_line.get("customRuleEvidence"),
+                expected_region=revision_constraints.delivery_region,
+                expected_priced_at=quote.get("pricedAt"),
+            )
+        except custom_quote_evidence_service.CustomRuleEvidenceError as exc:
+            reasons.append(exc.code)
+        else:
+            if any(
+                raw_line.get(field) != expected
+                for field, expected in (
+                    ("ruleId", verified_rule.rule_id),
+                    ("dataVersion", verified_rule.data_version),
+                    ("recordVersion", verified_rule.record_version),
+                    ("quantity", verified_rule.requested_quantity),
+                    ("unitPrice", verified_rule.unit_price),
+                    ("subtotal", verified_rule.subtotal),
+                )
+            ):
+                reasons.append("custom_rule_evidence_mismatch")
+
+    custom_items = plan_payload.get("customItems", [])
+    if not isinstance(custom_items, list):
+        reasons.append("custom_snapshot_invalid")
+        custom_items = []
+    valid_custom_items: list[dict[str, Any]] = []
+    for raw_item in custom_items:
+        if not isinstance(raw_item, dict):
+            reasons.append("custom_snapshot_item_invalid")
+            continue
+        valid_custom_items.append(raw_item)
+        try:
+            verified_rule = custom_quote_evidence_service.verify_evidence(
+                raw_item.get("customRuleEvidence"),
+                expected_region=revision_constraints.delivery_region,
+                expected_priced_at=quote.get("pricedAt"),
+            )
+        except custom_quote_evidence_service.CustomRuleEvidenceError as exc:
+            reasons.append(exc.code)
+        else:
+            if any(
+                raw_item.get(field) != expected
+                for field, expected in (
+                    ("ruleId", verified_rule.rule_id),
+                    ("dataVersion", verified_rule.data_version),
+                    ("recordVersion", verified_rule.record_version),
+                    ("project", verified_rule.project),
+                    ("grade", verified_rule.grade),
+                    ("unit", verified_rule.pricing_unit),
+                    ("quantity", verified_rule.requested_quantity),
+                    ("unitPrice", verified_rule.unit_price),
+                    ("subtotal", verified_rule.subtotal),
+                )
+            ):
+                reasons.append("custom_rule_evidence_mismatch")
+    custom_line_evidence = sorted(
+        _canonical_json(item.get("customRuleEvidence"))
+        for item in custom_lines
+        if isinstance(item, dict)
+    )
+    custom_item_evidence = sorted(
+        _canonical_json(item.get("customRuleEvidence"))
+        for item in valid_custom_items
+    )
+    if custom_line_evidence != custom_item_evidence:
+        reasons.append("custom_rule_evidence_mismatch")
 
     products = plan_payload.get("furnitureSuggestions")
     if not isinstance(products, list):
@@ -333,25 +426,45 @@ def _audit_plan(plan: DesignPlanVersion) -> PlanTraceabilityResult:
             reasons.append("product_snapshot_item_invalid")
             continue
         product_lines.append(raw_product)
-        if raw_product.get("dataStatus") != "verified":
+        development_fixture = (
+            allow_development and raw_product.get("dataOrigin") == "development_fixture"
+        )
+        if raw_product.get("dataStatus") != "verified" and not development_fixture:
             reasons.append("product_not_verified")
         if not _nonlegacy_text(raw_product.get("sourceName")):
             reasons.append("product_source_missing")
-        if not _nonlegacy_text(raw_product.get("verifiedAt")):
+        if not _nonlegacy_text(raw_product.get("verifiedAt")) and not development_fixture:
             reasons.append("product_verification_time_missing")
         if not _nonlegacy_text(raw_product.get("dataVersion")):
             reasons.append("product_data_version_missing")
         if not _positive_int(raw_product.get("recordVersion")):
             reasons.append("product_record_version_invalid")
+        try:
+            frozen_product_eligibility_service.verify_suggestion(
+                raw_product,
+                expected_policy=eligibility_expectation,
+                allow_development=allow_development,
+            )
+        except frozen_product_eligibility_service.FrozenEligibilityError as exc:
+            reasons.append(exc.code)
 
-    if sorted(_line_identity(item) for item in valid_lines) != sorted(
-        _line_identity(item) for item in product_lines
-    ):
+    quote_identities = sorted(
+        _canonical_json(_line_identity(item)) for item in valid_lines
+    )
+    product_identities = sorted(
+        _canonical_json(_line_identity(item)) for item in product_lines
+    )
+    if quote_identities != product_identities:
         reasons.append("product_quote_line_mismatch")
 
     recalculated = recalculate_quote_snapshot(snapshot)
     if line_subtotal_mismatch or not recalculated["consistent"]:
         reasons.append("quote_snapshot_inconsistent")
+    if (
+        revision_constraints.budget_max is not None
+        and snapshot.grand_total > revision_constraints.budget_max
+    ):
+        reasons.append("quote_budget_exceeded")
 
     normalized_reasons = tuple(dict.fromkeys(reasons))
     return PlanTraceabilityResult(
@@ -411,7 +524,7 @@ def audit_plan_traceability(
         if not reasons and plan is not None:
             candidates.append(plan)
     sampled = sorted(candidates, key=lambda plan: plan.id)
-    results = tuple(_audit_plan(plan) for plan in sampled)
+    results = tuple(audit_plan_snapshot(plan) for plan in sampled)
     shortfall = max(0, sample_size - len(sampled))
     return PlanTraceabilityAuditReport(
         schema_version="2.0",

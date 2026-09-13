@@ -14,8 +14,6 @@ from typing import Any, Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from app.services.llm_service import LLMUnavailable
-
 Plan = dict[str, Any]
 RefinePlan = Callable[[Plan, str, str], tuple[Plan, str]]
 EnrichPlans = Callable[[list[Plan]], None]

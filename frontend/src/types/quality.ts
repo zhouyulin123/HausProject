@@ -41,6 +41,47 @@ export interface QualityAgentMetrics {
   statuses: Record<string, number>;
 }
 
+export interface QualityModelCallMetrics {
+  total: number;
+  succeeded: number;
+  failed: number;
+  blocked: number;
+  total_tokens: number;
+  known_actual_cost_cny: number;
+  unknown_cost_call_count: number;
+  provider_failures: Record<string, number>;
+}
+
+export interface QualityVersionCohortItem {
+  model: string | null;
+  prompt_digest: string | null;
+  rules_digest: string | null;
+  data_digest: string | null;
+  version_complete: boolean;
+  missing_dimensions: Array<
+    "model" | "prompt_digest" | "rules_digest" | "data_digest"
+  >;
+  total: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  active: number;
+  success_rate: number | null;
+  fallback_rate: number | null;
+  duration_p50_ms: number | null;
+  duration_p95_ms: number | null;
+  total_tokens: number;
+  known_cost_cny: number;
+  unknown_cost_run_count: number;
+}
+
+export interface QualityVersionCohorts {
+  total_cohorts: number;
+  returned_cohorts: number;
+  truncated: boolean;
+  items: QualityVersionCohortItem[];
+}
+
 export interface QualityLayoutMetrics {
   total: number;
   hard_pass_total: number;
@@ -71,10 +112,12 @@ export interface QualitySummary {
   window_days: number;
   generation: QualityGenerationMetrics;
   agent: QualityAgentMetrics;
+  model_calls: QualityModelCallMetrics;
   layout: QualityLayoutMetrics;
   feedback: QualityFeedbackMetrics;
   effect_render: QualityRenderQueueMetrics;
   blender_render: QualityRenderQueueMetrics;
+  version_cohorts: QualityVersionCohorts;
   failure_codes: Record<string, number>;
 }
 

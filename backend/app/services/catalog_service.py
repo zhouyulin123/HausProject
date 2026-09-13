@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import CustomQuoteRule, Product
+from app.core.config import settings
 from app.services.product_asset_service import (
     approved_product_asset_url,
     product_asset_contract,
@@ -25,9 +26,17 @@ from app.services.product_eligibility import (
     ProductEligibilityPolicy,
     evaluate_product_eligibility,
 )
+from app.services import custom_quote_evidence_service
 
 
 logger = logging.getLogger(__name__)
+
+
+def development_catalog_enabled() -> bool:
+    """运行态仅由服务端配置启用；即使配置对象被改写也不允许生产放行。"""
+    return settings.app_env == "development" and settings.development_catalog_enabled
+
+
 def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -45,6 +54,7 @@ def is_product_eligible(
     max_unit_price: int | None = None,
     max_dimensions_mm: Mapping[str, int] | None = None,
     required_quantity: int | None = None,
+    allow_development: bool | None = None,
 ) -> ProductEligibility:
     """把 ORM 商品适配为纯资格事实后执行统一规则。"""
     facts, policy = _product_eligibility_inputs(
@@ -55,6 +65,11 @@ def is_product_eligible(
         max_unit_price=max_unit_price,
         max_dimensions_mm=max_dimensions_mm,
         required_quantity=required_quantity,
+        allow_development=(
+            development_catalog_enabled()
+            if allow_development is None
+            else allow_development and development_catalog_enabled()
+        ),
     )
     return evaluate_product_eligibility(facts, policy)
 
@@ -78,6 +93,7 @@ def _product_eligibility_inputs(
     max_unit_price: int | None,
     max_dimensions_mm: Mapping[str, int] | None,
     required_quantity: int | None,
+    allow_development: bool = False,
 ) -> tuple[ProductEligibilityFacts, ProductEligibilityPolicy]:
     facts = ProductEligibilityFacts(
         is_active=bool(product.is_active),
@@ -116,6 +132,7 @@ def _product_eligibility_inputs(
         max_unit_price=max_unit_price,
         max_dimensions_mm=_dimensions(max_dimensions_mm),
         required_quantity=required_quantity,
+        allow_development=allow_development,
     )
     return facts, policy
 
@@ -139,6 +156,9 @@ def _eligibility_snapshot(
         max_unit_price=max_unit_price,
         max_dimensions_mm=max_dimensions_mm,
         required_quantity=required_quantity,
+        allow_development=(
+            product.data_origin == "development_fixture" and development_catalog_enabled()
+        ),
     )
     decision = evaluate_product_eligibility(facts, policy)
     maximums = policy.max_dimensions_mm
@@ -166,6 +186,7 @@ def _eligibility_snapshot(
         "policy": {
             "region": policy.region,
             "allowDraft": policy.allow_draft,
+            **({"allowDevelopment": True} if policy.allow_development else {}),
             "maxUnitPrice": policy.max_unit_price,
             "maxDimensionsMm": normalized_dimensions,
         },
@@ -279,6 +300,7 @@ def build_catalog_readiness_summary(
             product,
             at=checked_at,
             region=normalized_region,
+            allow_development=False,
         )
         if decision.eligible:
             eligible_total += 1
@@ -450,6 +472,31 @@ def _rule_version(rules: list[CustomQuoteRule]) -> str:
     return _version_hash("rules", payload)
 
 
+def catalog_revision_fingerprint(
+    db: Session,
+    *,
+    at: datetime | None = None,
+    region: str | None = None,
+    allow_draft: bool = False,
+    max_unit_price: int | None = None,
+    max_dimensions_mm: Mapping[str, int] | None = None,
+) -> dict[str, str]:
+    """返回与生成目录范围一致的商品及定制规则版本指纹。"""
+    products = eligible_products(
+        db,
+        at=at,
+        region=region,
+        allow_draft=allow_draft,
+        max_unit_price=max_unit_price,
+        max_dimensions_mm=max_dimensions_mm,
+    )
+    rules = active_custom_quote_rules(db, region=region)
+    return {
+        "catalog_version": _catalog_version(products),
+        "rule_version": _rule_version(rules),
+    }
+
+
 def calculate_custom_quote(
     rule: CustomQuoteRule,
     requested_quantity: Decimal | float | int,
@@ -457,14 +504,14 @@ def calculate_custom_quote(
     currency_quantum: Decimal = Decimal("1"),
 ) -> dict[str, Any]:
     """按规则费用因子计算单行报价，供方案与定制家具共用。"""
-    requested = Decimal(str(requested_quantity))
+    requested = Decimal(str(requested_quantity)).quantize(Decimal("0.001"))
     waste_multiplier = Decimal("1") + (
         Decimal(rule.waste_rate_bps or 0) / Decimal("10000")
     )
     billable = max(
         requested * waste_multiplier,
         Decimal(str(rule.minimum_quantity or 0)),
-    )
+    ).quantize(Decimal("0.001"))
     base_subtotal = (Decimal(rule.unit_price) * billable).quantize(
         currency_quantum,
         rounding=ROUND_HALF_UP,
@@ -478,8 +525,8 @@ def calculate_custom_quote(
         / Decimal("10000")
     ).quantize(currency_quantum, rounding=ROUND_HALF_UP)
     return {
-        "requestedQuantity": requested.quantize(Decimal("0.001")),
-        "billableQuantity": billable.quantize(Decimal("0.001")),
+        "requestedQuantity": requested,
+        "billableQuantity": billable,
         "wasteRateBps": int(rule.waste_rate_bps or 0),
         "minimumQuantity": float(rule.minimum_quantity or 0),
         "baseSubtotal": base_subtotal,
@@ -629,6 +676,7 @@ def verify_and_enrich_plans(
     region: str | None = None,
     allow_draft: bool = False,
     budget_max: int | None = None,
+    max_unit_price: int | None = None,
     max_dimensions_mm: Mapping[str, int] | None = None,
     allow_empty_furniture: bool = False,
 ) -> None:
@@ -646,7 +694,7 @@ def verify_and_enrich_plans(
         at=current,
         region=region,
         allow_draft=allow_draft,
-        max_unit_price=budget_max,
+        max_unit_price=max_unit_price,
         max_dimensions_mm=max_dimensions_mm,
     )
     eligible_by_sku = {product.sku: product for product in products if product.sku}
@@ -660,7 +708,7 @@ def verify_and_enrich_plans(
         if not raw_items and not allow_empty_furniture:
             hard_errors.append("missing_product_sku")
         resolved_items: list[
-            tuple[dict[str, Any], Product, str | None, list[str], int]
+            tuple[dict[str, Any], Product, str | None, list[str], int, int | None]
         ] = []
         rejected: list[dict[str, Any]] = []
         for item in raw_items:
@@ -683,7 +731,7 @@ def verify_and_enrich_plans(
                 at=current,
                 region=region,
                 allow_draft=allow_draft,
-                max_unit_price=budget_max,
+                max_unit_price=max_unit_price,
                 max_dimensions_mm=max_dimensions_mm,
                 required_quantity=quantity,
             ).eligible:
@@ -697,7 +745,7 @@ def verify_and_enrich_plans(
                         source,
                         at=current,
                         region=region,
-                        max_unit_price=budget_max,
+                        max_unit_price=max_unit_price,
                         max_dimensions_mm=max_dimensions_mm,
                         required_quantity=quantity,
                         limit=1,
@@ -714,7 +762,7 @@ def verify_and_enrich_plans(
                             at=current,
                             region=region,
                             allow_draft=allow_draft,
-                            max_unit_price=budget_max,
+                            max_unit_price=max_unit_price,
                             max_dimensions_mm=max_dimensions_mm,
                             required_quantity=quantity,
                         ).reason_codes
@@ -729,7 +777,14 @@ def verify_and_enrich_plans(
                     )
                     continue
             resolved_items.append(
-                (item, product, replaced_sku, replacement_reasons, quantity)
+                (
+                    item,
+                    product,
+                    replaced_sku,
+                    replacement_reasons,
+                    quantity,
+                    max_unit_price,
+                )
             )
 
         enriched = []
@@ -741,16 +796,23 @@ def verify_and_enrich_plans(
             replaced_sku,
             replacement_reasons,
             quantity,
+            applied_unit_price_limit,
         ) in resolved_items:
             subtotal = product.price * quantity
             if budget_max is not None and furniture_total + subtotal > budget_max:
                 remaining_budget = max(0, budget_max - furniture_total)
+                remaining_unit_limit = remaining_budget // quantity
+                if max_unit_price is not None:
+                    remaining_unit_limit = min(
+                        remaining_unit_limit,
+                        max_unit_price,
+                    )
                 alternatives = find_product_alternatives(
                     db,
                     product,
                     at=current,
                     region=region,
-                    max_unit_price=remaining_budget // quantity,
+                    max_unit_price=remaining_unit_limit,
                     max_dimensions_mm=max_dimensions_mm,
                     required_quantity=quantity,
                     limit=1,
@@ -778,6 +840,7 @@ def verify_and_enrich_plans(
                     )
                 )
                 subtotal = product.price * quantity
+                applied_unit_price_limit = remaining_unit_limit
             furniture_total += subtotal
             line_item = {
                 "sku": product.sku,
@@ -833,7 +896,7 @@ def verify_and_enrich_plans(
                     checked_at=current,
                     region=region,
                     allow_draft=allow_draft,
-                    max_unit_price=budget_max,
+                    max_unit_price=applied_unit_price_limit,
                     max_dimensions_mm=max_dimensions_mm,
                     required_quantity=quantity,
                 ),
@@ -880,6 +943,7 @@ def verify_and_enrich_plans(
                 quantity = max(0.5, min(60.0, float(item.get("quantity", 1))))
             except (TypeError, ValueError):
                 quantity = 1.0
+            quantity = round(quantity, 3)
             calculation = calculate_custom_quote(rule, quantity)
             subtotal = int(calculation["subtotal"])
             calculation_snapshot = {
@@ -894,6 +958,12 @@ def verify_and_enrich_plans(
                 "taxAmount": int(calculation["taxAmount"]),
                 "subtotal": subtotal,
             }
+            rule_evidence = custom_quote_evidence_service.build_evidence(
+                rule,
+                calculation_snapshot,
+                checked_at=current,
+                region=region,
+            )
             custom_total += subtotal
             custom_items.append(
                 {
@@ -901,24 +971,26 @@ def verify_and_enrich_plans(
                     "grade": rule.material_grade,
                     "unit": rule.pricing_unit,
                     "unitPrice": rule.unit_price,
-                    "quantity": round(quantity, 1),
+                    "quantity": quantity,
                     **calculation_snapshot,
                     "subtotal": subtotal,
                     "note": item.get("note") or rule.description or "",
                     "ruleId": rule.id,
                     "dataVersion": rule.data_version,
                     "recordVersion": rule.record_version,
+                    "customRuleEvidence": rule_evidence,
                 }
             )
             custom_lines.append(
                 {
                     "ruleId": rule.id,
-                    "quantity": round(quantity, 3),
+                    "quantity": quantity,
                     **calculation_snapshot,
                     "unitPrice": rule.unit_price,
                     "subtotal": subtotal,
                     "dataVersion": rule.data_version,
                     "recordVersion": rule.record_version,
+                    "customRuleEvidence": rule_evidence,
                 }
             )
         plan["customItems"] = custom_items

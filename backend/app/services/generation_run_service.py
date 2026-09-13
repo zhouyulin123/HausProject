@@ -200,6 +200,7 @@ def create_run(
     max_attempts: int = 3,
     request_id: str | None = None,
     request_digest: str | None = None,
+    request_contract: dict[str, Any] | None = None,
     evaluation_binding: EvaluationBindingSpec | None = None,
     commit: bool = True,
 ) -> GenerationRun:
@@ -309,6 +310,30 @@ def create_run(
     db.add(run)
     try:
         db.flush()
+        if request_contract is not None:
+            from app.services import generation_request_service
+
+            frozen_digest = generation_request_service.digest_request_contract(
+                request_contract
+            )
+            if request_digest != frozen_digest:
+                raise ValueError("生成请求契约与请求摘要不一致")
+            db.add(
+                GenerationRunEvent(
+                    run_id=run.id,
+                    node="request_contract",
+                    status="completed",
+                    progress=0,
+                    source="deterministic",
+                    detail_json={
+                        "schema_version": request_contract.get("schema_version"),
+                        "request_digest": frozen_digest,
+                        "catalog_fingerprint": request_contract.get(
+                            "catalog_fingerprint"
+                        ),
+                    },
+                )
+            )
         task_timeline_service.record_lifecycle_event(
             db,
             task_id=task.id,
@@ -632,6 +657,17 @@ def _mark_dead_letter(
     )
 
 
+def _has_model_call_reservation(run: GenerationRun) -> bool:
+    # cost_limit_cny 初始为 NULL，仅在 reserve_model_cost 成功预留时原子写入。
+    # 不能只判断预留金额：零单价也可能已发送请求。供应商响应丢失时保守停止，
+    # 不以新的 attempt 幂等键重发；明确的业务重规划仍在同一个活跃 attempt 内执行。
+    return (
+        run.cost_limit_cny is not None
+        or float(run.cost_reserved_cny or 0) > 0
+        or float(run.cost_cny or 0) > 0
+    )
+
+
 def recover_expired_runs(
     db: Session,
     *,
@@ -688,6 +724,13 @@ def recover_expired_runs(
                 run=run,
                 now=current,
                 error_message="方案生成超过硬执行截止时间",
+            )
+            continue
+
+        if _has_model_call_reservation(run):
+            _mark_dead_letter(
+                db, run=run, now=current,
+                error_message="Worker 中断前已预留模型调用，结果可能已计费；停止自动重试，请检查后手动重试",
             )
             continue
 
@@ -774,6 +817,13 @@ def claim_next_run(
     )
     run = db.scalars(_claim_query(current, run_id=run_id)).first()
     if run is None:
+        db.commit()
+        return None
+    if _has_model_call_reservation(run):
+        _mark_dead_letter(
+            db, run=run, now=current,
+            error_message="排队任务已有模型调用预留；停止自动重试，请检查后手动重试",
+        )
         db.commit()
         return None
     if evaluation_binding_service.is_evaluation_idempotency_key(
@@ -1296,7 +1346,12 @@ def mark_failed(
         run.execution_deadline_at is None
         or retry_at < _as_utc(run.execution_deadline_at)
     )
-    if (
+    if retryable and _has_model_call_reservation(run):
+        _mark_dead_letter(
+            db, run=run, now=current,
+            error_message="模型调用可能已计费；停止自动重试，请检查后手动重试。" + run.error_message,
+        )
+    elif (
         retryable
         and run.attempt_count < run.max_attempts
         and retry_before_deadline

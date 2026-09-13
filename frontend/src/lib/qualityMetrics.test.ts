@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_QUALITY_PATH,
+  QUALITY_VERSION_COHORT_LIMIT,
   QUALITY_WINDOWS,
   buildFailureCodeRows,
   canAccessQualityDashboard,
   formatDuration,
   formatRate,
+  formatVersionCompleteness,
   hasQualitySamples,
 } from "./qualityMetrics";
 import type { QualitySummary } from "@/types/quality";
@@ -28,6 +30,16 @@ const emptySummary: QualitySummary = {
     node_latency: {},
   },
   agent: { turn_total: 0, handoff_total: 0, handoff_rate: null, statuses: {} },
+  model_calls: {
+    total: 0,
+    succeeded: 0,
+    failed: 0,
+    blocked: 0,
+    total_tokens: 0,
+    known_actual_cost_cny: 0,
+    unknown_cost_call_count: 0,
+    provider_failures: {},
+  },
   layout: {
     total: 0,
     hard_pass_total: 0,
@@ -63,12 +75,19 @@ const emptySummary: QualitySummary = {
     queue_wait_p50_ms: null, queue_wait_p95_ms: null,
     execution_p50_ms: null, execution_p95_ms: null,
   },
+  version_cohorts: {
+    total_cohorts: 0,
+    returned_cohorts: 0,
+    truncated: false,
+    items: [],
+  },
   failure_codes: {},
 };
 
 describe("运营质量看板映射", () => {
   it("只开放经过约束的时间窗口和厂家后台路径", () => {
     expect(QUALITY_WINDOWS).toEqual([7, 30, 90]);
+    expect(QUALITY_VERSION_COHORT_LIMIT).toBe(20);
     expect(ADMIN_QUALITY_PATH).toBe("/admin/quality");
   });
 
@@ -109,5 +128,23 @@ describe("运营质量看板映射", () => {
         },
       }),
     ).toBe(true);
+  });
+
+  it("版本组合样本纳入看板空态判断并明确缺失维度", () => {
+    expect(
+      hasQualitySamples({
+        ...emptySummary,
+        version_cohorts: {
+          total_cohorts: 1,
+          returned_cohorts: 1,
+          truncated: false,
+          items: [],
+        },
+      }),
+    ).toBe(true);
+    expect(
+      formatVersionCompleteness(false, ["prompt_digest", "data_digest"]),
+    ).toBe("缺失 Prompt 版本、数据版本");
+    expect(formatVersionCompleteness(true, [])).toBe("版本完整");
   });
 });

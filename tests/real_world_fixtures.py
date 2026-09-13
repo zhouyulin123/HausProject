@@ -11,9 +11,9 @@ def frozen_catalog_suggestion(
     *,
     unit_price: int = 10000,
     quantity: int = 1,
+    data_version: str = "catalog-data-v1",
+    record_version: int = 1,
 ) -> dict[str, Any]:
-    data_version = "catalog-data-v1"
-    record_version = 1
     return {
         "id": sku,
         "sku": sku,
@@ -21,6 +21,11 @@ def frozen_catalog_suggestion(
         "unitPrice": unit_price,
         "dataVersion": data_version,
         "recordVersion": record_version,
+        "dataOrigin": "merchant_verified",
+        "sourceName": "受控评测供应商目录",
+        "sourceUrl": None,
+        "verifiedAt": "2026-08-31T23:30:00+00:00",
+        "dataStatus": "verified",
         "catalogEligibility": {
             "schemaVersion": "1.1",
             "checkedAt": "2026-09-01T00:00:00+00:00",
@@ -32,7 +37,7 @@ def frozen_catalog_suggestion(
             "policy": {
                 "region": None,
                 "allowDraft": False,
-                "maxUnitPrice": 20000,
+                "maxUnitPrice": max(20000, unit_price),
                 "maxDimensionsMm": {},
             },
             "facts": {
@@ -63,10 +68,65 @@ def frozen_catalog_suggestion(
 
 
 def frozen_catalog_quote_line(suggestion: dict[str, Any]) -> dict[str, Any]:
-    return {
+    line = {
         field: suggestion[field]
         for field in ("sku", "quantity", "unitPrice", "dataVersion", "recordVersion")
     }
+    line["subtotal"] = suggestion["unitPrice"] * suggestion["quantity"]
+    return line
+
+
+def frozen_custom_quote() -> tuple[dict[str, Any], dict[str, Any]]:
+    evidence = {
+        "schemaVersion": "1.0",
+        "checkedAt": "2026-09-02T00:00:00+00:00",
+        "region": None,
+        "isActive": True,
+        "ruleId": 7,
+        "dataVersion": "custom-price-v4",
+        "recordVersion": 4,
+        "project": "定制衣柜",
+        "grade": "E0 实木多层板",
+        "pricingUnit": "㎡",
+        "unitPrice": 1280,
+        "ruleRegionCodes": ["*"],
+        "requestedQuantity": 2.0,
+        "billableQuantity": 3.0,
+        "wasteRateBps": 500,
+        "minimumQuantity": 3.0,
+        "baseSubtotal": 3840,
+        "installationFee": 300,
+        "shippingFee": 200,
+        "taxRateBps": 600,
+        "taxAmount": 260,
+        "subtotal": 4600,
+    }
+    common = {
+        "ruleId": 7,
+        "quantity": 2.0,
+        "requestedQuantity": 2.0,
+        "billableQuantity": 3.0,
+        "wasteRateBps": 500,
+        "minimumQuantity": 3.0,
+        "baseSubtotal": 3840,
+        "installationFee": 300,
+        "shippingFee": 200,
+        "taxRateBps": 600,
+        "taxAmount": 260,
+        "unitPrice": 1280,
+        "subtotal": 4600,
+        "dataVersion": "custom-price-v4",
+        "recordVersion": 4,
+        "customRuleEvidence": evidence,
+    }
+    custom_item = {
+        **common,
+        "project": "定制衣柜",
+        "grade": "E0 实木多层板",
+        "unit": "㎡",
+        "note": "",
+    }
+    return custom_item, dict(common)
 
 
 def write_v2_manifest(

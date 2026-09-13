@@ -4,6 +4,10 @@ from fastapi.testclient import TestClient
 
 from app.db.database import get_db
 from app.main import app
+from app.services.worker_presence_service import (
+    WorkerReadinessCheck,
+    WorkerReadinessSnapshot,
+)
 
 
 class HealthySession:
@@ -21,6 +25,22 @@ def _override_schema_check(monkeypatch, *, is_current: bool) -> None:
         "app.main.database_schema_is_current",
         lambda _db: is_current,
     )
+    if is_current:
+        monkeypatch.setattr(
+            "app.main.worker_presence_service.readiness_snapshot",
+            lambda *_args, **_kwargs: WorkerReadinessSnapshot(
+                ready=True,
+                checks={
+                    worker_type: WorkerReadinessCheck(
+                        status="ok",
+                        active_workers=1,
+                        last_heartbeat_at=None,
+                        stale_after_seconds=45,
+                    )
+                    for worker_type in ("generation", "effect_render", "blender")
+                },
+            ),
+        )
 
 
 def test_ready_reports_database_health(monkeypatch):
@@ -37,6 +57,38 @@ def test_ready_reports_database_health(monkeypatch):
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-frame-options"] == "DENY"
     assert response.headers["x-request-id"]
+
+
+def test_ready_does_not_report_model_ready_without_cost_configuration(monkeypatch):
+    _override_schema_check(monkeypatch, is_current=True)
+    monkeypatch.setattr("app.main.settings.llm_api_key", "configured-key")
+    monkeypatch.setattr("app.main.settings.llm_input_price_per_mtok", None)
+    monkeypatch.setattr("app.main.settings.llm_output_price_per_mtok", None)
+    app.dependency_overrides[get_db] = lambda: HealthySession()
+    try:
+        response = TestClient(app).get("/ready")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.json()["checks"]["llm"] == "cost_guard_unconfigured"
+
+
+def test_production_readiness_fails_closed_when_required_model_is_not_ready(
+    monkeypatch,
+):
+    _override_schema_check(monkeypatch, is_current=True)
+    monkeypatch.setattr("app.main.settings.app_env", "production")
+    monkeypatch.setattr("app.main.settings.llm_api_key", "configured-key")
+    monkeypatch.setattr("app.main.settings.llm_input_price_per_mtok", None)
+    monkeypatch.setattr("app.main.settings.llm_output_price_per_mtok", None)
+    app.dependency_overrides[get_db] = lambda: HealthySession()
+    try:
+        response = TestClient(app).get("/ready")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["llm"] == "cost_guard_unconfigured"
 
 
 def test_ready_returns_503_without_leaking_database_error(monkeypatch):

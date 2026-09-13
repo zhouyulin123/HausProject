@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
 
@@ -25,3 +26,17 @@ def test_resolve_pdf_fonts_rejects_missing_configured_font(monkeypatch):
 
     with pytest.raises(RuntimeError, match="PDF 中文字体"):
         pdf_service.resolve_pdf_font_paths()
+
+
+def test_quote_validity_text_never_invents_a_duration_without_frozen_fact():
+    assert pdf_service.quote_validity_text(None) == (
+        "报价有效期未提供，不承诺具体天数。"
+    )
+
+
+def test_quote_validity_text_uses_exact_frozen_expiry_date():
+    valid_until = datetime(2027, 1, 1, tzinfo=timezone.utc)
+
+    assert pdf_service.quote_validity_text(valid_until) == (
+        "报价有效至 2027-01-01（来自冻结价格凭证）。"
+    )

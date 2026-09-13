@@ -250,11 +250,14 @@ def create_case_import(
         if case is None:
             raise RealWorldGovernanceConflict("案例提升记录缺少关联案例")
         return CaseImportResult(created=False, case=case)
-    if db.scalar(
-        select(RealWorldCaseRecord.id).where(
-            RealWorldCaseRecord.asset_digest == asset_digest
+    if (
+        db.scalar(
+            select(RealWorldCaseRecord.id).where(
+                RealWorldCaseRecord.asset_digest == asset_digest
+            )
         )
-    ) is not None:
+        is not None
+    ):
         raise RealWorldGovernanceConflict("同一物理资产已经进入治理收件箱")
 
     case = RealWorldCaseRecord(
@@ -302,14 +305,15 @@ def create_case_import(
             concurrent_case = db.get(RealWorldCaseRecord, concurrent.case_id)
             if concurrent_case is not None:
                 return CaseImportResult(created=False, case=concurrent_case)
-        if db.scalar(
-            select(RealWorldCaseRecord.id).where(
-                RealWorldCaseRecord.asset_digest == asset_digest
+        if (
+            db.scalar(
+                select(RealWorldCaseRecord.id).where(
+                    RealWorldCaseRecord.asset_digest == asset_digest
+                )
             )
-        ) is not None:
-            raise RealWorldGovernanceConflict(
-                "同一物理资产已经进入治理收件箱"
-            ) from exc
+            is not None
+        ):
+            raise RealWorldGovernanceConflict("同一物理资产已经进入治理收件箱") from exc
         raise RealWorldGovernanceConflict("案例提升并发冲突，请重试") from exc
     db.refresh(case)
     return CaseImportResult(created=True, case=case)
@@ -324,9 +328,7 @@ def _case_or_raise(db: Session, case_ref: str) -> RealWorldCaseRecord:
     return case
 
 
-def _latest_consent(
-    db: Session, case_id: int
-) -> RealWorldConsentDecision | None:
+def _latest_consent(db: Session, case_id: int) -> RealWorldConsentDecision | None:
     return db.scalar(
         select(RealWorldConsentDecision)
         .where(RealWorldConsentDecision.case_id == case_id)
@@ -335,9 +337,7 @@ def _latest_consent(
     )
 
 
-def _latest_annotation(
-    db: Session, case_id: int
-) -> RealWorldAnnotationRevision | None:
+def _latest_annotation(db: Session, case_id: int) -> RealWorldAnnotationRevision | None:
     return db.scalar(
         select(RealWorldAnnotationRevision)
         .where(RealWorldAnnotationRevision.case_id == case_id)
@@ -363,34 +363,50 @@ def _consent_status(
     return "granted"
 
 
+def case_freeze_blockers(
+    case: RealWorldCaseRecord,
+    consent: RealWorldConsentDecision | None,
+    annotation: RealWorldAnnotationRevision | None,
+    *,
+    now: datetime,
+) -> list[str]:
+    """共享候选准入条件；只检查治理记录，不读取私有资产。"""
+    blockers: list[str] = []
+    if case.origin != "private_real":
+        blockers.append("case_not_private_real")
+    if not case.task_input_json or not case.task_input_digest:
+        blockers.append("task_input_not_ready")
+    if case.redaction_review != "reviewed":
+        blockers.append("redaction_not_reviewed")
+    if _consent_status(consent, now=now) != "granted":
+        blockers.append("consent_not_granted")
+    elif "offline_evaluation" not in (consent.allowed_purposes_json or []):
+        blockers.append("purpose_not_allowed")
+    if annotation is None:
+        blockers.append("annotation_not_ready")
+    if case.split not in {"development", "regression", "blind"}:
+        blockers.append("split_not_assigned")
+    return blockers
+
+
 def project_case_record(
     db: Session,
     case: RealWorldCaseRecord,
     *,
     now: datetime | None = None,
 ) -> RealWorldCaseResponse:
-    consent = _consent_status(_latest_consent(db, case.id), now=_now(now))
-    annotation = "ready" if _latest_annotation(db, case.id) is not None else "pending"
-    blockers: list[str] = []
-    if case.redaction_review != "reviewed":
-        blockers.append("redaction_not_reviewed")
-    if consent != "granted":
-        blockers.append("consent_not_granted")
-    if annotation != "ready":
-        blockers.append("annotation_not_ready")
-    if case.split == "unassigned":
-        blockers.append("split_not_assigned")
-    if not case.task_input_json:
-        blockers.append("task_input_not_ready")
+    current = _now(now)
+    consent = _latest_consent(db, case.id)
+    annotation = _latest_annotation(db, case.id)
     return RealWorldCaseResponse(
         case_ref=case.case_ref,
         origin="private_real",
         split=case.split,
         redaction_review=case.redaction_review,
-        consent_status=consent,
-        annotation_status=annotation,
+        consent_status=_consent_status(consent, now=current),
+        annotation_status="ready" if annotation is not None else "pending",
         record_version=case.record_version,
-        blockers=blockers,
+        blockers=case_freeze_blockers(case, consent, annotation, now=current),
         created_at=case.created_at,
         updated_at=case.updated_at,
     )
@@ -407,8 +423,7 @@ def list_case_records(
     if split is not None:
         statement = statement.where(RealWorldCaseRecord.split == split)
     items = [
-        project_case_record(db, case, now=now)
-        for case in db.scalars(statement).all()
+        project_case_record(db, case, now=now) for case in db.scalars(statement).all()
     ]
     if blocker is not None:
         items = [item for item in items if blocker in item.blockers]
@@ -469,7 +484,9 @@ def update_case_governance(
     _cas_version(db, case, payload.expected_version, values=values)
     updated = _reload_case(db, case.id)
     if payload.split is not None:
-        action = "split_unassigned" if payload.split == "unassigned" else "split_assigned"
+        action = (
+            "split_unassigned" if payload.split == "unassigned" else "split_assigned"
+        )
     else:
         action = f"redaction_{payload.redaction_review}"
     _append_event(
@@ -619,19 +636,7 @@ def freeze_dataset_revision(
     for case in cases:
         consent = _latest_consent(db, case.id)
         annotation = _latest_annotation(db, case.id)
-        blockers: list[str] = []
-        if case.origin != "private_real":
-            blockers.append("case_not_private_real")
-        if not case.task_input_json or not case.task_input_digest:
-            blockers.append("task_input_not_ready")
-        if case.redaction_review != "reviewed":
-            blockers.append("redaction_not_reviewed")
-        if _consent_status(consent, now=current) != "granted":
-            blockers.append("consent_not_granted")
-        if annotation is None:
-            blockers.append("annotation_not_ready")
-        if case.split == "unassigned":
-            blockers.append("split_not_assigned")
+        blockers = case_freeze_blockers(case, consent, annotation, now=current)
         if blockers:
             raise RealWorldGovernanceValidationError(
                 f"案例 {case.case_ref} 尚未满足冻结条件：{','.join(blockers)}"
@@ -754,9 +759,7 @@ def _exact_dataset_freeze_replay(
     if len(frozen_targets) != len(raw_snapshot):
         raise RealWorldGovernanceValidationError("既有冻结数据集快照目标不合法")
     if requested_targets != frozen_targets:
-        raise RealWorldGovernanceConflict(
-            "dataset_version 已用于不同冻结请求"
-        )
+        raise RealWorldGovernanceConflict("dataset_version 已用于不同冻结请求")
 
     manifest_digest = _canonical_digest(
         {
@@ -796,7 +799,7 @@ def load_frozen_dataset_for_evaluation(
     upload_root: Path | str,
     now: datetime | None = None,
 ) -> RealWorldDataset:
-    """从不可变冻结快照重建评测集，不读取案例的最新授权或标注。"""
+    """保留冻结证据与标注；读取资产前整批复核历史证据和当前授权。"""
     revision = db.scalar(
         select(RealWorldDatasetRevision).where(
             RealWorldDatasetRevision.dataset_version == dataset_version
@@ -819,6 +822,7 @@ def load_frozen_dataset_for_evaluation(
 
     current = _now(now)
     reconstructed: list[RealWorldCase] = []
+    authorized_cases: list[tuple[dict, RealWorldCaseRecord]] = []
     for frozen in raw_snapshot:
         if not isinstance(frozen, dict):
             raise RealWorldGovernanceValidationError("冻结案例快照结构不合法")
@@ -831,19 +835,18 @@ def load_frozen_dataset_for_evaluation(
         )
         if case is None or case.origin != "private_real":
             raise RealWorldGovernanceValidationError("冻结案例来源记录不存在")
+        latest_consent = _latest_consent(db, case.id)
+        if (
+            _consent_status(latest_consent, now=current) != "granted"
+            or "offline_evaluation" not in (latest_consent.allowed_purposes_json or [])
+        ):
+            raise RealWorldGovernanceValidationError("冻结案例当前授权已失效或用途不允许")
         if case.asset_digest != frozen.get("asset_digest"):
             raise RealWorldGovernanceValidationError("冻结案例资产摘要已变化")
         if case.task_input_digest != frozen.get("task_input_digest") or (
             _canonical_digest(case.task_input_json) != frozen.get("task_input_digest")
         ):
             raise RealWorldGovernanceValidationError("冻结案例任务输入摘要不一致")
-        image = db.get(UploadedImage, case.uploaded_image_id)
-        if image is None:
-            raise RealWorldGovernanceValidationError("冻结案例受控图片不存在")
-        asset_path = _controlled_upload_path(image, upload_root)
-        if _file_digest(asset_path) != frozen.get("asset_digest"):
-            raise RealWorldGovernanceValidationError("冻结案例资产文件摘要不一致")
-
         consent = db.get(RealWorldConsentDecision, frozen.get("consent_decision_id"))
         if consent is None or consent.case_id != case.id:
             raise RealWorldGovernanceValidationError("冻结案例授权证据不存在")
@@ -858,22 +861,30 @@ def load_frozen_dataset_for_evaluation(
                 else None
             )
             != frozen.get("consent_expires_at")
-            or sorted(consent.allowed_purposes_json)
-            != frozen.get("allowed_purposes")
+            or sorted(consent.allowed_purposes_json) != frozen.get("allowed_purposes")
             or _consent_status(consent, now=current) != "granted"
             or "offline_evaluation" not in consent.allowed_purposes_json
         ):
             raise RealWorldGovernanceValidationError("冻结案例授权证据不一致或已失效")
+        authorized_cases.append((frozen, case))
+
+    for frozen, case in authorized_cases:
+        image = db.get(UploadedImage, case.uploaded_image_id)
+        if image is None:
+            raise RealWorldGovernanceValidationError("冻结案例受控图片不存在")
+        asset_path = _controlled_upload_path(image, upload_root)
+        if _file_digest(asset_path) != frozen.get("asset_digest"):
+            raise RealWorldGovernanceValidationError("冻结案例资产文件摘要不一致")
 
         annotation_row = db.get(
             RealWorldAnnotationRevision, frozen.get("annotation_revision_id")
         )
         if annotation_row is None or annotation_row.case_id != case.id:
             raise RealWorldGovernanceValidationError("冻结案例标注修订不存在")
-        if (
-            annotation_row.annotation_digest != frozen.get("annotation_digest")
-            or _canonical_digest(annotation_row.annotation_json)
-            != frozen.get("annotation_digest")
+        if annotation_row.annotation_digest != frozen.get(
+            "annotation_digest"
+        ) or _canonical_digest(annotation_row.annotation_json) != frozen.get(
+            "annotation_digest"
         ):
             raise RealWorldGovernanceValidationError("冻结案例标注摘要不一致")
         try:

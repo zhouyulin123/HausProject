@@ -84,6 +84,7 @@ class ProductEligibilityPolicy:
     max_unit_price: int | None
     max_dimensions_mm: ProductDimensions | None
     required_quantity: int | None
+    allow_development: bool = False
 
 
 @dataclass(frozen=True)
@@ -105,12 +106,16 @@ def evaluate_product_eligibility(
 ) -> ProductEligibility:
     """仅根据显式事实与策略计算资格，不读取数据库或环境状态。"""
     reasons: list[str] = []
+    development_fixture = (
+        policy.allow_development and facts.data_origin == "development_fixture"
+    )
     if not facts.is_active:
         reasons.append("inactive")
     if facts.data_origin == "public_reference":
         reasons.append("public_reference")
     elif facts.data_origin not in {"merchant", "merchant_verified"} and not (
-        policy.allow_draft and facts.data_origin == "merchant_draft"
+        (policy.allow_draft and facts.data_origin == "merchant_draft")
+        or development_fixture
     ):
         reasons.append("provenance_unverified")
 
@@ -130,7 +135,9 @@ def evaluate_product_eligibility(
         reasons.append("price_observed_at_future")
 
     verification = facts.verification_status or "draft"
-    if verification == "draft" and not policy.allow_draft:
+    if development_fixture and verification == "verified":
+        reasons.append("verification_invalid")
+    if verification == "draft" and not (policy.allow_draft or development_fixture):
         reasons.append("verification_required")
     elif verification == "rejected":
         reasons.append("verification_rejected")
@@ -139,7 +146,9 @@ def evaluate_product_eligibility(
     elif verification not in VERIFICATION_STATUSES:
         reasons.append("verification_invalid")
     data_version = (facts.data_version or "").strip()
-    is_allowed_draft = verification == "draft" and policy.allow_draft
+    is_allowed_draft = verification == "draft" and (
+        policy.allow_draft or development_fixture
+    )
     if is_allowed_draft:
         if not data_version:
             reasons.append("data_version_unverified")

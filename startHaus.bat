@@ -37,10 +37,29 @@ if not exist "frontend\node_modules" (
     echo.
 )
 
-echo [1/2] 启动后端服务 ^(端口 8081^)...
-start "豪斯-后端" cmd /k "cd /d backend && %PYTHON_CMD% -m alembic upgrade head && %PYTHON_CMD% -m app.run_api --port 8081"
+echo [准备] 检查并升级数据库结构...
+pushd backend
+%PYTHON_CMD% -m alembic upgrade head
+set "MIGRATION_EXIT=%ERRORLEVEL%"
+popd
+if not "%MIGRATION_EXIT%"=="0" (
+    echo [失败] 数据库迁移未完成，未启动任何服务。
+    exit /b %MIGRATION_EXIT%
+)
 
-echo [2/2] 启动前端服务 ^(端口 8080^)...
+echo [1/5] 启动后端服务 ^(端口 8081^)...
+start "豪斯-后端" cmd /k "cd /d backend && %PYTHON_CMD% -m app.run_api --port 8081"
+
+echo [2/5] 启动方案生成 Worker...
+start "豪斯-方案生成Worker" cmd /k "cd /d backend && %PYTHON_CMD% -m app.workers.generation_worker"
+
+echo [3/5] 启动效果图 Worker...
+start "豪斯-效果图Worker" cmd /k "cd /d backend && %PYTHON_CMD% -m app.workers.effect_render_worker"
+
+echo [4/5] 启动 Blender Worker...
+start "豪斯-Blender Worker" cmd /k "cd /d backend && %PYTHON_CMD% -m app.workers.blender_worker"
+
+echo [5/5] 启动前端服务 ^(端口 8080^)...
 start "豪斯-前端" cmd /k "npm --prefix frontend run dev"
 
 echo.
@@ -55,7 +74,7 @@ echo.
 echo ============================================
 echo   已启动完成！
 echo   - 网页地址: http://127.0.0.1:8080
-echo   - 关闭服务: 直接关掉弹出的两个命令行窗口
+echo   - 关闭服务: 直接关掉弹出的五个命令行窗口
 echo ============================================
 echo.
 echo 本窗口可以关闭（不影响服务运行）。

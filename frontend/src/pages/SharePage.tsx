@@ -87,6 +87,11 @@ export default function SharePage() {
           <h1 className="mt-4 max-w-4xl font-display text-4xl leading-tight sm:text-6xl">
             {plan.name}
           </h1>
+          {plan.delivery_mode === "development_preview" && (
+            <p role="note" className="mt-5 rounded border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+              开发版预览：商品价格、库存和交期包含模拟数据，不作为商业报价或下单依据。
+            </p>
+          )}
           {plan.description && (
             <p className="mt-6 max-w-3xl text-base leading-8 text-[#626b63]">
               {plan.description}

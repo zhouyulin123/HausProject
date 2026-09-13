@@ -11,7 +11,7 @@ from app.schemas.shares import (
     PublicPlanShareResponse,
     RevokePlanShareResponse,
 )
-from app.services import scene_service, share_service
+from app.services import plan_delivery_service, scene_service, share_service
 
 
 owner_router = APIRouter()
@@ -42,11 +42,14 @@ def create_plan_share(
     )
     if plan_version is None:
         raise HTTPException(status_code=404, detail="方案版本不存在")
-    share, token = share_service.create_share(
-        db,
-        plan_version=plan_version,
-        expires_in_hours=payload.expires_in_hours,
-    )
+    try:
+        share, token = share_service.create_share(
+            db,
+            plan_version=plan_version,
+            expires_in_hours=payload.expires_in_hours,
+        )
+    except plan_delivery_service.PlanDeliveryBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
     response.headers["Cache-Control"] = "no-store"
     return CreatePlanShareResponse(
         token=token,

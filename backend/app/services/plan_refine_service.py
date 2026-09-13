@@ -16,6 +16,7 @@ from app.db.models import DesignTask
 from app.services import (
     catalog_service,
     design_version_service,
+    generation_constraints_service,
     llm_service,
     profile_service,
     scene_service,
@@ -53,13 +54,18 @@ def refine_plan_version(
         raise PlanRefineError("未找到要修改的方案")
 
     current_plan = deepcopy(target.plan_json or {})
-    catalog_context = catalog_service.build_catalog_context(db)
+    generation_context = generation_constraints_service.build_generation_context(
+        db,
+        task,
+    )
+    catalog_context = generation_context.catalog_context
 
     workflow = PlanRefineWorkflow(
         refine_plan=llm_service.refine_plan,
         enrich_plans=lambda plans: catalog_service.verify_and_enrich_plans(
             db,
             plans,
+            **generation_context.constraints.enrichment_kwargs(),
         ),
     )
     try:
@@ -75,6 +81,16 @@ def refine_plan_version(
 
     refined_plan = result["refined_plan"]
     message = result["message"]
+    budget_max = generation_context.constraints.budget_max
+    if budget_max is not None:
+        quote = refined_plan.get("shopQuote")
+        quote_total = quote.get("total") if isinstance(quote, dict) else None
+        if (
+            not isinstance(quote_total, (int, float))
+            or isinstance(quote_total, bool)
+            or quote_total > budget_max
+        ):
+            raise PlanRefineError("精修方案未通过已确认总预算门禁")
 
     # 组装新版本的三套方案：被修改的替换，其余保持原样（按 plan_key 排序）
     plans: list[dict[str, Any]] = []
@@ -89,8 +105,16 @@ def refine_plan_version(
         task=task,
         plans=plans,
         generator="refine",
+        requirement_snapshot=generation_context.requirement,
         image_context=deepcopy(revision.image_context_snapshot or []),
-        workflow_trace=[{"node": "plan_refine", "status": "completed"}],
+        workflow_trace=[
+            {
+                "node": "plan_refine",
+                "status": "completed",
+                "source_revision_id": revision.id,
+                "source_revision_version": revision.version,
+            }
+        ],
     )
     if commit:
         db.commit()

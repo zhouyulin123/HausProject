@@ -88,6 +88,7 @@ class SharedQuote(ShareModel):
 
 
 class PublicPlanSnapshot(ShareModel):
+    delivery_mode: Literal["commercial", "development_preview"] = "commercial"
     name: str
     style: str | None = None
     description: str | None = None

@@ -8,6 +8,7 @@ from app.db.database import Base
 from app.db.models import CustomQuoteRule, Product, ProductAsset
 from app.services.catalog_service import (
     build_catalog_context,
+    catalog_revision_fingerprint,
     find_product_alternatives,
     is_product_eligible,
     verify_and_enrich_plans,
@@ -647,7 +648,7 @@ def test_custom_quote_includes_region_waste_minimum_fees_and_tax(db):
         "customItems": [{
             "project": "定制衣柜",
             "grade": "E0 实木多层板",
-            "quantity": 2,
+            "quantity": 2.234,
         }],
     }]
 
@@ -655,15 +656,48 @@ def test_custom_quote_includes_region_waste_minimum_fees_and_tax(db):
 
     custom = plans[0]["customItems"][0]
     line = plans[0]["shopQuote"]["customLineItems"][0]
-    assert custom["requestedQuantity"] == 2
+    assert custom["quantity"] == 2.234
+    assert custom["requestedQuantity"] == 2.234
     assert custom["billableQuantity"] == 3
     assert custom["baseSubtotal"] == 3840
     assert custom["taxAmount"] == 260
     assert custom["subtotal"] == 4600
     assert line["subtotal"] == 4600
+    assert line["quantity"] == 2.234
     assert line["dataVersion"] == "custom-price-2026-09"
     assert line["recordVersion"] == 4
+    assert custom["customRuleEvidence"] == line["customRuleEvidence"]
+    assert line["customRuleEvidence"]["schemaVersion"] == "1.0"
+    assert line["customRuleEvidence"]["region"] == "CN-SH"
+    assert line["customRuleEvidence"]["isActive"] is True
     assert plans[0]["shopQuote"]["customTotal"] == 4600
+
+
+def test_catalog_revision_fingerprint_binds_product_and_rule_versions(db):
+    product = _product("SOFA-001")
+    rule = CustomQuoteRule(
+        project_name="定制衣柜",
+        material_grade="E0 实木多层板",
+        pricing_unit="㎡",
+        unit_price=1280,
+        region_codes=["CN-SH"],
+        data_version="custom-price-v1",
+        record_version=1,
+        is_active=True,
+    )
+    db.add_all([product, rule])
+    db.commit()
+
+    first = catalog_revision_fingerprint(db, at=NOW, region="CN-SH")
+    product.data_version = "catalog-2026-09-02"
+    product.record_version += 1
+    rule.data_version = "custom-price-v2"
+    rule.record_version += 1
+    db.commit()
+    second = catalog_revision_fingerprint(db, at=NOW, region="CN-SH")
+
+    assert first["catalog_version"] != second["catalog_version"]
+    assert first["rule_version"] != second["rule_version"]
 
 
 def test_custom_quote_rejects_rule_outside_delivery_region(db):

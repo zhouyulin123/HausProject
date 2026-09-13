@@ -6,7 +6,7 @@ dev_code 便于联调；生产切换真实短信服务商时只需替换 _send_s
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 
 import jwt
 from sqlalchemy import select

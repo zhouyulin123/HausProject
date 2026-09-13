@@ -39,12 +39,16 @@ from app.services.anonymous_session_service import (
 from app.services import design_version_service, generation_run_service
 from app.services import open_geometry_service
 from app.services.open_geometry_service import prepare_command as prepare_open_geometry_command
-from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
+from app.services.open_geometry_rate_limit import OpenGeometryRateLimiter
 from tests.scene_fixtures import attach_scene_versions
 
 
 @pytest.fixture
 def agent_api_context(monkeypatch):
+    monkeypatch.setattr(
+        design_agent.design_agent_service.llm_service, "_chat_json",
+        lambda *args, **kwargs: {"patch": {}, "evidence": {}},
+    )
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -145,7 +149,7 @@ def agent_api_context(monkeypatch):
     )
     app.include_router(tasks.router, prefix="/api/design/tasks")
     app.include_router(upload.router, prefix="/api/upload")
-    shared_open_geometry_limiter = SceneAgentRateLimiter(
+    shared_open_geometry_limiter = OpenGeometryRateLimiter(
         max_requests=120,
         window_seconds=60,
     )
@@ -173,6 +177,38 @@ def agent_api_context(monkeypatch):
     app.dependency_overrides[get_db] = override_db
     with TestClient(app) as client:
         yield client, factory, owner_id, stranger_id, task_id
+
+
+@pytest.mark.integration
+def test_chat_answers_become_confirmed_facts_and_replay_without_model(
+    agent_api_context, monkeypatch,
+):
+    client, factory, owner, _, task_id = agent_api_context
+    calls = []
+
+    def extract(system, user, **kwargs):
+        calls.append(user)
+        return {"patch": {"budget_max": 25000, "room_width_m": 4.8,
+                          "room_depth_m": 5.6},
+                "evidence": {"budget_max": "预算两万五", "room_width_m": "宽480厘米",
+                             "room_depth_m": "深5.6米"}}
+
+    monkeypatch.setattr(design_agent.design_agent_service.llm_service, "_chat_json", extract)
+    payload = {"client_turn_id": "chat-facts-reproducer", "message": "预算两万五，宽480厘米，深5.6米"}
+    headers = {"X-Session-ID": owner}
+    first = client.post(f"/api/design/tasks/{task_id}/agent-turns", json=payload, headers=headers)
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["state"]["facts"]["budget_max"] == 25000
+    assert body["state"]["facts"]["room_width_m"] == 4.8
+    assert [q["field"] for q in body["pending_questions"]] == ["delivery_region"]
+    replay = client.post(f"/api/design/tasks/{task_id}/agent-turns", json=payload, headers=headers)
+    assert replay.json() == body
+    assert len(calls) == 1
+    with factory() as db:
+        task = db.get(DesignTask, task_id)
+        assert task.confirmed_requirement_json["room_depth_m"] == 5.6
+        assert task.budget_max == 25000
 
 
 @pytest.mark.integration
@@ -211,7 +247,7 @@ def test_agent_turn_pauses_persists_checkpoint_and_task_bound_chat(
     assert timeline.json()["events"][-1]["event_code"] == (
         "agent.turn.waiting_user"
     )
-    assert timeline.json()["events"][-1]["billing_status"] == "not_billable"
+    assert timeline.json()["events"][-1]["billing_status"] == "unknown"
 
     with factory() as db:
         task = db.get(DesignTask, task_id)
@@ -1183,10 +1219,8 @@ def test_open_geometry_rate_limit_is_shared_across_agent_and_legacy_routes(
     agent_api_context,
     monkeypatch,
 ):
-    from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
-
     client, _, owner_id, _, task_id = agent_api_context
-    limiter = SceneAgentRateLimiter(max_requests=1, window_seconds=60)
+    limiter = OpenGeometryRateLimiter(max_requests=1, window_seconds=60)
     monkeypatch.setattr(design_agent, "open_geometry_rate_limiter", limiter)
     monkeypatch.setattr(open_geometry_routes, "open_geometry_rate_limiter", limiter)
     calls = []

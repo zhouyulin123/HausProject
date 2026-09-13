@@ -137,10 +137,14 @@ def test_invalid_model_output_returns_structured_error_and_preserves_empty_state
 
 @pytest.mark.integration
 def test_open_geometry_command_rate_limit_has_retry_after(api_context, monkeypatch):
-    from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
+    from app.services.open_geometry_rate_limit import OpenGeometryRateLimiter
 
     client, owner_id, _, task_id, _ = api_context
-    monkeypatch.setattr(open_geometry, "open_geometry_rate_limiter", SceneAgentRateLimiter(max_requests=1, window_seconds=60))
+    monkeypatch.setattr(
+        open_geometry,
+        "open_geometry_rate_limiter",
+        OpenGeometryRateLimiter(max_requests=1, window_seconds=60),
+    )
     headers = {"X-Session-ID": owner_id}
     first = client.post(
         f"/api/design/tasks/{task_id}/open-geometry/commands",
@@ -158,17 +162,62 @@ def test_open_geometry_command_rate_limit_has_retry_after(api_context, monkeypat
 
 
 @pytest.mark.integration
-def test_failed_open_geometry_command_cannot_bypass_limit_by_reusing_id(
+def test_successful_idempotent_replay_precedes_quota_consumption(
     api_context,
     monkeypatch,
 ):
-    from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
+    from app.services.open_geometry_rate_limit import OpenGeometryRateLimiter
 
     client, owner_id, _, task_id, _ = api_context
     monkeypatch.setattr(
         open_geometry,
         "open_geometry_rate_limiter",
-        SceneAgentRateLimiter(max_requests=1, window_seconds=60),
+        OpenGeometryRateLimiter(max_requests=1, window_seconds=60),
+    )
+    headers = {"X-Session-ID": owner_id}
+    body = {
+        "client_mutation_id": "idempotent-before-limit",
+        "base_version": 0,
+        "instruction": "创建弧形椅",
+    }
+
+    first = client.post(
+        f"/api/design/tasks/{task_id}/open-geometry/commands",
+        headers=headers,
+        json=body,
+    )
+    replay = client.post(
+        f"/api/design/tasks/{task_id}/open-geometry/commands",
+        headers=headers,
+        json=body,
+    )
+    limited = client.post(
+        f"/api/design/tasks/{task_id}/open-geometry/commands",
+        headers=headers,
+        json={
+            "client_mutation_id": "new-after-idempotent-replay",
+            "base_version": 1,
+            "instruction": "靠背更弯",
+        },
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.json() == first.json()
+    assert limited.status_code == 429
+
+
+@pytest.mark.integration
+def test_failed_open_geometry_command_cannot_bypass_limit_by_reusing_id(
+    api_context,
+    monkeypatch,
+):
+    from app.services.open_geometry_rate_limit import OpenGeometryRateLimiter
+
+    client, owner_id, _, task_id, _ = api_context
+    monkeypatch.setattr(
+        open_geometry,
+        "open_geometry_rate_limiter",
+        OpenGeometryRateLimiter(max_requests=1, window_seconds=60),
     )
     calls = []
     monkeypatch.setattr(

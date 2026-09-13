@@ -207,8 +207,36 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "failure_verification_imports",
             "room_fact_confirmations",
             "model_provider_circuits",
+            "model_call_cost_accounts",
+            "model_call_ledgers",
+            "worker_heartbeats",
             "evaluation_run_bindings",
+            "open_geometry_rate_limit_buckets",
         } <= tables
+        open_geometry_rate_limit_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns(
+                "open_geometry_rate_limit_buckets"
+            )
+        }
+        assert {
+            "id",
+            "session_id",
+            "task_id",
+            "attempted_at_json",
+            "record_version",
+            "created_at",
+            "updated_at",
+        } <= open_geometry_rate_limit_columns
+        open_geometry_rate_limit_constraints = {
+            constraint["name"]: set(constraint["column_names"])
+            for constraint in inspect(inspection_engine).get_unique_constraints(
+                "open_geometry_rate_limit_buckets"
+            )
+        }
+        assert open_geometry_rate_limit_constraints[
+            "uq_open_geometry_rate_limit_scope"
+        ] == {"session_id", "task_id"}
         failure_cluster_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns("failure_clusters")
@@ -274,6 +302,38 @@ def test_alembic_upgrades_empty_database_to_current_schema():
             "last_failure_code",
             "updated_at",
         } <= provider_circuit_columns
+        model_cost_account_columns = {
+            column["name"]: column
+            for column in inspect(inspection_engine).get_columns(
+                "model_call_cost_accounts"
+            )
+        }
+        for name in (
+            "cost_limit_cny",
+            "allocated_cost_cny",
+            "actual_cost_cny",
+        ):
+            assert model_cost_account_columns[name]["type"].precision == 18
+            assert model_cost_account_columns[name]["type"].scale == 6
+        model_call_ledger_columns = {
+            column["name"]: column
+            for column in inspect(inspection_engine).get_columns("model_call_ledgers")
+        }
+        for name in ("estimated_cost_cny", "actual_cost_cny"):
+            assert model_call_ledger_columns[name]["type"].precision == 18
+            assert model_call_ledger_columns[name]["type"].scale == 6
+        worker_heartbeat_columns = {
+            column["name"]
+            for column in inspect(inspection_engine).get_columns("worker_heartbeats")
+        }
+        assert {
+            "id",
+            "worker_type",
+            "worker_id",
+            "started_at",
+            "heartbeat_at",
+            "stopped_at",
+        } <= worker_heartbeat_columns
         task_columns = {
             column["name"]
             for column in inspect(inspection_engine).get_columns("design_tasks")

@@ -1,8 +1,17 @@
 """运营质量指标的公开响应契约。"""
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+VersionDimension = Literal[
+    "model",
+    "prompt_digest",
+    "rules_digest",
+    "data_digest",
+]
 
 
 class NodeLatencyMetrics(BaseModel):
@@ -26,11 +35,52 @@ class GenerationQualityMetrics(BaseModel):
     node_latency: dict[str, NodeLatencyMetrics]
 
 
+class GenerationVersionCohortItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = None
+    prompt_digest: str | None = None
+    rules_digest: str | None = None
+    data_digest: str | None = None
+    version_complete: bool
+    missing_dimensions: list[VersionDimension]
+    total: int = Field(ge=0)
+    completed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    cancelled: int = Field(ge=0)
+    active: int = Field(ge=0)
+    success_rate: float | None = Field(default=None, ge=0, le=1)
+    fallback_rate: float | None = Field(default=None, ge=0, le=1)
+    duration_p50_ms: int | None = Field(default=None, ge=0)
+    duration_p95_ms: int | None = Field(default=None, ge=0)
+    total_tokens: int = Field(ge=0)
+    known_cost_cny: float = Field(ge=0)
+    unknown_cost_run_count: int = Field(ge=0)
+
+
+class GenerationVersionCohorts(BaseModel):
+    total_cohorts: int = Field(ge=0)
+    returned_cohorts: int = Field(ge=0)
+    truncated: bool
+    items: list[GenerationVersionCohortItem]
+
+
 class AgentQualityMetrics(BaseModel):
     turn_total: int = Field(ge=0)
     handoff_total: int = Field(ge=0)
     handoff_rate: float | None = Field(default=None, ge=0, le=1)
     statuses: dict[str, int]
+
+
+class ModelCallQualityMetrics(BaseModel):
+    total: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    blocked: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    known_actual_cost_cny: float = Field(ge=0)
+    unknown_cost_call_count: int = Field(ge=0)
+    provider_failures: dict[str, int]
 
 
 class LayoutQualityMetrics(BaseModel):
@@ -79,7 +129,9 @@ class QualitySummaryResponse(BaseModel):
     generated_at: datetime
     window_days: int = Field(ge=1, le=365)
     generation: GenerationQualityMetrics
+    version_cohorts: GenerationVersionCohorts
     agent: AgentQualityMetrics
+    model_calls: ModelCallQualityMetrics
     layout: LayoutQualityMetrics
     feedback: FeedbackQualityMetrics
     effect_render: RenderQueueQualityMetrics

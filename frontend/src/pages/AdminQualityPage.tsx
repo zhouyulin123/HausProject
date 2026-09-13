@@ -34,10 +34,12 @@ import Button from "@/components/common/Button";
 import EmptyState from "@/components/common/EmptyState";
 import PageTitle from "@/components/common/PageTitle";
 import {
+  QUALITY_VERSION_COHORT_LIMIT,
   QUALITY_WINDOWS,
   buildFailureCodeRows,
   formatDuration,
   formatRate,
+  formatVersionCompleteness,
   hasQualitySamples,
 } from "@/lib/qualityMetrics";
 import type {
@@ -46,9 +48,11 @@ import type {
   FailureClusterUpdate,
   FailureSeverity,
   FailureStatus,
-  QualitySummary,
-  QualityWindowDays,
   QualityRenderQueueMetrics,
+  QualitySummary,
+  QualityVersionCohortItem,
+  QualityVersionCohorts,
+  QualityWindowDays,
 } from "@/types/quality";
 import type {
   CaseImportPayload,
@@ -264,7 +268,7 @@ export function RealWorldReadinessContent({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-stone-800">真实案例就绪度</h2>
-          <p className="mt-1 text-xs text-stone-400">仅展示授权、标注与分组的聚合准入结果</p>
+          <p className="mt-1 text-xs text-stone-400">根据治理收件箱当前授权、标注与分组统计；冻结不代表真实评测通过</p>
         </div>
         <Button variant="outline" size="sm" disabled={loading} onClick={onRetry}>
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> 刷新
@@ -282,7 +286,7 @@ export function RealWorldReadinessContent({
         <>
           <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <div className="border border-cream-200 bg-white/80 p-4 sm:col-span-2">
-              <p className="text-xs text-stone-400">发布门槛</p>
+              <p className="text-xs text-stone-400">候选冻结门槛</p>
               <p className={`mt-2 text-2xl font-semibold ${data.minimum_met ? "text-sage-700" : "text-terra-700"}`}>
                 {data.private_real_eligible_total} / {data.minimum_required}
               </p>
@@ -306,6 +310,11 @@ export function RealWorldReadinessContent({
             })}
           </div>
           <div className="mt-4 border-y border-cream-200 bg-white/60 px-4 py-3">
+            <p className="mb-2 text-xs text-stone-500">
+              {data.frozen_dataset_count > 0
+                ? `已有 ${data.frozen_dataset_count} 个冻结数据集；评测前仍需校验案例资产，发布须通过受保护评测`
+                : "尚无冻结数据集"}
+            </p>
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-stone-500">
               <span>候选 {data.total} · 阻断 {data.blocked_total}</span>
               <span>检查于 {new Date(data.checked_at).toLocaleString("zh-CN", { hour12: false })}</span>
@@ -317,7 +326,7 @@ export function RealWorldReadinessContent({
                 ))}
               </div>
             ) : (
-              <p className="mt-3 border-t border-cream-100 pt-3 text-xs text-sage-700">当前没有案例准入阻断项</p>
+              <p className="mt-3 border-t border-cream-100 pt-3 text-xs text-stone-500">{data.total === 0 ? "治理收件箱暂无案例，请先导入获授权的真实候选" : "当前元数据没有准入阻断项，评测前仍需校验案例资产"}</p>
             )}
           </div>
         </>
@@ -804,6 +813,7 @@ export function RealWorldGovernanceWorkspace({ onChanged }: { onChanged: () => v
         cases: targets,
       });
       setActionSuccess(`数据集 ${result.dataset_version} 已冻结，共 ${result.case_count} 例`);
+      onChanged();
       setDatasetVersion("");
       setSelectedRefs(new Set());
       await loadCases();
@@ -1300,6 +1310,132 @@ function FeedbackSummary({ summary }: { summary: QualitySummary }) {
   );
 }
 
+function VersionIdentifier({ value }: { value: string | null }) {
+  if (value === null || value.trim() === "") {
+    return <span className="text-stone-300">--</span>;
+  }
+  return (
+    <code
+      className="block max-w-44 truncate text-[11px] text-stone-600"
+      title={value}
+    >
+      {value}
+    </code>
+  );
+}
+
+function VersionCohortRow({ item }: { item: QualityVersionCohortItem }) {
+  const completeness = formatVersionCompleteness(
+    item.version_complete,
+    item.missing_dimensions,
+  );
+  return (
+    <tr className="border-t border-cream-100 align-top">
+      <td className="px-3 py-3"><VersionIdentifier value={item.model} /></td>
+      <td className="px-3 py-3"><VersionIdentifier value={item.prompt_digest} /></td>
+      <td className="px-3 py-3"><VersionIdentifier value={item.rules_digest} /></td>
+      <td className="px-3 py-3"><VersionIdentifier value={item.data_digest} /></td>
+      <td className="px-3 py-3">
+        <span
+          className={item.version_complete
+            ? "inline-flex border border-sage-200 bg-sage-50 px-2 py-1 text-[11px] text-sage-700"
+            : "inline-flex border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800"}
+        >
+          {completeness}
+        </span>
+      </td>
+      <td className="whitespace-nowrap px-3 py-3 text-right">
+        <strong className="font-mono text-xs font-semibold text-stone-700">
+          {integerFormatter.format(item.total)}
+        </strong>
+        <span className="mt-1 block text-[10px] text-stone-400">
+          {item.completed} 成功 · {item.failed} 失败 · {item.cancelled} 取消 · {item.active} 运行中
+        </span>
+      </td>
+      <td className="whitespace-nowrap px-3 py-3 text-right text-xs text-stone-600">
+        {formatRate(item.success_rate)}
+        <span className="mt-1 block text-[10px] text-stone-400">
+          降级 {formatRate(item.fallback_rate)}
+        </span>
+      </td>
+      <td className="whitespace-nowrap px-3 py-3 text-right text-xs text-stone-600">
+        {formatDuration(item.duration_p95_ms)}
+        <span className="mt-1 block text-[10px] text-stone-400">
+          P50 {formatDuration(item.duration_p50_ms)}
+        </span>
+      </td>
+      <td className="whitespace-nowrap px-3 py-3 text-right text-xs text-stone-600">
+        {integerFormatter.format(item.total_tokens)}
+      </td>
+      <td className="whitespace-nowrap px-3 py-3 text-right text-xs text-stone-600">
+        {currencyFormatter.format(item.known_cost_cny)}
+        <span className="mt-1 block text-[10px] text-stone-400">
+          {item.unknown_cost_run_count} 次未知
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+export function VersionCohortComparison({
+  cohorts,
+}: {
+  cohorts: QualityVersionCohorts;
+}) {
+  return (
+    <section
+      className="mt-9 border-t border-cream-200 pt-5"
+      aria-label="质量版本组合对比"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-stone-700">
+          质量版本组合对比
+        </h2>
+        <span className="font-mono text-[10px] text-stone-400">
+          返回 {cohorts.returned_cohorts} / 共 {cohorts.total_cohorts} 组
+        </span>
+      </div>
+      {cohorts.truncated && (
+        <p className="mt-3 border-l-2 border-amber-300 pl-3 text-xs text-amber-800">
+          结果已截断，仅显示 {cohorts.returned_cohorts} / {cohorts.total_cohorts} 组
+        </p>
+      )}
+      {cohorts.items.length === 0 ? (
+        <p className="mt-4 border border-dashed border-cream-300 px-4 py-5 text-sm text-stone-400">
+          当前周期没有版本组合样本
+        </p>
+      ) : (
+        <div className="mt-4 overflow-x-auto border-y border-cream-200 bg-white/70">
+          <table className="w-full min-w-[1380px] border-collapse text-left">
+            <thead className="bg-cream-50 text-[10px] uppercase text-stone-400">
+              <tr>
+                <th scope="col" className="px-3 py-2 font-medium">模型</th>
+                <th scope="col" className="px-3 py-2 font-medium">Prompt 摘要</th>
+                <th scope="col" className="px-3 py-2 font-medium">规则摘要</th>
+                <th scope="col" className="px-3 py-2 font-medium">数据摘要</th>
+                <th scope="col" className="px-3 py-2 font-medium">完整性</th>
+                <th scope="col" className="px-3 py-2 text-right font-medium">样本</th>
+                <th scope="col" className="px-3 py-2 text-right font-medium">成功率</th>
+                <th scope="col" className="px-3 py-2 text-right font-medium">P95</th>
+                <th scope="col" className="px-3 py-2 text-right font-medium">Token</th>
+                <th scope="col" className="px-3 py-2 text-right font-medium">已知成本</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cohorts.items.map((item, index) => (
+                <VersionCohortRow
+                  key={`${item.model ?? "missing"}:${item.prompt_digest ?? "missing"}:${item.rules_digest ?? "missing"}:${item.data_digest ?? "missing"}:${index}`}
+                  item={item}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function QualitySummaryContent({ summary }: { summary: QualitySummary }) {
   const generatedAt = new Date(summary.generated_at).toLocaleString("zh-CN", {
     hour12: false,
@@ -1343,18 +1479,18 @@ export function QualitySummaryContent({ summary }: { summary: QualitySummary }) 
           icon={ShieldCheck}
         />
         <MetricTile
-          label="Token 总量"
-          value={integerFormatter.format(summary.generation.total_tokens)}
-          detail={`${summary.generation.total} 次生成任务`}
+          label="全模型 Token"
+          value={integerFormatter.format(summary.model_calls.total_tokens)}
+          detail={`${summary.model_calls.total} 次全模型调用`}
           icon={ChartNoAxesColumnIncreasing}
         />
         <MetricTile
           label="推理成本"
-          value={currencyFormatter.format(summary.generation.total_cost_cny)}
+          value={currencyFormatter.format(
+            summary.model_calls.known_actual_cost_cny,
+          )}
           detail={
-            summary.generation.total_tokens > 0
-              ? `每千 Token ${currencyFormatter.format((summary.generation.total_cost_cny / summary.generation.total_tokens) * 1_000)}`
-              : "暂无 Token 样本"
+            `生成链路 ${currencyFormatter.format(summary.generation.total_cost_cny)} · ${summary.model_calls.unknown_cost_call_count} 次成本未知`
           }
           icon={CircleDollarSign}
         />
@@ -1373,6 +1509,8 @@ export function QualitySummaryContent({ summary }: { summary: QualitySummary }) 
           icon={AlertTriangle}
         />
       </section>
+
+      <VersionCohortComparison cohorts={summary.version_cohorts} />
 
       <FeedbackSummary summary={summary} />
 
@@ -1435,7 +1573,7 @@ export default function AdminQualityPage() {
     let cancelled = false;
     setLoading(true);
     setError("");
-    void fetchQualitySummary(windowDays)
+    void fetchQualitySummary(windowDays, QUALITY_VERSION_COHORT_LIMIT)
       .then((data) => {
         if (!cancelled) setSummary(data);
       })

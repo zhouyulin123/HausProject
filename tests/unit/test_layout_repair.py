@@ -74,6 +74,15 @@ def test_repair_clamps_out_of_bounds_item():
     assert repaired.items[0].transform.position.z < 2.5
 
 
+@pytest.mark.parametrize("category", ["柜子", "窗帘", "书桌"])
+def test_repair_rotates_long_item_when_only_other_axis_fits(category):
+    scene = _scene([_item("long", category, 0.4, 1.0, 5.3, 0, 0)])
+    repaired, score = repair_layout(scene)
+    assert not any(issue.code in {"exceeds_room", "oversized", "out_of_room"} for issue in score.issues)
+    assert repaired.items[0].dimensions == scene.items[0].dimensions
+    assert repaired.items[0].transform.scale == scene.items[0].transform.scale
+
+
 @pytest.mark.unit
 def test_repair_separates_colliding_items():
     items = [

@@ -12,6 +12,7 @@ _ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     app_debug: bool = False
+    development_catalog_enabled: bool = False
     port: int = 8000
     cors_origins: str = "http://localhost:8080,http://127.0.0.1:8080"
 
@@ -57,6 +58,13 @@ class Settings(BaseSettings):
         default="Qwen/Qwen3-VL-32B-Thinking",
         validation_alias=AliasChoices("VL_REASONING_MODEL", "VL_MODEL2"),
     )
+    vl_provider_key: str = Field(
+        default="primary-vl",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    vl_input_token_ceiling: int = Field(default=32768, ge=1024, le=1_000_000)
     vl_input_price_per_mtok: float | None = Field(default=None, gt=0, le=1_000_000)
     vl_output_price_per_mtok: float | None = Field(default=None, gt=0, le=1_000_000)
 
@@ -130,6 +138,8 @@ class Settings(BaseSettings):
         default=900, ge=30, le=7200
     )
     effect_render_worker_retry_base_seconds: int = Field(default=5, ge=1, le=600)
+    worker_presence_heartbeat_seconds: int = Field(default=10, ge=1, le=300)
+    worker_readiness_timeout_seconds: int = Field(default=45, ge=5, le=900)
     # 阶段 4 失败分诊报告验签；未配置时管理端同步接口关闭。
     eval_report_signing_key: str = ""
     eval_report_signing_key_id: str = Field(
@@ -185,6 +195,14 @@ class Settings(BaseSettings):
             >= self.effect_render_worker_execution_timeout_seconds
         ):
             raise ValueError("效果图 Worker 心跳间隔必须小于执行截止时间")
+        if (
+            self.worker_presence_heartbeat_seconds
+            >= self.worker_readiness_timeout_seconds
+        ):
+            raise ValueError("Worker 存活心跳间隔必须小于就绪超时时间")
+
+        if self.development_catalog_enabled and self.app_env != "development":
+            raise ValueError("DEVELOPMENT_CATALOG_ENABLED 仅允许在 development 环境启用")
 
         if self.app_env != "production":
             return self
@@ -195,17 +213,21 @@ class Settings(BaseSettings):
         if self.generation_inline_fallback:
             raise ValueError("生产环境不能启用 GENERATION_INLINE_FALLBACK")
 
-        if self.llm_api_key and (
+        if not self.llm_api_key:
+            raise ValueError("生产环境必须配置 LLM_API_KEY")
+        if (
             self.llm_input_price_per_mtok is None
             or self.llm_output_price_per_mtok is None
         ):
-            raise ValueError("生产环境启用 LLM 时必须配置输入与输出 token 单价")
+            raise ValueError("生产环境必须配置 LLM 输入与输出 token 单价")
 
-        if self.vl_api_key and (
+        if not self.vl_api_key:
+            raise ValueError("生产环境必须配置 VL_API_KEY")
+        if (
             self.vl_input_price_per_mtok is None
             or self.vl_output_price_per_mtok is None
         ):
-            raise ValueError("生产环境启用 VL 时必须配置输入与输出 token 单价")
+            raise ValueError("生产环境必须配置 VL 输入与输出 token 单价")
 
         weak_jwt_values = {
             "dev-secret-change-me-in-production",

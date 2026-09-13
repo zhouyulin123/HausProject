@@ -21,8 +21,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.models import DesignTask, EvaluationRunBinding, GenerationRun
 from app.services import (
-    catalog_service,
     evaluation_binding_service,
+    generation_constraints_service,
     generation_output_service,
     generation_run_service,
     llm_service,
@@ -258,11 +258,16 @@ def _evaluation_binding_spec(
     requirement = task_payload.get("confirmed_requirement")
     if not isinstance(requirement, dict) or not requirement:
         raise EvaluationInputError("正式评测必须在绑定前冻结 confirmed_requirement")
-    requirement_for_llm = dict(requirement)
+    generation_context = generation_constraints_service.build_generation_context(
+        db,
+        task,
+        requirement=requirement,
+    )
+    requirement_for_llm = dict(generation_context.requirement)
     image_context = task_payload.get("image_context") or []
     if image_context:
         requirement_for_llm["image_analysis"] = list(image_context)
-    catalog_context = catalog_service.build_catalog_context(db)
+    catalog_context = generation_context.catalog_context
     prompt_snapshot = llm_service.generation_prompt_snapshot()
     input_snapshot = llm_service.generation_input_snapshot(
         requirement_for_llm,

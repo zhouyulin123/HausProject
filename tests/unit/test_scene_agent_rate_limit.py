@@ -38,5 +38,3 @@ def test_open_geometry_direct_and_agent_routes_share_one_task_bucket():
     assert design_agent.open_geometry_rate_limiter is (
         open_geometry.open_geometry_rate_limiter
     )
-    assert design_agent.open_geometry_rate_key(42) == "task:42"
-    assert open_geometry.open_geometry_rate_key(42) == "task:42"

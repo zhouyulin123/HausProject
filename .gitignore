@@ -9,6 +9,7 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .pytest-tmp*/
+.tmp/
 backend/.pytest-tmp*/
 backend/.tmp-*/
 .ruff_cache/
@@ -43,7 +44,12 @@ backend/*.xlsx
 outputs/backups/
 outputs/pytest-*/
 outputs/test-tmp-*/
+outputs/test-*trace*/
+outputs/pytest-*.xml
+outputs/development-*.json
+outputs/v1-browser/
 outputs/open_geometry_eval*.json
+outputs/agent_action_plan_eval*.json
 *.log
 
 # 本地模型与缓存

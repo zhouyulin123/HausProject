@@ -14,12 +14,14 @@ from app.db.models import (
     DesignScene,
     DesignTask,
     GenerationRun,
+    GenerationRunEvent,
     GenerationRunSceneEvidence,
     Product,
 )
 from app.core.request_context import current_request_id
 from app.services import (
     design_version_service,
+    generation_request_service,
     generation_run_service,
     generation_scene_service,
     llm_service,
@@ -136,6 +138,196 @@ def test_worker_claims_and_completes_one_generation(monkeypatch):
             completed.execution_deadline_at - completed.started_at
         ).total_seconds() == 90
     assert executed == [task.id]
+
+
+def test_worker_rejects_catalog_drift_before_executor(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    now = datetime.now(timezone.utc)
+    with factory() as db:
+        task = DesignTask(
+            status="confirmed",
+            confirmed_requirement_json={"budget_max": 10_000},
+        )
+        db.add(task)
+        db.add(
+            Product(
+                sku="SOFA-DRIFT",
+                name="版本漂移沙发",
+                category="沙发",
+                room="客厅",
+                style="现代",
+                material="布艺",
+                price=1000,
+                is_active=True,
+                data_origin="merchant",
+                source_name="测试供应商",
+                source_product_id="SOFA-DRIFT",
+                source_retrieved_at=now - timedelta(days=1),
+                price_observed_at=now - timedelta(days=1),
+                verification_status="verified",
+                verified_at=now - timedelta(days=1),
+                verified_by="test:fixture",
+                data_version="catalog-v1",
+                record_version=1,
+                availability_status="in_stock",
+                stock_quantity=10,
+                price_valid_from=now - timedelta(days=1),
+                price_valid_to=now + timedelta(days=1),
+                region_codes=["*"],
+                model_width_mm=2200,
+                model_height_mm=850,
+                model_depth_mm=950,
+            )
+        )
+        db.flush()
+        contract = generation_request_service.build_request_contract(db, task)
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            request_digest=generation_request_service.digest_request_contract(
+                contract
+            ),
+            request_contract=contract,
+        )
+        product = db.scalar(select(Product).where(Product.sku == "SOFA-DRIFT"))
+        product.data_version = "catalog-v2"
+        product.record_version = 2
+        db.commit()
+        run_id = run.id
+
+    calls = 0
+
+    def executor(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("目录漂移后不得调用生成器")
+
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+
+    assert generation_worker.process_one_run(
+        worker_id="agent-worker-request-drift",
+        executor=executor,
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        failed = db.get(GenerationRun, run_id)
+        assert failed.status == "failed"
+        assert failed.next_retry_at is None
+        assert "请求摘要" in failed.error_message
+    assert calls == 0
+
+
+def test_worker_rejects_request_drift_before_result_persistence(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(
+            status="confirmed",
+            confirmed_requirement_json={"budget_max": 10_000},
+        )
+        db.add(task)
+        db.flush()
+        contract = generation_request_service.build_request_contract(db, task)
+        request_digest = generation_request_service.digest_request_contract(contract)
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            request_digest=request_digest,
+            request_contract=contract,
+        )
+        db.commit()
+        run_id = run.id
+
+    digest_calls = 0
+
+    def digest_changed_during_execution(_db, _task):
+        nonlocal digest_calls
+        digest_calls += 1
+        if digest_calls == 1:
+            return request_digest
+        return "sha256:" + "f" * 64
+
+    def executor(_db, *, before_persist, **_kwargs):
+        before_persist()
+        raise AssertionError("输入漂移后不得持久化生成结果")
+
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+    monkeypatch.setattr(
+        generation_worker.generation_request_service,
+        "build_request_digest",
+        digest_changed_during_execution,
+    )
+
+    assert generation_worker.process_one_run(
+        worker_id="agent-worker-result-drift",
+        executor=executor,
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        failed = db.get(GenerationRun, run_id)
+        assert failed.status == "failed"
+        assert failed.next_retry_at is None
+        assert "结果提交前" in failed.error_message
+        assert failed.result_revision_id is None
+    assert digest_calls == 2
+
+
+def test_worker_rejects_tampered_frozen_request_evidence(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as db:
+        task = DesignTask(
+            status="confirmed",
+            confirmed_requirement_json={"budget_max": 10_000},
+        )
+        db.add(task)
+        db.flush()
+        contract = generation_request_service.build_request_contract(db, task)
+        request_digest = generation_request_service.digest_request_contract(contract)
+        run = generation_run_service.create_run(
+            db,
+            task=task,
+            request_digest=request_digest,
+            request_contract=contract,
+        )
+        db.flush()
+        evidence = db.scalar(
+            select(GenerationRunEvent).where(
+                GenerationRunEvent.run_id == run.id,
+                GenerationRunEvent.node == "request_contract",
+            )
+        )
+        evidence.detail_json = {
+            **evidence.detail_json,
+            "request_digest": "sha256:" + "0" * 64,
+        }
+        db.commit()
+        run_id = run.id
+
+    calls = 0
+
+    def executor(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("冻结请求证据损坏后不得调用生成器")
+
+    monkeypatch.setattr(generation_worker, "SessionLocal", factory)
+
+    assert generation_worker.process_one_run(
+        worker_id="agent-worker-tampered-evidence",
+        executor=executor,
+        start_heartbeat=False,
+    )
+    with factory() as db:
+        failed = db.get(GenerationRun, run_id)
+        assert failed.status == "failed"
+        assert failed.next_retry_at is None
+        assert "冻结凭证无效" in failed.error_message
+    assert calls == 0
 
 
 def test_worker_success_completes_bound_agent_checkpoint(monkeypatch):
@@ -379,7 +571,7 @@ def test_worker_commits_known_model_cost_before_later_execution_failure(
     with factory() as db:
         failed = db.get(GenerationRun, run_id)
         assert failed is not None
-        assert failed.status == "queued"
+        assert failed.status == "dead_letter"
         assert failed.usage_json["total_tokens"] == 125
         assert failed.cost_cny == pytest.approx(0.0004)
 
@@ -451,7 +643,7 @@ def test_worker_budget_replan_exhaustion_moves_agent_to_explicit_needs_human(
     monkeypatch.setattr(
         task_routes.catalog_service,
         "build_catalog_context",
-        lambda _: "SOFA-001|测试沙发",
+        lambda _db, **_kwargs: "SOFA-001|测试沙发",
     )
     monkeypatch.setattr(
         task_routes.llm_service,
@@ -594,7 +786,7 @@ def test_worker_budget_replan_success_completes_same_run_and_checkpoint(monkeypa
     monkeypatch.setattr(
         task_routes.catalog_service,
         "build_catalog_context",
-        lambda _: "SOFA-001|测试沙发",
+        lambda _db, **_kwargs: "SOFA-001|测试沙发",
     )
     monkeypatch.setattr(task_routes.llm_service, "last_generation_meta", lambda: None)
 
@@ -681,7 +873,7 @@ def test_worker_static_version_drift_during_budget_replan_fails_without_retry(
     monkeypatch.setattr(
         task_routes.catalog_service,
         "build_catalog_context",
-        lambda _: "SOFA-001|测试沙发",
+        lambda _db, **_kwargs: "SOFA-001|测试沙发",
     )
     monkeypatch.setattr(
         task_routes.llm_service,
@@ -721,7 +913,7 @@ def test_worker_static_version_drift_during_budget_replan_fails_without_retry(
 @pytest.mark.parametrize(
     ("boundary", "lease_seconds", "timeout_seconds", "advance_seconds", "expected"),
     [
-        ("lease", 10, 120, 11, "queued"),
+        ("lease", 10, 120, 11, "dead_letter"),
         ("deadline", 120, 10, 11, "dead_letter"),
     ],
 )
@@ -788,7 +980,7 @@ def test_budget_replan_never_starts_after_worker_boundary_expires(
     monkeypatch.setattr(
         task_routes.catalog_service,
         "build_catalog_context",
-        lambda _: "SOFA-001|测试沙发",
+        lambda _db, **_kwargs: "SOFA-001|测试沙发",
     )
     monkeypatch.setattr(
         task_routes.llm_service,
@@ -1246,5 +1438,5 @@ def test_worker_code_error_does_not_increment_provider_circuit(monkeypatch):
         failed = db.get(type(run), run_id)
         state = circuit_service.get_provider_state(db, "primary-llm")
         assert failed is not None
-        assert failed.status == "queued"
+        assert failed.status == "dead_letter"
         assert state is None

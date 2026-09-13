@@ -23,7 +23,7 @@ from app.schemas.scenes import (
     Transform,
     Vector3,
 )
-from app.services.layout_evaluator import LayoutScore, evaluate_layout
+from app.services.layout_evaluator import LayoutScore
 from app.services.layout_repair import repair_layout
 
 # 贴墙安全边距（米）

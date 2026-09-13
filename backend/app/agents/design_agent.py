@@ -380,6 +380,7 @@ class DesignAgentWorkflow:
         execute_custom: AgentTool | None = None,
         execute_open_geometry: AgentTool | None = None,
         execute_action_plan: AgentTool | None = None,
+        resolve_facts: AgentTool | None = None,
         max_steps: int = 12,
         max_retries: int = 2,
         checkpointer: BaseCheckpointSaver | None = None,
@@ -392,6 +393,7 @@ class DesignAgentWorkflow:
         self._execute_custom = execute_custom
         self._execute_open_geometry = execute_open_geometry
         self._execute_action_plan = execute_action_plan
+        self._resolve_facts = resolve_facts
         self._max_steps = max_steps
         self._max_retries = max_retries
         self._checkpointer = checkpointer
@@ -516,6 +518,17 @@ class DesignAgentWorkflow:
         if update.get("exit_reason"):
             return update
 
+        if self._resolve_facts is not None and state["intent"] in {
+            "design", "catalog_search", "room_reconstruction"
+        }:
+            if self._turn_timed_out(state):
+                return self._timeout_result(update, tool_name="fact_extraction")
+            resolved = self._resolve_facts(state)
+            if self._turn_timed_out(state):
+                return self._timeout_result(update, tool_name="fact_extraction")
+            update.update(resolved)
+            state = {**state, **resolved}
+
         missing: list[str] = []
         facts = state.get("facts", {})
         if state["intent"] == "design":
@@ -553,6 +566,8 @@ class DesignAgentWorkflow:
 
     @staticmethod
     def _route_after_fact_check(state: DesignAgentState) -> str:
+        if "tool_timeout" in state.get("hard_errors", []):
+            return "escalate"
         if state.get("exit_reason") == "safety_blocked":
             return "escalate"
         if (

@@ -25,7 +25,12 @@ from app.schemas.open_geometry import (
     SweepGeometry,
 )
 from app.core.config import settings
-from app.services import aggregate_lock_service, llm_service, task_timeline_service
+from app.services import (
+    aggregate_lock_service,
+    llm_service,
+    model_call_governance_service,
+    task_timeline_service,
+)
 from app.services.open_geometry_contract import open_geometry_contract, open_geometry_skill_prompt
 
 
@@ -607,7 +612,14 @@ def apply_command(
     state = _state_for_task(task)
     if state["current_version"] != base_version:
         raise OpenGeometryVersionConflict(state["current_version"])
-    with llm_service.capture_model_call() as model_capture:
+    with (
+        model_call_governance_service.govern_task_model_calls(
+            db,
+            task_id=task_id,
+            operation_key=f"open-geometry:{client_mutation_id}",
+        ),
+        llm_service.capture_model_call() as model_capture,
+    ):
         try:
             prepared = prepare_command(
                 instruction=instruction,

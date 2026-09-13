@@ -14,7 +14,6 @@ from app.db.models import (
     DesignFeedbackEvent,
     DesignPlanVersion,
     DesignRevision,
-    DesignScene,
     Product,
 )
 from app.schemas.feedback import DesignFeedbackEventRequest
@@ -350,11 +349,14 @@ def mutate_plan(db: Session, *, task, payload: PlanMutationRequest):
         task=task,
         plans=plans,
         generator="workspace_edit",
+        requirement_snapshot=deepcopy(latest.requirement_snapshot or {}),
         workflow_trace=[
             {
                 "node": "workspace_plan_mutation",
                 "action": payload.action,
                 "plan_key": source_plan.plan_key,
+                "source_revision_id": latest.id,
+                "source_revision_version": latest.version,
             }
         ],
     )

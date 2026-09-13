@@ -39,6 +39,7 @@ SENSITIVE_PATHS: Mapping[str, tuple[str, ...]] = {
     "model": (
         "backend/app/core/config.py",
         "backend/app/services/llm_service.py",
+        "backend/app/services/model_call_governance_service.py",
         "backend/app/services/sd_service.py",
     ),
     "prompt": (
@@ -52,7 +53,16 @@ SENSITIVE_PATHS: Mapping[str, tuple[str, ...]] = {
         "backend/compile_active_catalog.py",
         "backend/import_products.py",
         "backend/app/services/catalog_service.py",
+        "backend/app/services/custom_quote_evidence_service.py",
+        "backend/app/services/generation_constraints_service.py",
+        "backend/app/services/generation_request_service.py",
+        "backend/app/services/generation_source_service.py",
+        "backend/app/services/frozen_product_eligibility_service.py",
+        "backend/app/services/plan_delivery_service.py",
+        "backend/app/services/plan_traceability_audit_service.py",
         "backend/app/services/custom_furniture_service.py",
+        "backend/app/schemas/product_eligibility.py",
+        "backend/app/schemas/custom_quote_evidence.py",
         "backend/app/schemas/custom_furniture.py",
         "backend/migrations/versions/",
     ),
@@ -68,6 +78,12 @@ SENSITIVE_PATHS: Mapping[str, tuple[str, ...]] = {
         "backend/evals/open_geometry.py",
         "backend/evals/run_open_geometry_eval.py",
         "backend/evals/cases/open_geometry.py",
+    ),
+    "action_plan": (
+        "backend/app/schemas/agent_action_plan.py",
+        "backend/evals/agent_action_plan.py",
+        "backend/evals/run_agent_action_plan_eval.py",
+        "backend/evals/cases/agent_action_plan.py",
     ),
     "release": (
         "backend/evals/release_change_detection.py",

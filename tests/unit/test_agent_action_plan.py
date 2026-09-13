@@ -178,7 +178,15 @@ def test_action_planner_has_one_bounded_model_call_and_strict_output(monkeypatch
     monkeypatch.setattr(llm_service, "_chat_json", chat)
     plan = llm_service.plan_agent_actions(
         instruction="把刚做的椅子靠窗移动",
-        context={"scene": {"id": 9, "version": 3}},
+        context={
+            "scene": {
+                "id": 9,
+                "version": 3,
+                "openings": [{"id": "window-east", "type": "window"}],
+            },
+            "selectedInstanceId": "chair-a",
+            "openGeometryItems": [{"instanceId": "chair-a"}],
+        },
     )
 
     assert plan.steps[0].tool == "scene.move_item"
@@ -200,3 +208,164 @@ def test_action_planner_has_one_bounded_model_call_and_strict_output(monkeypatch
             instruction="执行脚本",
             context={"scene": {"id": 9, "version": 3}},
         )
+
+
+def test_action_planner_fails_closed_to_clarification_for_ambiguous_move(monkeypatch):
+    monkeypatch.setattr(
+        llm_service,
+        "_chat_json",
+        lambda *_args, **_kwargs: {
+            "schemaVersion": "agent-action-plan/1.0",
+            "outcome": "execute",
+            "summary": "移动其中一把椅子",
+            "steps": [
+                {
+                    "id": "move",
+                    "tool": "scene.move_item",
+                    "instanceId": "chair-a",
+                    "placement": {"kind": "room_center"},
+                }
+            ],
+        },
+    )
+    context = {
+        "scene": {"openings": []},
+        "selectedInstanceId": None,
+        "openGeometryItems": [
+            {"instanceId": "chair-a"},
+            {"instanceId": "chair-b"},
+        ],
+    }
+
+    plan = llm_service.plan_agent_actions(
+        instruction="把那把椅子移到中间",
+        context=context,
+    )
+
+    assert plan.outcome == "clarify"
+    assert plan.question.field == "target_instance"
+    assert plan.question.candidate_ids == ["chair-a", "chair-b"]
+    assert plan.steps == []
+
+
+@pytest.mark.parametrize(
+    ("selected_instance_id", "instance_id", "opening_id", "field"),
+    [
+        ("chair-a", "invented-chair", None, "target_instance"),
+        ("chair-a", "chair-b", None, "target_instance"),
+        ("chair-a", "chair-a", "invented-window", "opening"),
+    ],
+)
+def test_action_planner_rejects_untrusted_context_references(
+    monkeypatch,
+    selected_instance_id,
+    instance_id,
+    opening_id,
+    field,
+):
+    placement = (
+        {"kind": "near_opening", "openingId": opening_id}
+        if opening_id
+        else {"kind": "room_center"}
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "_chat_json",
+        lambda *_args, **_kwargs: {
+            "schemaVersion": "agent-action-plan/1.0",
+            "outcome": "execute",
+            "summary": "移动家具",
+            "steps": [
+                {
+                    "id": "move",
+                    "tool": "scene.move_item",
+                    "instanceId": instance_id,
+                    "placement": placement,
+                }
+            ],
+        },
+    )
+    context = {
+        "scene": {"openings": [{"id": "window-east", "type": "window"}]},
+        "selectedInstanceId": selected_instance_id,
+        "openGeometryItems": [
+            {"instanceId": "chair-a"},
+            {"instanceId": "chair-b"},
+        ],
+    }
+
+    plan = llm_service.plan_agent_actions(
+        instruction="移动家具",
+        context=context,
+    )
+
+    assert plan.outcome == "clarify"
+    assert plan.question.field == field
+    assert plan.steps == []
+
+
+def test_action_planner_normalizes_unsupported_reason_code(monkeypatch):
+    monkeypatch.setattr(
+        llm_service,
+        "_chat_json",
+        lambda *_args, **_kwargs: {
+            "schemaVersion": "agent-action-plan/1.0",
+            "outcome": "unsupported",
+            "summary": "当前工具白名单不支持",
+            "steps": [],
+            "reasonCode": "model_invented_reason",
+        },
+    )
+
+    plan = llm_service.plan_agent_actions(
+        instruction="生成施工刀路",
+        context={"scene": {"openings": []}, "openGeometryItems": []},
+    )
+
+    assert plan.outcome == "unsupported"
+    assert plan.reason_code == "unsupported_action"
+
+
+def test_action_planner_rejects_unknown_opening_for_new_geometry_placement(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        llm_service,
+        "_chat_json",
+        lambda *_args, **_kwargs: {
+            "schemaVersion": "agent-action-plan/1.0",
+            "outcome": "execute",
+            "summary": "创建椅子并靠窗摆放",
+            "steps": [
+                {
+                    "id": "shape",
+                    "tool": "open_geometry.edit",
+                    "instruction": "创建一把椅子",
+                },
+                {
+                    "id": "place",
+                    "tool": "scene.place_open_geometry",
+                    "dependsOn": ["shape"],
+                    "placement": {
+                        "kind": "near_opening",
+                        "openingId": "invented-window",
+                    },
+                },
+            ],
+        },
+    )
+
+    plan = llm_service.plan_agent_actions(
+        instruction="创建一把椅子并靠窗摆放",
+        context={
+            "scene": {
+                "openings": [{"id": "window-east", "type": "window"}],
+            },
+            "openGeometryItems": [],
+        },
+    )
+
+    assert plan.outcome == "clarify"
+    assert plan.question.field == "opening"
+    assert plan.question.candidate_ids == ["window-east"]
+    assert plan.steps == []

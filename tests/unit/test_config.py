@@ -85,6 +85,15 @@ def test_effect_render_worker_heartbeat_must_fit_lease_and_deadline():
         )
 
 
+def test_worker_presence_heartbeat_must_be_shorter_than_readiness_timeout():
+    with pytest.raises(ValidationError, match="就绪"):
+        Settings(
+            _env_file=None,
+            worker_presence_heartbeat_seconds=30,
+            worker_readiness_timeout_seconds=30,
+        )
+
+
 def test_design_agent_turn_lease_must_be_positive_and_bounded():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, design_agent_turn_lease_seconds=0)
@@ -165,10 +174,38 @@ def test_production_accepts_explicit_safe_configuration():
         ),
         jwt_secret_key="a-production-jwt-secret-with-at-least-32-characters",
         cors_origins="https://app.example.com",
+        llm_api_key="production-llm-key",
+        llm_input_price_per_mtok=1.0,
+        llm_output_price_per_mtok=2.0,
+        vl_api_key="production-vl-key",
+        vl_input_price_per_mtok=1.0,
+        vl_output_price_per_mtok=2.0,
     )
 
     assert config.app_env == "production"
     assert config.cors_origin_list == ["https://app.example.com"]
+
+
+def test_production_requires_both_model_credentials_and_prices():
+    common = {
+        "_env_file": None,
+        "app_env": "production",
+        "app_debug": False,
+        "database_url": (
+            "mysql+pymysql://haus_app:a-strong-database-password@db:3306/houseproject_db"
+        ),
+        "jwt_secret_key": "a-production-jwt-secret-with-at-least-32-characters",
+        "cors_origins": "https://app.example.com",
+        "llm_input_price_per_mtok": 1.0,
+        "llm_output_price_per_mtok": 2.0,
+        "vl_input_price_per_mtok": 1.0,
+        "vl_output_price_per_mtok": 2.0,
+    }
+
+    with pytest.raises(ValidationError, match="LLM_API_KEY"):
+        Settings(**common, vl_api_key="production-vl-key")
+    with pytest.raises(ValidationError, match="VL_API_KEY"):
+        Settings(**common, llm_api_key="production-llm-key")
 
 
 def test_production_rejects_inline_generation_fallback():

@@ -3,7 +3,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.db.database import Base
-from app.db.models import Order, OrderQuote, User
+from app.db.models import OrderQuote, User
 from app.services import order_service
 
 

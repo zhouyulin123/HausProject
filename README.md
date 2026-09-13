@@ -6,6 +6,8 @@
 
 ## 当前状态
 
+本轮按“开发版 v1 功能闭环”收尾，先暂停新增功能。推荐从 [`开发版v1交接与阅读指南.md`](./开发版v1交接与阅读指南.md) 的运行步骤、演示案例和代码阅读顺序开始；开发数据不等于真实业务验收。
+
 - 用户主流程已统一到设计工作台，覆盖需求确认、Agent 执行、方案、场景、报价、渲染和反馈。
 - 方案生成、效果图和 Blender 渲染使用数据库持久化 Worker，支持租约、心跳、取消、重试和死信。
 - 工程回归、权限隔离和发布证据链已经建立。
@@ -169,7 +171,7 @@ python -m alembic upgrade head
 python -m app.run_api --port 8081
 ```
 
-按需要启动异步 Worker：
+必须分别启动三个异步 Worker：
 
 ```powershell
 Set-Location backend
@@ -178,7 +180,7 @@ python -m app.workers.effect_render_worker
 python -m app.workers.blender_worker
 ```
 
-生产环境应由进程管理器分别监管 API 和 Worker，不要依赖本地批处理脚本维持服务。
+生产环境应由进程管理器分别监管 API 和 Worker，不要依赖本地批处理脚本维持服务。仓库根目录 `Procfile` 定义了迁移、API 与三个 Worker 的独立进程类型；部署平台必须为 `web`、`worker-generation`、`worker-effect-render`、`worker-blender` 各保持至少一个实例，并在进程异常退出后自动重启。迁移应由 `release` 进程只执行一次，不能由多个 Worker 并发执行。
 
 ## 验证命令
 
@@ -205,6 +207,15 @@ $env:PYTHONPATH = "backend"
 python -m evals.run_open_geometry_eval --output .test_artifacts/open_geometry_eval.json
 ```
 
+统一家具与场景动作规划合成开发评测（验证严格输出、引用完整性和歧义失败关闭；不代表真实用户质量）：
+
+```powershell
+$env:PYTHONPATH = "backend"
+python -m evals.run_agent_action_plan_eval --output .test_artifacts/agent_action_plan_eval.json
+```
+
+只有在明确需要验证当前真实文本模型时才增加 `--online`。在线报告仍属于合成开发集，不得替代阶段 4 的授权真实案例、人工标注和盲测结果。
+
 前端完整验证：
 
 ```powershell
@@ -213,13 +224,15 @@ npm --prefix frontend test
 npm --prefix frontend run build
 ```
 
-GitHub Actions 会执行 Python 依赖检查、开放几何工程契约评测、后端测试、前端类型检查、测试和生产构建。模型、提示词、布局规则、开放几何契约/渲染器或商品数据契约发生变化时，发布前还必须在受控环境运行真实案例门禁。
+GitHub Actions 会执行 Python 依赖检查、开放几何与动作规划工程契约评测、后端测试、前端类型检查、测试和生产构建。模型、提示词、布局规则、开放几何契约/渲染器或商品数据契约发生变化时，发布前还必须在受控环境运行真实案例门禁。
 
 ## 生产安全边界
 
 - `APP_ENV=production` 时，应用会拒绝调试模式、默认 JWT 密钥、弱数据库凭据和本地 CORS 地址。
 - 登录默认使用 HttpOnly、SameSite Cookie；Bearer JWT 仅用于旧客户端迁移和接口调试。
-- `/health` 只表示进程存活；`/ready` 还会检查数据库版本和上传目录，部署系统应以 `/ready` 作为接流量依据。
+- `/health` 只表示 API 进程存活；`/ready` 还会检查数据库版本、上传目录，以及方案生成、效果图和 Blender 三类 Worker 是否在超时窗口内持续上报心跳。任一必需 Worker 缺失、心跳过期或心跳查询失败都会返回 503，部署系统应以 `/ready` 作为接流量依据。
+- 生产环境必须同时配置文本模型、视觉模型的密钥和输入/输出 token 单价，否则配置校验拒绝启动；`/ready` 也会对两类模型失败关闭。开发环境允许在缺少模型配置时启动非 AI 功能，但 `checks.llm` / `checks.vl` 会显示 `not_configured` 或 `cost_guard_unconfigured`，对应真实模型调用会在请求供应商前被阻断。
+- `WORKER_PRESENCE_HEARTBEAT_SECONDS` 默认 10 秒，`WORKER_READINESS_TIMEOUT_SECONDS` 默认 45 秒，前者必须严格小于后者。就绪响应只提供各类型的新鲜实例数与最近心跳时间，不暴露 Worker 标识。
 - 未审核商品资产不能进入正式方案和 Blender 交付路径。
 - 真实案例、评测证据和用户原始内容不得写入公开持续集成制品。
 

@@ -17,6 +17,8 @@ from app.db.models import (
     GenerationRun,
     GenerationRunEvent,
     LayoutRun,
+    ModelCallCostAccount,
+    ModelCallLedger,
 )
 from app.services.quality_metrics_service import build_quality_summary
 
@@ -81,6 +83,54 @@ def test_quality_summary_uses_explicit_denominators_and_no_user_content(db):
     )
     db.add_all([completed_turn, handoff_turn])
     db.flush()
+    account = ModelCallCostAccount(
+        scope_kind="task",
+        scope_id=str(task.id),
+        task_id=task.id,
+        cost_limit_cny=1.0,
+        allocated_cost_cny=0.35,
+        actual_cost_cny=0.25,
+        unknown_cost_call_count=1,
+        created_at=now,
+    )
+    db.add(account)
+    db.flush()
+    db.add_all(
+        [
+            ModelCallLedger(
+                account_id=account.id,
+                task_id=task.id,
+                operation_key="requirement:1",
+                call_index=1,
+                provider_key="primary-llm",
+                model="model-v1",
+                modality="text",
+                status="succeeded",
+                estimated_cost_cny=0.3,
+                actual_cost_cny=0.25,
+                billing_status="metered",
+                usage_json={"total_tokens": 150},
+                created_at=now,
+                completed_at=now,
+            ),
+            ModelCallLedger(
+                account_id=account.id,
+                task_id=task.id,
+                operation_key="agent:1",
+                call_index=1,
+                provider_key="primary-llm",
+                model="model-v1",
+                modality="text",
+                status="failed",
+                estimated_cost_cny=0.1,
+                billing_status="unknown",
+                usage_json={},
+                failure_code="timeout",
+                created_at=now,
+                completed_at=now,
+            ),
+        ]
+    )
     db.add_all(
         [
             DesignAgentEvent(
@@ -142,6 +192,16 @@ def test_quality_summary_uses_explicit_denominators_and_no_user_content(db):
     assert summary["agent"]["turn_total"] == 2
     assert summary["agent"]["handoff_total"] == 1
     assert summary["agent"]["handoff_rate"] == 0.5
+    assert summary["model_calls"] == {
+        "total": 2,
+        "succeeded": 1,
+        "failed": 1,
+        "blocked": 0,
+        "total_tokens": 150,
+        "known_actual_cost_cny": pytest.approx(0.25),
+        "unknown_cost_call_count": 1,
+        "provider_failures": {"primary-llm:timeout": 1},
+    }
     assert summary["failure_codes"] == {
         "budget_exceeded": 1,
         "generation_status_failed": 1,
@@ -498,3 +558,230 @@ def test_quality_summary_aggregates_anonymous_feedback_with_window_filter(db):
     assert "private-event" not in serialized
     assert "private-room" not in serialized
     assert "PRIVATE-SOURCE-SKU" not in serialized
+
+
+def test_quality_summary_groups_generation_metrics_by_exact_version_cohort(db):
+    now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    task = DesignTask(status="completed", progress=100)
+    db.add(task)
+    db.flush()
+
+    def add_run(
+        *,
+        attempt: int,
+        status: str,
+        versions: tuple[str | None, str | None, str | None, str | None],
+        generator: str | None = None,
+        duration_seconds: int | None = None,
+        total_tokens: object = 0,
+        cost_cny: float | None = 0,
+    ) -> None:
+        model, prompt_digest, rules_digest, data_digest = versions
+        db.add(
+            GenerationRun(
+                task_id=task.id,
+                attempt=attempt,
+                status=status,
+                progress=100,
+                generator=generator,
+                model=model,
+                prompt_digest=prompt_digest,
+                rules_digest=rules_digest,
+                data_digest=data_digest,
+                prompt_snapshot=f"PRIVATE-PROMPT-{attempt}",
+                input_snapshot={"private": f"PRIVATE-INPUT-{attempt}"},
+                usage_json={"total_tokens": total_tokens},
+                cost_cny=cost_cny,
+                started_at=(
+                    now - timedelta(seconds=duration_seconds)
+                    if duration_seconds is not None
+                    else None
+                ),
+                completed_at=now if duration_seconds is not None else None,
+                created_at=now,
+            )
+        )
+
+    complete = (
+        "model-a",
+        "sha256:prompt-a",
+        "sha256:rules-a",
+        "sha256:data-a",
+    )
+    legacy = (None, None, None, None)
+    partial = ("model-z", None, "sha256:rules-z", None)
+    samples = [
+        (1, "completed", complete, "llm", 1, 100, 0.10),
+        (2, "completed", complete, "template", 2, 200, None),
+        (3, "dead_letter", complete, None, 4, 30, 0.20),
+        (4, "provider_unavailable", complete, "template", 3, 20, -4.0),
+        (5, "queued", complete, None, None, 10, 0.0),
+        (6, "cancelled", complete, None, None, 5, None),
+        (7, "failed", legacy, None, 5, -2, None),
+        (8, "completed", legacy, "template", 1, 40, 0.40),
+        (9, "running", partial, None, None, 50, 0.05),
+        (10, "cancelled", partial, None, None, 0, 0.06),
+    ]
+    for (
+        attempt,
+        status,
+        versions,
+        generator,
+        duration_seconds,
+        total_tokens,
+        cost_cny,
+    ) in samples:
+        add_run(
+            attempt=attempt,
+            status=status,
+            versions=versions,
+            generator=generator,
+            duration_seconds=duration_seconds,
+            total_tokens=total_tokens,
+            cost_cny=cost_cny,
+        )
+    db.commit()
+
+    summary = build_quality_summary(
+        db,
+        now=now,
+        window_days=30,
+        version_cohort_limit=3,
+    )
+
+    cohorts = summary["version_cohorts"]
+    assert cohorts["total_cohorts"] == 3
+    assert cohorts["returned_cohorts"] == 3
+    assert cohorts["truncated"] is False
+    assert cohorts["items"] == [
+        {
+            "model": "model-a",
+            "prompt_digest": "sha256:prompt-a",
+            "rules_digest": "sha256:rules-a",
+            "data_digest": "sha256:data-a",
+            "version_complete": True,
+            "missing_dimensions": [],
+            "total": 6,
+            "completed": 2,
+            "failed": 2,
+            "cancelled": 1,
+            "active": 1,
+            "success_rate": pytest.approx(0.5),
+            "fallback_rate": pytest.approx(0.5),
+            "duration_p50_ms": 2500,
+            "duration_p95_ms": 3850,
+            "total_tokens": 365,
+            "known_cost_cny": pytest.approx(0.3),
+            "unknown_cost_run_count": 3,
+        },
+        {
+            "model": None,
+            "prompt_digest": None,
+            "rules_digest": None,
+            "data_digest": None,
+            "version_complete": False,
+            "missing_dimensions": [
+                "model",
+                "prompt_digest",
+                "rules_digest",
+                "data_digest",
+            ],
+            "total": 2,
+            "completed": 1,
+            "failed": 1,
+            "cancelled": 0,
+            "active": 0,
+            "success_rate": pytest.approx(0.5),
+            "fallback_rate": pytest.approx(1.0),
+            "duration_p50_ms": 3000,
+            "duration_p95_ms": 4800,
+            "total_tokens": 40,
+            "known_cost_cny": pytest.approx(0.4),
+            "unknown_cost_run_count": 1,
+        },
+        {
+            "model": "model-z",
+            "prompt_digest": None,
+            "rules_digest": "sha256:rules-z",
+            "data_digest": None,
+            "version_complete": False,
+            "missing_dimensions": ["prompt_digest", "data_digest"],
+            "total": 2,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 1,
+            "active": 1,
+            "success_rate": None,
+            "fallback_rate": None,
+            "duration_p50_ms": None,
+            "duration_p95_ms": None,
+            "total_tokens": 50,
+            "known_cost_cny": pytest.approx(0.11),
+            "unknown_cost_run_count": 0,
+        },
+    ]
+    serialized = str(cohorts)
+    assert "PRIVATE-PROMPT" not in serialized
+    assert "PRIVATE-INPUT" not in serialized
+
+    limited = build_quality_summary(
+        db,
+        now=now,
+        window_days=30,
+        version_cohort_limit=2,
+    )["version_cohorts"]
+    assert limited["total_cohorts"] == 3
+    assert limited["returned_cohorts"] == 2
+    assert limited["truncated"] is True
+    assert [item["model"] for item in limited["items"]] == ["model-a", None]
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+def test_quality_summary_rejects_invalid_version_cohort_limit(db, limit):
+    with pytest.raises(ValueError, match="version_cohort_limit"):
+        build_quality_summary(
+            db,
+            now=datetime(2026, 9, 1, tzinfo=timezone.utc),
+            version_cohort_limit=limit,
+        )
+
+
+def test_quality_summary_default_limit_keeps_null_and_empty_version_groups_exact(db):
+    now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    task = DesignTask(status="completed", progress=100)
+    db.add(task)
+    db.flush()
+    models = [None, "", *(f"model-{index:02d}" for index in range(2, 21))]
+    db.add_all(
+        [
+            GenerationRun(
+                task_id=task.id,
+                attempt=index,
+                status="queued",
+                progress=0,
+                model=model,
+                created_at=now,
+            )
+            for index, model in enumerate(models, start=1)
+        ]
+    )
+    db.commit()
+
+    cohorts = build_quality_summary(db, now=now)["version_cohorts"]
+
+    assert cohorts["total_cohorts"] == 21
+    assert cohorts["returned_cohorts"] == 20
+    assert cohorts["truncated"] is True
+    assert [item["model"] for item in cohorts["items"][:2]] == [None, ""]
+    assert cohorts["items"][0]["missing_dimensions"] == [
+        "model",
+        "prompt_digest",
+        "rules_digest",
+        "data_digest",
+    ]
+    assert cohorts["items"][1]["missing_dimensions"] == [
+        "model",
+        "prompt_digest",
+        "rules_digest",
+        "data_digest",
+    ]

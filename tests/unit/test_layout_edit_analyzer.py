@@ -103,7 +103,6 @@ def test_summarize_edits_ranks_most_edited_category():
 
 
 def test_analyze_manual_edits_from_db():
-    import pytest
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -169,7 +168,6 @@ def test_analyze_manual_edits_from_db():
 
 
 def test_analyze_manual_edits_without_auto_layout():
-    import pytest
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 

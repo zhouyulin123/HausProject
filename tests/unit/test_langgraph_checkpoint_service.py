@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from threading import Barrier, Thread
-from typing import Any
-
 import pytest
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import create_engine, func, select

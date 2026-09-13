@@ -253,6 +253,57 @@ def test_open_geometry_contract_and_renderer_changes_require_release_proof():
     assert len(changes.by_category["open_geometry"]) == 10
 
 
+def test_action_plan_eval_and_contract_changes_require_release_proof():
+    changes = classify_release_sensitive_paths(
+        [
+            "backend/app/schemas/agent_action_plan.py",
+            "backend/evals/agent_action_plan.py",
+            "backend/evals/run_agent_action_plan_eval.py",
+            "backend/evals/cases/agent_action_plan.py",
+        ]
+    )
+
+    assert changes.required is True
+    assert len(changes.by_category["action_plan"]) == 4
+
+
+def test_generation_constraints_are_release_sensitive_catalog_logic():
+    changes = classify_release_sensitive_paths(
+        ["backend/app/services/generation_constraints_service.py"]
+    )
+
+    assert changes.required is True
+    assert changes.by_category["data"] == (
+        "backend/app/services/generation_constraints_service.py",
+    )
+
+
+def test_model_call_governance_changes_require_release_proof():
+    path = "backend/app/services/model_call_governance_service.py"
+    changes = classify_release_sensitive_paths([path])
+
+    assert changes.required is True
+    assert changes.by_category["model"] == (path,)
+
+
+def test_delivery_eligibility_rules_require_release_proof():
+    paths = [
+        "backend/app/schemas/custom_quote_evidence.py",
+        "backend/app/schemas/product_eligibility.py",
+        "backend/app/services/custom_quote_evidence_service.py",
+        "backend/app/services/frozen_product_eligibility_service.py",
+        "backend/app/services/generation_request_service.py",
+        "backend/app/services/generation_source_service.py",
+        "backend/app/services/plan_delivery_service.py",
+        "backend/app/services/plan_traceability_audit_service.py",
+    ]
+
+    changes = classify_release_sensitive_paths(paths)
+
+    assert changes.required is True
+    assert changes.by_category["data"] == tuple(sorted(paths))
+
+
 def test_release_proof_rejects_tampering_and_wrong_key(tmp_path: Path):
     private_key_b64, public_key_b64 = _key_material()
     proof = _proof_payload(private_key_b64)

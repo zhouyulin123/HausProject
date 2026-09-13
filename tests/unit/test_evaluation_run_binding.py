@@ -1,4 +1,3 @@
-import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -264,6 +263,8 @@ def test_budget_replan_preserves_initial_evaluation_input_and_provenance(
             "provenance_schema_version",
         )
     }
+    assert '"budget_max": 20000' in frozen["input_snapshot"]["user"]
+    assert "【本次已确认生成硬约束】" in frozen["input_snapshot"]["user"]
     totals = iter((25_000, 19_000))
     generation_inputs: list[dict] = []
 

@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from hashlib import sha256
 import json
 import logging
 import math
@@ -66,6 +67,11 @@ class ProviderCallHooks:
 
 _provider_call_hooks: ContextVar[ProviderCallHooks | None] = ContextVar(
     "provider_call_hooks",
+    default=None,
+)
+
+_model_call_governance_hooks: ContextVar[Any | None] = ContextVar(
+    "model_call_governance_hooks",
     default=None,
 )
 
@@ -150,11 +156,16 @@ def estimate_model_call_cost_ceiling_cny(
     max_tokens: int,
     input_price_per_mtok: Optional[float],
     output_price_per_mtok: Optional[float],
+    prompt_token_ceiling: int | None = None,
 ) -> Optional[float]:
     """按输入字节上界和最大输出 token 计算保守调用成本。"""
     if input_price_per_mtok is None or output_price_per_mtok is None:
         return None
-    prompt_token_ceiling = len((system + user).encode("utf-8")) + 256
+    prompt_token_ceiling = (
+        prompt_token_ceiling
+        if prompt_token_ceiling is not None
+        else len((system + user).encode("utf-8")) + 256
+    )
     raw_cost = (
         prompt_token_ceiling * input_price_per_mtok
         + max(0, max_tokens) * output_price_per_mtok
@@ -180,6 +191,16 @@ def provider_call_guard(hooks: ProviderCallHooks) -> Iterator[None]:
         yield
     finally:
         _provider_call_hooks.reset(token)
+
+
+@contextmanager
+def model_call_governance(hooks: Any) -> Iterator[None]:
+    """注入逐次模型调用成本账本；调用方负责提供持久化实现。"""
+    token = _model_call_governance_hooks.set(hooks)
+    try:
+        yield
+    finally:
+        _model_call_governance_hooks.reset(token)
 
 
 def provider_failure_code(exc: Exception) -> str | None:
@@ -224,6 +245,130 @@ def get_vl_client() -> OpenAI:
     return _vl_client
 
 
+def _usage_dict(usage: Any) -> dict[str, int]:
+    if usage is None:
+        return {}
+    return {
+        "prompt_tokens": int(usage.prompt_tokens),
+        "completion_tokens": int(usage.completion_tokens),
+        "total_tokens": int(usage.total_tokens),
+    }
+
+
+def _governed_chat_completion(
+    *,
+    client: OpenAI,
+    provider_key: str,
+    model: str,
+    modality: str,
+    messages: list[dict[str, Any]],
+    input_cost_basis: str,
+    max_tokens: int,
+    temperature: float,
+    input_price_per_mtok: float | None,
+    output_price_per_mtok: float | None,
+    prompt_token_ceiling: int | None = None,
+    response_format: dict[str, str] | None = None,
+):
+    provider_hooks = _provider_call_hooks.get()
+    provider_permit = None
+    governance_hooks = _model_call_governance_hooks.get()
+    governance_permit = None
+    estimated_cost = estimate_model_call_cost_ceiling_cny(
+        system="",
+        user=input_cost_basis,
+        max_tokens=max_tokens,
+        input_price_per_mtok=input_price_per_mtok,
+        output_price_per_mtok=output_price_per_mtok,
+        prompt_token_ceiling=prompt_token_ceiling,
+    )
+    guard = _model_cost_guard.get()
+    try:
+        if guard is not None:
+            guard(estimated_cost)
+    except Exception:
+        if provider_hooks is not None and provider_permit is not None:
+            provider_hooks.release_call(provider_permit)
+        raise
+    try:
+        if governance_hooks is not None:
+            governance_permit = governance_hooks.before_call(
+                provider_key=provider_key,
+                model=model,
+                modality=modality,
+                estimated_cost_cny=estimated_cost,
+            )
+    except Exception as exc:
+        if isinstance(exc, LLMUnavailable):
+            raise
+        raise LLMUnavailable(str(exc)) from exc
+    try:
+        if provider_hooks is not None:
+            provider_permit = provider_hooks.before_call(provider_key)
+    except Exception as exc:
+        if governance_hooks is not None and governance_permit is not None:
+            record_blocked = getattr(governance_hooks, "record_blocked", None)
+            if callable(record_blocked):
+                record_blocked(
+                    governance_permit,
+                    failure_code=getattr(exc, "code", "provider_circuit_open"),
+                )
+            else:
+                governance_hooks.record_failure(
+                    governance_permit,
+                    failure_code=getattr(exc, "code", "provider_circuit_open"),
+                )
+        raise
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        **_provider_request_kwargs(),
+    }
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+    try:
+        _mark_model_call_attempted()
+        response = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        failure_code = provider_failure_code(exc)
+        try:
+            if governance_hooks is not None and governance_permit is not None:
+                governance_hooks.record_failure(
+                    governance_permit,
+                    failure_code=failure_code or "provider_error",
+                )
+        finally:
+            if provider_hooks is not None and provider_permit is not None:
+                if failure_code is not None:
+                    provider_hooks.record_failure(provider_permit, failure_code)
+                else:
+                    provider_hooks.release_call(provider_permit)
+        logger.warning("模型供应商调用失败: %s", exc)
+        raise LLMUnavailable(str(exc)) from exc
+
+    usage = _usage_dict(getattr(response, "usage", None))
+    actual_cost = estimate_cost_cny(
+        usage,
+        input_price_per_mtok,
+        output_price_per_mtok,
+    )
+    try:
+        if governance_hooks is not None and governance_permit is not None:
+            governance_hooks.record_success(
+                governance_permit,
+                usage=usage,
+                actual_cost_cny=actual_cost,
+            )
+    finally:
+        if provider_hooks is not None and provider_permit is not None:
+            provider_hooks.record_success(provider_permit)
+    _capture_model_usage(getattr(response, "usage", None))
+    return response
+
+
 def _chat_json(
     system: str,
     user: str,
@@ -233,54 +378,25 @@ def _chat_json(
 ) -> Dict[str, Any]:
     """调用 DeepSeek 并解析 JSON 输出。usage_out 传入时写入 token 用量。"""
     client = get_client()
-    provider_hooks = _provider_call_hooks.get()
-    provider_permit = None
-    if provider_hooks is not None:
-        provider_permit = provider_hooks.before_call(settings.llm_provider_key)
-    guard = _model_cost_guard.get()
     try:
-        if guard is not None:
-            guard(
-                estimate_model_call_cost_ceiling_cny(
-                    system=system,
-                    user=user,
-                    max_tokens=max_tokens,
-                    input_price_per_mtok=settings.llm_input_price_per_mtok,
-                    output_price_per_mtok=settings.llm_output_price_per_mtok,
-                )
-            )
-    except Exception:
-        if provider_hooks is not None and provider_permit is not None:
-            provider_hooks.release_call(provider_permit)
-        raise
-    try:
-        _mark_model_call_attempted()
-        resp = client.chat.completions.create(
+        resp = _governed_chat_completion(
+            client=client,
+            provider_key=settings.llm_provider_key,
             model=settings.llm_model,
+            modality="text",
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            response_format={"type": "json_object"},
+            input_cost_basis=system + user,
             max_tokens=max_tokens,
             temperature=temperature,
-            **_provider_request_kwargs(),
+            input_price_per_mtok=settings.llm_input_price_per_mtok,
+            output_price_per_mtok=settings.llm_output_price_per_mtok,
+            response_format={"type": "json_object"},
         )
     except LLMUnavailable:
         raise
-    except Exception as exc:
-        failure_code = provider_failure_code(exc)
-        if provider_hooks is not None and provider_permit is not None:
-            if failure_code is not None:
-                provider_hooks.record_failure(provider_permit, failure_code)
-            else:
-                provider_hooks.release_call(provider_permit)
-        logger.warning("LLM 调用失败: %s", exc)
-        raise LLMUnavailable(str(exc)) from exc
-
-    if provider_hooks is not None and provider_permit is not None:
-        provider_hooks.record_success(provider_permit)
-    _capture_model_usage(getattr(resp, "usage", None))
     try:
         if usage_out is not None and resp.usage is not None:
             usage_out.update(
@@ -350,15 +466,18 @@ def chat_reply(
     messages.append({"role": "user", "content": message})
 
     try:
-        _mark_model_call_attempted()
-        resp = get_client().chat.completions.create(
+        resp = _governed_chat_completion(
+            client=get_client(),
+            provider_key=settings.llm_provider_key,
             model=settings.llm_model,
+            modality="text",
             messages=messages,
+            input_cost_basis=json.dumps(messages, ensure_ascii=False),
             max_tokens=500,
             temperature=0.8,
-            **_provider_request_kwargs(),
+            input_price_per_mtok=settings.llm_input_price_per_mtok,
+            output_price_per_mtok=settings.llm_output_price_per_mtok,
         )
-        _capture_model_usage(getattr(resp, "usage", None))
         return resp.choices[0].message.content.strip()
     except LLMUnavailable:
         raise
@@ -661,7 +780,108 @@ scene、instanceId 或 openingId。只允许 Schema 中声明的白名单工具�
 创建或修改开放几何家具后再放进房间时，放置步骤必须依赖几何步骤。
 “房间中间”使用 room_center；“靠窗/靠门”必须选择现有 openingId 并使用 near_opening；
 明确坐标才使用 explicit。指代不能由 selectedInstanceId、最近开放几何实例或唯一候选
-可靠消解时返回 clarify；能力超出白名单时返回 unsupported。不得输出代码或额外字段。"""
+可靠消解时返回 clarify；能力超出白名单时返回 unsupported，reasonCode 固定为
+unsupported_action。不得输出代码或额外字段。"""
+
+_AGENT_ACTION_PLANNER_PROMPT_VERSION = "agent-action-planner/1.0"
+_AGENT_ACTION_CONTEXT_POLICY_VERSION = "agent-action-context-policy/1.0"
+
+
+def agent_action_planner_prompt_snapshot() -> Dict[str, str]:
+    """返回可公开比较的 Prompt 版本和摘要，不返回 Prompt 正文。"""
+    return {
+        "version": _AGENT_ACTION_PLANNER_PROMPT_VERSION,
+        "digest": f"sha256:{sha256(_AGENT_ACTION_PLANNER_SYSTEM.encode('utf-8')).hexdigest()}",
+        "context_policy_version": _AGENT_ACTION_CONTEXT_POLICY_VERSION,
+    }
+
+
+def _enforce_agent_action_plan_context(plan, context: Dict[str, Any]):
+    """对模型计划做确定性引用消解；无法证明唯一目标时转为追问。"""
+    from app.schemas.agent_action_plan import (
+        AgentActionPlan,
+        MoveSceneItemAction,
+        NearOpeningPlacement,
+    )
+
+    if plan.outcome == "unsupported":
+        return plan.model_copy(update={"reason_code": "unsupported_action"})
+    if plan.outcome != "execute":
+        return plan
+
+    raw_items = context.get("openGeometryItems")
+    items = raw_items if isinstance(raw_items, list) else []
+    instance_ids = list(
+        dict.fromkeys(
+            str(item.get("instanceId"))
+            for item in items
+            if isinstance(item, dict) and item.get("instanceId")
+        )
+    )[:20]
+    selected = context.get("selectedInstanceId")
+    selected_id = str(selected) if isinstance(selected, str) and selected else None
+    raw_scene = context.get("scene")
+    scene = raw_scene if isinstance(raw_scene, dict) else {}
+    raw_openings = scene.get("openings")
+    openings = raw_openings if isinstance(raw_openings, list) else []
+    opening_ids = list(
+        dict.fromkeys(
+            str(item.get("id"))
+            for item in openings
+            if isinstance(item, dict) and item.get("id")
+        )
+    )[:20]
+    move = next(
+        (step for step in plan.steps if isinstance(step, MoveSceneItemAction)),
+        None,
+    )
+    if move is not None:
+        target_is_unknown = move.instance_id not in instance_ids
+        target_is_ambiguous = selected_id is None and len(instance_ids) != 1
+        target_ignores_selection = (
+            selected_id is not None and move.instance_id != selected_id
+        )
+        if target_is_unknown or target_is_ambiguous or target_ignores_selection:
+            field = "target_instance" if instance_ids else "scene_context"
+            prompt = (
+                "请选择要移动的家具。"
+                if instance_ids
+                else "当前房间没有可确认的开放几何家具，请先刷新场景。"
+            )
+            return AgentActionPlan.model_validate(
+                {
+                    "schemaVersion": "agent-action-plan/1.0",
+                    "outcome": "clarify",
+                    "summary": "无法从受控场景上下文唯一确认移动目标",
+                    "steps": [],
+                    "question": {
+                        "field": field,
+                        "prompt": prompt,
+                        "candidateIds": instance_ids,
+                    },
+                }
+            )
+
+    for step in plan.steps:
+        placement = getattr(step, "placement", None)
+        if (
+            isinstance(placement, NearOpeningPlacement)
+            and placement.opening_id not in opening_ids
+        ):
+            return AgentActionPlan.model_validate(
+                {
+                    "schemaVersion": "agent-action-plan/1.0",
+                    "outcome": "clarify",
+                    "summary": "动作计划引用的门窗不在受控场景中",
+                    "steps": [],
+                    "question": {
+                        "field": "opening",
+                        "prompt": "请选择要靠近的门或窗。",
+                        "candidateIds": opening_ids,
+                    },
+                }
+            )
+    return plan
 
 
 def plan_agent_actions(
@@ -690,7 +910,8 @@ def plan_agent_actions(
         temperature=0.1,
     )
     try:
-        return AgentActionPlan.model_validate(data)
+        plan = AgentActionPlan.model_validate(data)
+        return _enforce_agent_action_plan_context(plan, context)
     except ValidationError as exc:
         raise LLMUnavailable("动作规划模型返回的 JSON 未通过严格校验") from exc
 
@@ -780,25 +1001,30 @@ def analyze_image(image_bytes: bytes, file_name: str) -> Dict[str, Any]:
 
     try:
         client = get_vl_client()
-        _mark_model_call_attempted()
-        resp = client.chat.completions.create(
+        messages = [
+            {"role": "system", "content": _VL_FLOORPLAN_SYSTEM},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "请分析这张图片。"},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ]
+        resp = _governed_chat_completion(
+            client=client,
+            provider_key=settings.vl_provider_key,
             model=settings.vl_model,
-            messages=[
-                {"role": "system", "content": _VL_FLOORPLAN_SYSTEM},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "请分析这张图片。"},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                },
-            ],
-            response_format={"type": "json_object"},
+            modality="vision",
+            messages=messages,
+            input_cost_basis=_VL_FLOORPLAN_SYSTEM,
             max_tokens=1000,
             temperature=0.4,
-            **_provider_request_kwargs(),
+            input_price_per_mtok=settings.vl_input_price_per_mtok,
+            output_price_per_mtok=settings.vl_output_price_per_mtok,
+            prompt_token_ceiling=settings.vl_input_token_ceiling,
+            response_format={"type": "json_object"},
         )
-        _capture_model_usage(getattr(resp, "usage", None))
         data = json.loads(resp.choices[0].message.content)
         if not data.get("findings"):
             raise LLMUnavailable("VL 返回结果缺少 findings")
@@ -882,9 +1108,11 @@ def analyze_room_model(image_bytes: bytes, file_name: str) -> Dict[str, Any] | N
 
     try:
         client = get_vl_client()
-        _mark_model_call_attempted()
-        resp = client.chat.completions.create(
+        resp = _governed_chat_completion(
+            client=client,
+            provider_key=settings.vl_provider_key,
             model=settings.vl_model,
+            modality="vision",
             messages=[
                 {"role": "system", "content": _VL_ROOM_MODEL_SYSTEM},
                 {
@@ -895,12 +1123,14 @@ def analyze_room_model(image_bytes: bytes, file_name: str) -> Dict[str, Any] | N
                     ],
                 },
             ],
-            response_format={"type": "json_object"},
+            input_cost_basis=_VL_ROOM_MODEL_SYSTEM,
             max_tokens=10000,
             temperature=0.3,
-            **_provider_request_kwargs(),
+            input_price_per_mtok=settings.vl_input_price_per_mtok,
+            output_price_per_mtok=settings.vl_output_price_per_mtok,
+            prompt_token_ceiling=settings.vl_input_token_ceiling,
+            response_format={"type": "json_object"},
         )
-        _capture_model_usage(getattr(resp, "usage", None))
         data = json.loads(resp.choices[0].message.content)
     except LLMUnavailable:
         raise

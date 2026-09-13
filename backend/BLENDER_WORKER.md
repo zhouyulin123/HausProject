@@ -44,5 +44,9 @@ python -m app.workers.blender_worker --once
 - `BLENDER_WORKER_POLL_SECONDS`，默认 2 秒
 - `BLENDER_WORKER_MAX_ATTEMPTS`，默认 2 次
 - `BLENDER_ALLOW_UPLOADED_MODELS`，默认关闭
+- `WORKER_PRESENCE_HEARTBEAT_SECONDS`，进程级存活心跳默认 10 秒
+- `WORKER_READINESS_TIMEOUT_SECONDS`，API 就绪超时默认 45 秒，必须大于存活心跳间隔
 
 预览档使用 Eevee 960×540；成片档使用 Cycles 1600×900、128 samples，并按 OptiX、CUDA、CPU 顺序选择设备。
+
+进程启动并确认 Blender 可执行文件后，会先写入 `worker_heartbeats` 再消费作业；首次登记失败时拒绝消费。优雅退出会立即下线，异常退出则在就绪超时后由 `/ready` 返回 503。生产部署使用仓库根目录 `Procfile` 的 `worker-blender` 进程类型并开启自动重启。

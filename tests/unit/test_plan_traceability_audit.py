@@ -12,8 +12,14 @@ from app.db.models import DesignPlanVersion, DesignTask
 from app.services.design_version_service import persist_generation
 from app.services.plan_traceability_audit_service import (
     PlanTraceabilityCohortError,
+    audit_plan_snapshot,
     audit_plan_traceability,
     load_plan_traceability_cohort,
+)
+from tests.real_world_fixtures import (
+    frozen_catalog_quote_line,
+    frozen_catalog_suggestion,
+    frozen_custom_quote,
 )
 
 
@@ -34,25 +40,24 @@ def db():
 def _traceable_plan(index: int) -> dict:
     sku = f"SKU-{index:03d}"
     unit_price = 1000 + index
+    suggestion = frozen_catalog_suggestion(
+        sku=sku,
+        unit_price=unit_price,
+        data_version="catalog-2026-q3",
+        record_version=2,
+    )
+    suggestion.update(
+        {
+            "name": f"商品 {index}",
+            "subtotal": unit_price,
+            "dataStatus": "verified",
+        }
+    )
     return {
         "id": f"plan-{index:03d}",
         "name": f"可追溯方案 {index}",
         "style": "现代简约",
-        "furnitureSuggestions": [
-            {
-                "id": sku,
-                "sku": sku,
-                "name": f"商品 {index}",
-                "quantity": 1,
-                "unitPrice": unit_price,
-                "subtotal": unit_price,
-                "dataVersion": "catalog-2026-q3",
-                "recordVersion": 2,
-                "dataStatus": "verified",
-                "sourceName": "门店商品主表",
-                "verifiedAt": "2026-09-01T00:00:00+00:00",
-            }
-        ],
+        "furnitureSuggestions": [suggestion],
         "customItems": [],
         "shopQuote": {
             "furnitureTotal": unit_price,
@@ -62,16 +67,7 @@ def _traceable_plan(index: int) -> dict:
             "priceVersion": "prices:sha256-valid",
             "ruleVersion": "rules:sha256-valid",
             "pricedAt": "2026-09-02T00:00:00+00:00",
-            "lineItems": [
-                {
-                    "sku": sku,
-                    "quantity": 1,
-                    "unitPrice": unit_price,
-                    "subtotal": unit_price,
-                    "dataVersion": "catalog-2026-q3",
-                    "recordVersion": 2,
-                }
-            ],
+            "lineItems": [frozen_catalog_quote_line(suggestion)],
             "customLineItems": [],
         },
     }
@@ -89,6 +85,41 @@ def _persist_plans(db, count: int) -> list[DesignPlanVersion]:
     )
     db.commit()
     return list(revision.plans)
+
+
+def test_development_snapshot_requires_explicit_audit_policy(db):
+    plan = _persist_plans(db, 1)[0]
+    product = plan.plan_json["furnitureSuggestions"][0]
+    product.update(dataOrigin="development_fixture", dataStatus="draft", verifiedAt=None)
+    evidence = product["catalogEligibility"]
+    evidence["policy"]["allowDevelopment"] = True
+    evidence["facts"].update(dataOrigin="development_fixture", verificationStatus="draft", verifiedAt=None, verifiedBy=None)
+
+    assert not audit_plan_snapshot(plan).passed
+    assert audit_plan_snapshot(plan, allow_development=True).passed
+    evidence["facts"]["stockQuantity"] = 0
+    assert not audit_plan_snapshot(plan, allow_development=True).passed
+
+
+def test_development_delivery_uses_server_policy_without_relaxing_formal_audit(db, monkeypatch):
+    from datetime import datetime, timezone
+    from app.core.config import settings
+    from app.services.plan_delivery_service import require_deliverable, PlanDeliveryBlocked
+
+    plan = _persist_plans(db, 1)[0]
+    product = plan.plan_json["furnitureSuggestions"][0]
+    product.update(dataOrigin="development_fixture", dataStatus="draft", verifiedAt=None)
+    product["catalogEligibility"]["policy"]["allowDevelopment"] = True
+    product["catalogEligibility"]["facts"].update(dataOrigin="development_fixture", verificationStatus="draft", verifiedAt=None, verifiedBy=None)
+    monkeypatch.setattr(settings, "app_env", "development")
+    monkeypatch.setattr(settings, "development_catalog_enabled", True)
+    now = datetime(2026, 9, 3, tzinfo=timezone.utc)
+    delivery = require_deliverable(plan, now=now)
+    assert delivery.delivery_mode == "development_preview"
+    assert not audit_plan_snapshot(plan).passed
+    monkeypatch.setattr(settings, "development_catalog_enabled", False)
+    with pytest.raises(PlanDeliveryBlocked):
+        require_deliverable(plan, now=now)
 
 
 def _write_cohort(tmp_path, plans, **overrides):
@@ -200,6 +231,81 @@ def test_traceability_audit_detects_snapshot_and_product_provenance_tampering(db
 
 
 @pytest.mark.unit
+def test_traceability_recomputes_frozen_custom_rule_and_binds_outer_line(db):
+    payload = _traceable_plan(1)
+    custom_item, custom_line = frozen_custom_quote()
+    payload["customItems"] = [custom_item]
+    payload["shopQuote"]["customLineItems"] = [custom_line]
+    payload["shopQuote"]["customTotal"] = 4600
+    payload["shopQuote"]["total"] += 4600
+    task = DesignTask(status="completed", confirmed_requirement_json={})
+    db.add(task)
+    db.flush()
+    revision = persist_generation(
+        db,
+        task=task,
+        plans=[payload],
+        generator="llm",
+    )
+    db.commit()
+    plan = revision.plans[0]
+
+    assert audit_plan_snapshot(plan).passed is True
+
+    changed_plan = dict(plan.plan_json)
+    changed_quote = dict(changed_plan["shopQuote"])
+    changed_lines = [dict(changed_quote["customLineItems"][0])]
+    changed_lines[0]["unitPrice"] += 1
+    changed_quote["customLineItems"] = changed_lines
+    changed_plan["shopQuote"] = changed_quote
+    plan.plan_json = changed_plan
+    snapshot_quote = dict(plan.quote_snapshot.quote_json)
+    snapshot_quote["customLineItems"] = changed_lines
+    plan.quote_snapshot.quote_json = snapshot_quote
+    db.commit()
+
+    result = audit_plan_snapshot(plan)
+    assert result.passed is False
+    assert "custom_rule_evidence_mismatch" in result.reason_codes
+
+    restored_item, restored_line = frozen_custom_quote()
+    restored_item["project"] = "校验后被替换的定制项目"
+    changed_plan = dict(plan.plan_json)
+    changed_plan["customItems"] = [restored_item]
+    changed_quote = dict(changed_plan["shopQuote"])
+    changed_quote["customLineItems"] = [restored_line]
+    changed_plan["shopQuote"] = changed_quote
+    plan.plan_json = changed_plan
+    snapshot_quote = dict(plan.quote_snapshot.quote_json)
+    snapshot_quote["customLineItems"] = [restored_line]
+    plan.quote_snapshot.quote_json = snapshot_quote
+    db.commit()
+
+    result = audit_plan_snapshot(plan)
+    assert result.passed is False
+    assert "custom_rule_evidence_mismatch" in result.reason_codes
+
+
+@pytest.mark.unit
+def test_snapshot_audit_rejects_untrusted_and_unbound_derived_generators(db):
+    untrusted = _persist_plans(db, 1)[0]
+    untrusted.revision.generator = "template"
+    db.commit()
+    assert audit_plan_snapshot(untrusted).reason_codes == (
+        "generation_source_untrusted",
+    )
+
+    derived = _persist_plans(db, 1)[0]
+    derived.revision.generator = "refine"
+    derived.revision.workflow_trace_snapshot = [
+        {"node": "plan_refine", "status": "completed"}
+    ]
+    db.commit()
+    assert audit_plan_snapshot(derived).reason_codes == (
+        "generation_source_chain_invalid",
+    )
+
+@pytest.mark.unit
 def test_traceability_audit_checks_members_beyond_minimum_instead_of_sampling_them_out(
     db, tmp_path
 ):
@@ -219,7 +325,10 @@ def test_traceability_audit_checks_members_beyond_minimum_instead_of_sampling_th
     assert report.passed is False
     assert next(
         item for item in report.results if item.plan_version_id == broken.id
-    ).reason_codes == ("product_source_missing",)
+    ).reason_codes == (
+        "product_source_missing",
+        "product_eligibility_facts_mismatch",
+    )
 
 
 @pytest.mark.unit

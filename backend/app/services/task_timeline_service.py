@@ -8,7 +8,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.request_context import current_request_id
-from app.db.models import TaskExecutionEvent
+from app.db.models import (
+    ModelCallCostAccount,
+    ModelCallLedger,
+    TaskExecutionEvent,
+)
 
 
 TimelineSource = Literal[
@@ -68,6 +72,11 @@ class TaskCostSummary:
     known_cost_cny: float | None
     has_unknown_cost: bool
     unknown_cost_event_count: int
+    model_cost_limit_cny: float | None = None
+    model_cost_allocated_cny: float | None = None
+    model_actual_cost_cny: float | None = None
+    model_unknown_cost_call_count: int = 0
+    model_call_count: int = 0
 
 
 def append_event(
@@ -280,6 +289,32 @@ def list_events(
 
 
 def cost_summary(db: Session, *, task_id: int) -> TaskCostSummary:
+    account = db.scalar(
+        select(ModelCallCostAccount).where(
+            ModelCallCostAccount.scope_kind == "task",
+            ModelCallCostAccount.scope_id == str(task_id),
+        )
+    )
+    model_call_count = 0
+    model_metered_count = 0
+    if account is not None:
+        model_call_count = int(
+            db.scalar(
+                select(func.count(ModelCallLedger.id)).where(
+                    ModelCallLedger.account_id == account.id,
+                )
+            )
+            or 0
+        )
+        model_metered_count = int(
+            db.scalar(
+                select(func.count(ModelCallLedger.id)).where(
+                    ModelCallLedger.account_id == account.id,
+                    ModelCallLedger.billing_status == "metered",
+                )
+            )
+            or 0
+        )
     known_cost = db.scalar(
         select(func.sum(TaskExecutionEvent.cost_cny)).where(
             TaskExecutionEvent.task_id == task_id,
@@ -299,6 +334,25 @@ def cost_summary(db: Session, *, task_id: int) -> TaskCostSummary:
         known_cost_cny=float(known_cost) if known_cost is not None else None,
         has_unknown_cost=unknown_count > 0,
         unknown_cost_event_count=unknown_count,
+        model_cost_limit_cny=(
+            float(account.cost_limit_cny) if account is not None else None
+        ),
+        model_cost_allocated_cny=(
+            float(account.allocated_cost_cny or 0.0)
+            if account is not None
+            else None
+        ),
+        model_actual_cost_cny=(
+            float(account.actual_cost_cny or 0.0)
+            if account is not None and model_metered_count > 0
+            else None
+        ),
+        model_unknown_cost_call_count=(
+            int(account.unknown_cost_call_count or 0)
+            if account is not None
+            else 0
+        ),
+        model_call_count=model_call_count,
     )
 
 

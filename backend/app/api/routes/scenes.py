@@ -256,7 +256,10 @@ def auto_layout_plan_scene(
     revision = db.get(DesignRevision, plan_version.revision_id)
     task = db.get(DesignTask, revision.task_id) if revision else None
     room_name = task.space_type if task and task.space_type else "客厅"
-    geometry = layout_service.room_geometry_from_plan_version(db, plan_version)
+    try:
+        geometry = layout_service.room_geometry_from_plan_version(db, plan_version)
+    except layout_service.ConfirmedRoomDimensionsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     room, openings = geometry or layout_service.default_room_geometry(room_name)
 
     started = time.monotonic()

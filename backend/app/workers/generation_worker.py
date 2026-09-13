@@ -11,16 +11,21 @@ import socket
 import threading
 import time
 
+from sqlalchemy import select
+
 from app.core.config import settings
 from app.core.logging_config import configure_logging
 from app.core.request_context import bind_request_id
 from app.db.database import SessionLocal
-from app.db.models import DesignTask, GenerationRun
+from app.db.models import DesignTask, GenerationRun, GenerationRunEvent
 from app.services import (
     generation_output_service,
+    generation_request_service,
     generation_run_service,
     llm_service,
+    model_call_governance_service,
     provider_circuit_service,
+    worker_presence_service,
 )
 
 
@@ -107,6 +112,49 @@ def process_one_run(
                     )
                 return True
 
+            frozen_request = db.scalar(
+                select(GenerationRunEvent).where(
+                    GenerationRunEvent.run_id == run.id,
+                    GenerationRunEvent.node == "request_contract",
+                    GenerationRunEvent.status == "completed",
+                )
+            )
+
+            def assert_frozen_request_unchanged(*, phase: str) -> None:
+                if frozen_request is None:
+                    return
+                frozen_detail = frozen_request.detail_json
+                frozen_fingerprint = (
+                    frozen_detail.get("catalog_fingerprint")
+                    if isinstance(frozen_detail, dict)
+                    else None
+                )
+                if (
+                    not isinstance(frozen_detail, dict)
+                    or frozen_detail.get("schema_version") != 3
+                    or frozen_detail.get("request_digest") != run.request_digest
+                    or not isinstance(frozen_fingerprint, dict)
+                    or set(frozen_fingerprint)
+                    != {"catalog_version", "rule_version"}
+                    or not all(
+                        isinstance(value, str) and value
+                        for value in frozen_fingerprint.values()
+                    )
+                ):
+                    raise generation_run_service.GenerationMetadataDriftError(
+                        "生成请求摘要冻结凭证无效，禁止调用模型"
+                    )
+                current_digest = generation_request_service.build_request_digest(
+                    db,
+                    task,
+                )
+                if current_digest != run.request_digest:
+                    raise generation_run_service.GenerationMetadataDriftError(
+                        f"生成请求摘要在{phase}发生漂移，禁止继续生成"
+                    )
+
+            assert_frozen_request_unchanged(phase="入队后")
+
             def persist_step(step):
                 event = generation_run_service.record_step(
                     db,
@@ -140,6 +188,7 @@ def process_one_run(
                 heartbeat_stop.set()
                 if heartbeat is not None:
                     heartbeat.join(timeout=5)
+                assert_frozen_request_unchanged(phase="结果提交前")
                 owned = generation_run_service.assert_worker_ownership(
                     db,
                     run_id=claimed_run_id,
@@ -278,9 +327,22 @@ def process_one_run(
                 record_failure=record_provider_failure,
                 release_call=release_provider_call,
             )
+            unified_cost_hooks = (
+                model_call_governance_service.build_model_call_hooks(
+                    session_factory=SessionLocal,
+                    scope_kind="task",
+                    scope_id=str(run.task_id),
+                    task_id=run.task_id,
+                    operation_key=(
+                        f"generation:{claimed_run_id}:attempt:{worker_attempt}"
+                    ),
+                    cost_limit_cny=settings.generation_task_cost_limit_cny,
+                )
+            )
             with bind_request_id(run.request_id):
                 with (
                     llm_service.model_cost_guard(reserve_model_call),
+                    llm_service.model_call_governance(unified_cost_hooks),
                     llm_service.provider_call_guard(provider_hooks),
                 ):
                     response = selected_executor(db, **executor_kwargs)
@@ -472,12 +534,17 @@ def main() -> int:
     args = parser.parse_args()
     configure_logging()
 
-    while True:
-        processed = process_one_run(worker_id=args.worker_id)
-        if args.once:
-            return 0
-        if not processed:
-            time.sleep(settings.generation_worker_poll_seconds)
+    with worker_presence_service.WorkerPresenceReporter(
+        worker_type="generation",
+        worker_id=args.worker_id,
+        heartbeat_seconds=settings.worker_presence_heartbeat_seconds,
+    ):
+        while True:
+            processed = process_one_run(worker_id=args.worker_id)
+            if args.once:
+                return 0
+            if not processed:
+                time.sleep(settings.generation_worker_poll_seconds)
 
 
 if __name__ == "__main__":

@@ -24,7 +24,13 @@ from app.db.database import get_db
 from app.db.models import DemoAgentInvocation
 from app.schemas.scene_agent import SceneOperation, SceneOperationBatch
 from app.schemas.scenes import SceneDocument
-from app.services import llm_service, scene_service, scene_tools, task_timeline_service
+from app.services import (
+    llm_service,
+    model_call_governance_service,
+    scene_service,
+    scene_tools,
+    task_timeline_service,
+)
 from app.services.llm_service import LLMUnavailable
 from app.services.scene_agent_rate_limit import SceneAgentRateLimiter
 
@@ -258,7 +264,14 @@ def demo_agent_command(
         turn.model_dump(mode="json", by_alias=True)
         for turn in payload.history[-8:]
     ]
-    with llm_service.capture_model_call() as capture:
+    with (
+        model_call_governance_service.govern_session_model_calls(
+            db,
+            session_id=x_session_id,
+            operation_key=f"demo:{operation_key}",
+        ),
+        llm_service.capture_model_call() as capture,
+    ):
         try:
             batch = llm_service.plan_scene_operations(
                 instruction=payload.instruction,

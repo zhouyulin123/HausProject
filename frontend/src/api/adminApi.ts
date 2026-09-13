@@ -37,8 +37,10 @@ export interface AdminUser extends AuthUser {
 export type RealWorldSplit = "development" | "regression" | "blind";
 
 export interface RealWorldReadiness {
-  manifest_version: string;
-  dataset_id: string;
+  source: "governance_database";
+  frozen_dataset_count: number;
+  manifest_version: string | null;
+  dataset_id: string | null;
   total: number;
   eligible_total: number;
   private_real_eligible_total: number;
@@ -107,9 +109,13 @@ export async function updateUserRole(
 
 export async function fetchQualitySummary(
   windowDays: QualityWindowDays,
+  versionCohortLimit?: number,
 ): Promise<QualitySummary> {
+  const versionCohortQuery = versionCohortLimit === undefined
+    ? ""
+    : `&version_cohort_limit=${versionCohortLimit}`;
   return adminRequest<QualitySummary>(
-    `/api/admin/quality/summary?window_days=${windowDays}`,
+    `/api/admin/quality/summary?window_days=${windowDays}${versionCohortQuery}`,
   );
 }
 

@@ -97,6 +97,7 @@ jobs:
       - run: python -m pip check
       - run: python -m compileall -q backend/app
       - run: python -m evals.run_open_geometry_eval --output .test_artifacts/open_geometry_eval.json
+      - run: python -m evals.run_agent_action_plan_eval --output .test_artifacts/agent_action_plan_eval.json
       - run: python -m pytest -p no:cacheprovider
 
   frontend:

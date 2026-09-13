@@ -2,7 +2,7 @@ import json
 import hashlib
 import logging
 from copy import deepcopy
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
 from sqlalchemy import select
@@ -52,10 +52,12 @@ from app.services import (
     catalog_service,
     design_agent_service,
     design_version_service,
+    generation_constraints_service,
     generation_provenance,
     generation_request_service,
     generation_run_service,
     llm_service,
+    model_call_governance_service,
     plan_mutation_service,
     profile_service,
     task_service,
@@ -121,6 +123,11 @@ def get_task_timeline(
         known_cost_cny=cost.known_cost_cny,
         has_unknown_cost=cost.has_unknown_cost,
         unknown_cost_event_count=cost.unknown_cost_event_count,
+        model_cost_limit_cny=cost.model_cost_limit_cny,
+        model_cost_allocated_cny=cost.model_cost_allocated_cny,
+        model_actual_cost_cny=cost.model_actual_cost_cny,
+        model_unknown_cost_call_count=cost.model_unknown_cost_call_count,
+        model_call_count=cost.model_call_count,
     )
 
 
@@ -311,7 +318,17 @@ def get_requirement(
 
     parser = "llm"
     parser_model = None
-    with llm_service.capture_model_call() as model_call:
+    operation_key = "requirement:" + hashlib.sha256(
+        f"{task.id}:{raw_input}".encode("utf-8")
+    ).hexdigest()
+    with (
+        model_call_governance_service.govern_task_model_calls(
+            db,
+            task_id=task.id,
+            operation_key=operation_key,
+        ),
+        llm_service.capture_model_call() as model_call,
+    ):
         try:
             parsed = llm_service.parse_requirement(raw_input)
             parser_model = settings.llm_model
@@ -413,7 +430,14 @@ def confirm_requirement(
         ) is None:
             profile = None
             extraction_failed = False
-            with llm_service.capture_model_call() as model_call:
+            with (
+                model_call_governance_service.govern_task_model_calls(
+                    db,
+                    task_id=task.id,
+                    operation_key=event_key,
+                ),
+                llm_service.capture_model_call() as model_call,
+            ):
                 try:
                     profile = profile_service.extract_and_merge(
                         db,
@@ -471,12 +495,12 @@ def _execute_generation(
     db.commit()
 
     try:
-        requirement = deepcopy(
-            task.confirmed_requirement_json
-            or task_service.parse_requirement(task.raw_user_input or "")
+        generation_context = (
+            generation_constraints_service.build_generation_context(db, task)
         )
-        confirmed_facts = design_agent_service.confirmed_generation_facts(task)
-        budget_max = confirmed_facts.get("budget_max")
+        requirement = generation_context.requirement
+        constraints = generation_context.constraints
+        budget_max = constraints.budget_max
 
         # 登录用户：注入长期画像，让方案贴合其偏好
         if task.user_id:
@@ -499,7 +523,7 @@ def _execute_generation(
             if analysis.get("findings"):
                 image_context.extend(analysis["findings"])
         # 商品库上下文：家具与定制报价只能从自家库里选
-        catalog_context = catalog_service.build_catalog_context(db)
+        catalog_context = generation_context.catalog_context
 
         def build_template_plans(requirement_payload):
             if not allow_template_fallback:
@@ -514,6 +538,7 @@ def _execute_generation(
             enrich_plans=lambda plans: catalog_service.verify_and_enrich_plans(
                 db,
                 plans,
+                **constraints.enrichment_kwargs(),
             ),
             on_step=on_step,
         )
@@ -648,6 +673,7 @@ def _execute_generation(
             task=task,
             plans=plans,
             generator=generator,
+            requirement_snapshot=requirement,
             image_context=image_context,
             workflow_trace=workflow_trace,
         )
@@ -684,8 +710,12 @@ def _execute_generation(
         raise HTTPException(status_code=500, detail="方案生成失败，请稍后重试") from exc
 
 
-def _generation_request_digest(db: Session, task: DesignTask) -> str:
-    return generation_request_service.build_request_digest(db, task)
+def _generation_request_contract(
+    db: Session,
+    task: DesignTask,
+) -> tuple[dict[str, Any], str]:
+    contract = generation_request_service.build_request_contract(db, task)
+    return contract, generation_request_service.digest_request_contract(contract)
 
 
 @router.post(
@@ -757,6 +787,7 @@ def queue_design_generation(
             },
         )
     try:
+        request_contract, request_digest = _generation_request_contract(db, task)
         run = generation_run_service.create_run(
             db,
             task=task,
@@ -764,7 +795,8 @@ def queue_design_generation(
             max_attempts=settings.generation_worker_max_attempts,
             request_id=getattr(request.state, "request_id", None)
             or normalize_request_id(request.headers.get("X-Request-ID")),
-            request_digest=_generation_request_digest(db, task),
+            request_digest=request_digest,
+            request_contract=request_contract,
         )
     except generation_run_service.GenerationIdempotencyConflict as exc:
         db.rollback()
@@ -848,9 +880,10 @@ def get_generation_status(
                 source=event.source,
                 duration_ms=event.duration_ms,
                 details=event.detail_json or {},
-            )
-            for event in run.events
-        ],
+                )
+                for event in run.events
+                if event.node != "request_contract"
+            ],
     )
 
 

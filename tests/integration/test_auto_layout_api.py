@@ -18,6 +18,51 @@ from app.services.anonymous_session_service import (
 from app.services.design_version_service import persist_generation
 
 
+@pytest.mark.parametrize("width, depth", [(4.8, 5.6), (5.3, 6.1)])
+def test_auto_layout_uses_confirmed_task_dimensions(auto_layout_context, width, depth):
+    client, owner_id, plan_id, factory = auto_layout_context
+    with factory() as db:
+        task = db.scalar(select(DesignTask))
+        task.confirmed_requirement_json = {"room_width_m": width, "room_depth_m": depth}
+        db.commit()
+    response = client.post(f"/api/design/plan-versions/{plan_id}/auto-layout", headers={"X-Session-ID": owner_id}, json={})
+    assert response.status_code == 201
+    points = response.json()["scene"]["room"]["floorPolygon"]
+    assert max(p["x"] for p in points) - min(p["x"] for p in points) == width
+    assert max(p["z"] for p in points) - min(p["z"] for p in points) == depth
+    assert response.json()["scene"]["openings"] == []
+
+
+def test_auto_layout_rejects_invalid_confirmed_dimensions(auto_layout_context):
+    client, owner_id, plan_id, factory = auto_layout_context
+    with factory() as db:
+        task = db.scalar(select(DesignTask))
+        task.confirmed_requirement_json = {"room_width_m": 0, "room_depth_m": 5.6}
+        db.commit()
+    response = client.post(f"/api/design/plan-versions/{plan_id}/auto-layout", headers={"X-Session-ID": owner_id}, json={})
+    assert response.status_code == 422
+    assert "已确认房间尺寸" in response.json()["detail"]
+
+
+def test_generation_freezes_confirmed_geometry_without_rewriting_existing_scene(auto_layout_context):
+    from app.db.models import DesignPlanVersion
+    from app.services import generation_scene_service, scene_service
+    _, _, plan_id, factory = auto_layout_context
+    with factory() as db:
+        task = db.scalar(select(DesignTask))
+        task.confirmed_requirement_json = {"room_width_m": 4.8, "room_depth_m": 5.6}
+        plan = db.get(DesignPlanVersion, plan_id)
+        generation_scene_service.prepare_revision_scenes(db, revision_id=plan.revision_id)
+        scene = scene_service.get_scene_by_plan_version(db, plan.id)
+        version = scene_service.get_current_version(db, scene)
+        original = version.scene_json
+        task.confirmed_requirement_json = {"room_width_m": 8.0, "room_depth_m": 9.0}
+        generation_scene_service.prepare_revision_scenes(db, revision_id=plan.revision_id)
+        assert scene_service.get_current_version(db, scene).scene_json == original
+        points = original["room"]["floorPolygon"]
+        assert max(p["x"] for p in points) - min(p["x"] for p in points) == 4.8
+
+
 @pytest.fixture
 def auto_layout_context():
     engine = create_engine(

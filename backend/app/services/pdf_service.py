@@ -7,6 +7,7 @@ import io
 import os
 import platform
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -105,6 +106,12 @@ def _fmt(n: Any) -> str:
         return str(n or "-")
 
 
+def quote_validity_text(valid_until: datetime | None) -> str:
+    if valid_until is None:
+        return "报价有效期未提供，不承诺具体天数。"
+    return f"报价有效至 {valid_until:%Y-%m-%d}（来自冻结价格凭证）。"
+
+
 def _quote_table(plan: Dict[str, Any], st: Dict[str, ParagraphStyle]) -> Optional[Table]:
     rows: List[List[Any]] = [["项目", "规格", "单价", "数量", "小计"]]
     for f in plan.get("furnitureSuggestions", []):
@@ -154,6 +161,9 @@ def build_proposal_pdf(
     plan: Dict[str, Any],
     effect_image_path: Optional[str] = None,
     shop: Optional[Dict[str, Any]] = None,
+    *,
+    quote_valid_until: datetime | None = None,
+    development_preview: bool = False,
 ) -> bytes:
     """把一套方案渲染成品牌提案 PDF，返回文件字节。
 
@@ -201,6 +211,8 @@ def build_proposal_pdf(
     story.append(Spacer(1, 5 * mm))
 
     story.append(Paragraph(str(plan.get("name", "家装方案")), st["title"]))
+    if development_preview:
+        story.append(Paragraph("开发版预览：商品价格、库存和交期包含模拟数据，不作为商业报价或下单依据。", st["body"]))
     meta = (
         f"风格：{plan.get('style', '-')}    AI 推荐指数：{plan.get('score', '-')}%    "
         f"整体预算参考：{_fmt(plan.get('budget'))}    日期：{time.strftime('%Y-%m-%d')}"
@@ -230,7 +242,8 @@ def build_proposal_pdf(
         story.append(quote_table)
         story.append(Spacer(1, 2 * mm))
         story.append(Paragraph(
-            "以上为本店产品预估报价，定制项目工程量以现场测量为准；报价有效期 30 天。",
+            "以上为本店产品预估报价，定制项目工程量以现场测量为准；"
+            + quote_validity_text(quote_valid_until),
             st["muted"],
         ))
 

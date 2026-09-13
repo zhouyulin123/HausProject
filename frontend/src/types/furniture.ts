@@ -1,4 +1,5 @@
 export type FurnitureDataOrigin =
+  | "development_fixture"
   | "merchant"
   | "merchant_draft"
   | "merchant_verified"

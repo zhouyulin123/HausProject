@@ -3,8 +3,8 @@
 职责：
 1. build_layout_furniture —— 从方案的 furnitureSuggestions + Product 真实三维尺寸
    组装 LayoutFurniture（无 model 尺寸时按类别默认尺寸兜底）。
-2. room_geometry_from_plan_version —— 从任务图片的 RoomModel 解析房间几何与门窗，
-   缺省时用空间类型默认尺寸构造矩形房间。
+2. room_geometry_from_plan_version —— 优先 RoomModel，其次任务已确认尺寸；
+   均缺省时才允许调用方用空间类型默认尺寸预览。
 3. record_layout_run —— 把每次布局生成的元数据写入 layout_runs。
 """
 
@@ -20,6 +20,7 @@ from app.db.models import (
     DesignRevision,
     DesignScene,
     DesignSceneVersion,
+    DesignTask,
     LayoutRun,
     Product,
     UploadedImage,
@@ -150,7 +151,7 @@ def _room_geometry_from_task(
     db: Session,
     task_id: int,
 ) -> tuple[RoomGeometry, list[Opening]] | None:
-    """从任务关联图片的 RoomModel 解析米制房间几何与门窗。"""
+    """优先保留 RoomModel 的校准几何；无模型时使用完整的已确认尺寸。"""
     from app.services.room_model_service import room_model_to_scene
 
     images = db.scalars(
@@ -165,14 +166,74 @@ def _room_geometry_from_task(
             return scene.room, scene.openings
         except Exception:
             continue
-    return None
+    task = db.get(DesignTask, task_id)
+    if task is None:
+        return None
+    return _room_geometry_from_confirmed_requirement(task)
+
+
+class ConfirmedRoomDimensionsError(ValueError):
+    """明确给出的非法尺寸不能静默降级为预览默认值。"""
+
+
+def _room_geometry_from_confirmed_requirement(
+    task: DesignTask,
+) -> tuple[RoomGeometry, list[Opening]] | None:
+    facts = task.confirmed_requirement_json
+    if not isinstance(facts, dict):
+        return None
+
+    def first_value(keys: tuple[str, ...]):
+        return next(
+            (facts[key] for key in keys if key in facts and facts[key] not in (None, "")),
+            None,
+        )
+
+    width = first_value(("room_width_m", "roomWidthM", "roomWidth"))
+    depth = first_value(("room_depth_m", "roomDepthM", "roomDepth"))
+    if width is None or depth is None:
+        return None
+    height = first_value(("ceiling_height_m", "ceilingHeightM", "ceilingHeight"))
+
+    def positive_dimension(value, *, field: str) -> float:
+        if isinstance(value, bool):
+            raise ConfirmedRoomDimensionsError(f"已确认房间尺寸 {field} 必须为有效米制数值")
+        try:
+            result = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ConfirmedRoomDimensionsError(f"已确认房间尺寸 {field} 必须为有效米制数值") from exc
+        if not math.isfinite(result) or not 0 < result <= 50:
+            raise ConfirmedRoomDimensionsError(f"已确认房间尺寸 {field} 必须大于 0 且不超过 50 米")
+        return result
+
+    width_m = positive_dimension(width, field="width")
+    depth_m = positive_dimension(depth, field="depth")
+    height_m = positive_dimension(height, field="height") if height is not None else 2.8
+    if not 1.8 < height_m <= 8:
+        raise ConfirmedRoomDimensionsError("已确认房间尺寸 height 必须大于 1.8 且不超过 8 米")
+    room_name = task.space_type or facts.get("space_type") or facts.get("spaceType") or "客厅"
+    try:
+        room = RoomGeometry(
+            id=f"room-task-{task.id}",
+            name=room_name,
+            floor_polygon=[
+                Vector2XZ(x=-width_m / 2, z=-depth_m / 2),
+                Vector2XZ(x=width_m / 2, z=-depth_m / 2),
+                Vector2XZ(x=width_m / 2, z=depth_m / 2),
+                Vector2XZ(x=-width_m / 2, z=depth_m / 2),
+            ],
+            ceiling_height=height_m,
+        )
+    except ValueError as exc:
+        raise ConfirmedRoomDimensionsError("已确认房间尺寸无法构成有效房间几何") from exc
+    return room, []
 
 
 def room_geometry_from_plan_version(
     db: Session,
     plan_version: DesignPlanVersion,
 ) -> tuple[RoomGeometry, list[Opening]] | None:
-    """从方案版本所在任务的图片 RoomModel 解析房间几何。"""
+    """从方案任务的 RoomModel 或完整已确认尺寸解析房间几何。"""
     revision = db.get(DesignRevision, plan_version.revision_id)
     if revision is None:
         return None

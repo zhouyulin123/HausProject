@@ -18,6 +18,7 @@ def persist_generation(
     task: DesignTask,
     plans: list[dict[str, Any]],
     generator: str,
+    requirement_snapshot: dict[str, Any] | None = None,
     image_context: list[str] | None = None,
     workflow_trace: list[dict[str, Any]] | None = None,
 ) -> DesignRevision:
@@ -30,7 +31,11 @@ def persist_generation(
     revision = DesignRevision(
         task_id=task.id,
         version=(latest_version or 0) + 1,
-        requirement_snapshot=deepcopy(task.confirmed_requirement_json or {}),
+        requirement_snapshot=deepcopy(
+            requirement_snapshot
+            if requirement_snapshot is not None
+            else task.confirmed_requirement_json or {}
+        ),
         image_context_snapshot=deepcopy(image_context or []),
         workflow_trace_snapshot=deepcopy(workflow_trace or []),
         generator=generator,

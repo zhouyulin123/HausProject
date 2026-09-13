@@ -53,5 +53,9 @@ Windows 也可以双击 `backend/start_generation_worker.bat`。生产部署应�
 - `PROVIDER_CIRCUIT_COOLDOWN_SECONDS`：开路冷却时间，默认 60 秒，范围 5–3600 秒。
 - `PROVIDER_CIRCUIT_PROBE_LEASE_SECONDS`：半开单探针租约，默认 30 秒，范围 5–300 秒。
 - `GENERATION_INLINE_FALLBACK`：仅用于显式本地调试，默认关闭，生产环境配置为 `true` 会拒绝启动。
+- `WORKER_PRESENCE_HEARTBEAT_SECONDS`：空闲或繁忙进程都要上报的存活心跳，默认 10 秒。
+- `WORKER_READINESS_TIMEOUT_SECONDS`：API 判定 Worker 过期的窗口，默认 45 秒，必须大于存活心跳间隔。
 
 接口行为：`POST /api/design/tasks/{task_id}/generate-async` 入队，`GET /api/design/tasks/{task_id}/generation` 查询状态（含 `execution_deadline_at`、`dead_lettered_at`、`cost_cny`、`cost_reserved_cny` 与 `cost_limit_cny`），`POST /api/design/tasks/{task_id}/generation/cancel` 请求取消。
+
+进程启动后会先写入 `worker_heartbeats` 再进入消费循环；首次登记失败时拒绝消费。优雅退出会立即下线，异常退出则在 `WORKER_READINESS_TIMEOUT_SECONDS` 后被 `/ready` 判为过期。生产部署使用仓库根目录 `Procfile` 的 `worker-generation` 进程类型并开启自动重启。
