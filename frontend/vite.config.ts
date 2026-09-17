@@ -4,6 +4,11 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 import { chunkGroupForModule } from "./build/chunkGroups";
 
+const backendPort = Number(process.env.HAUS_BACKEND_PORT || "8081");
+if (!Number.isInteger(backendPort) || backendPort < 1 || backendPort > 65535) {
+  throw new Error("HAUS_BACKEND_PORT 必须是有效端口");
+}
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -26,8 +31,8 @@ export default defineConfig({
     port: 8080,
     // 后端联调：FastAPI 运行在 8081 端口
     proxy: {
-      "/api": "http://127.0.0.1:8081",
-      "/uploads": "http://127.0.0.1:8081",
+      "/api": `http://127.0.0.1:${backendPort}`,
+      "/uploads": `http://127.0.0.1:${backendPort}`,
     },
   },
 });

@@ -51,6 +51,8 @@ describe("任务级整屋空间接口", () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/design/tasks/42/space/versions?limit=20&before_version=7");
     await api.getTaskSpaceVersion(42, 3);
     expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/design/tasks/42/space/versions/3");
+    await api.getTaskSpaceDraftSource(42, 12);
+    expect(fetchMock.mock.calls[3]?.[0]).toBe("/api/design/tasks/42/space/sources/12");
   });
 
   it("保存原始文档、基准版本和调用方幂等键，同请求重试不换键", async () => {

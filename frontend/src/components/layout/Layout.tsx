@@ -1,11 +1,13 @@
 import { Suspense, useEffect } from "react";
-import { Outlet, ScrollRestoration } from "react-router-dom";
+import { Outlet, ScrollRestoration, useLocation } from "react-router-dom";
 import Header from "./Header";
 import Footer from "./Footer";
 import { useShopStore } from "@/store/useShopStore";
 import { useAuthStore } from "@/store/useAuthStore";
 
 export default function Layout() {
+  const { pathname } = useLocation();
+  const spatialWorkspace = /^\/design\/\d+\/space\/?$/.test(pathname);
   const loadShop = useShopStore((s) => s.load);
   const initAuth = useAuthStore((s) => s.init);
 
@@ -28,7 +30,7 @@ export default function Layout() {
           <Outlet />
         </Suspense>
       </main>
-      <Footer />
+      {!spatialWorkspace && <Footer />}
       <ScrollRestoration />
     </div>
   );

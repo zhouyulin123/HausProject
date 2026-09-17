@@ -20,6 +20,7 @@ const lazyPage = (importer: () => Promise<PageModule>) =>
 
 const DesignDetailPage = lazyPage(() => import("@/pages/DesignDetailPage"));
 const DesignStartPage = lazyPage(() => import("@/pages/DesignStartPage"));
+const WholeHomePage = lazyPage(() => import("@/pages/WholeHomePage"));
 const DesignWorkspacePage = lazyPage(
   () => import("@/pages/DesignWorkspacePage"),
 );
@@ -73,6 +74,7 @@ export const router = createBrowserRouter(
           element: <Navigate replace to={DESIGN_START_PATH} />,
         })),
         { path: DESIGN_START_PATH.slice(1), element: <DesignStartPage /> },
+        { path: "design/:projectId/space", element: <WholeHomePage /> },
         {
           path: "design/:projectId/workspace",
           element: <DesignWorkspacePage />,

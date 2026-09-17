@@ -144,17 +144,26 @@ class SpatialOpening(SpatialModel):
     sill_height: float = Field(default=0, ge=0, le=8)
 
 
+class SpatialImageReference(SpatialModel):
+    origin: SpatialPoint
+    width: float = Field(gt=0, le=10000)
+    depth: float = Field(gt=0, le=10000)
+
+
 class SpatialDocument(SpatialModel):
     schema_version: Literal["spatial/1.0"]
     unit: Literal["m"]
     scale_status: Literal["unconfirmed", "confirmed"]
     source_image_id: int | None = Field(default=None, gt=0)
+    image_reference: SpatialImageReference | None = None
     rooms: list[SpatialRoom] = Field(min_length=1, max_length=50)
     walls: list[SpatialWall] = Field(default_factory=list, max_length=500)
     openings: list[SpatialOpening] = Field(default_factory=list, max_length=500)
 
     @model_validator(mode="after")
     def validate_topology(self):
+        if self.image_reference is not None and self.source_image_id is None:
+            raise ValueError("描绘底图必须关联原图")
         for kind, items in (
             ("房间", self.rooms),
             ("墙体", self.walls),

@@ -35,6 +35,7 @@ export interface SpatialDocument {
   unit: "m";
   scale_status: "unconfirmed" | "confirmed";
   source_image_id: number | null;
+  image_reference?: {origin: SpatialPoint; width: number; depth: number} | null;
   rooms: SpatialRoom[];
   walls: SpatialWall[];
   openings: SpatialOpening[];
@@ -50,4 +51,10 @@ export interface SpatialResponse {
   task_id: number;
   version: number;
   document: SpatialDocument | null;
+}
+
+export interface SpatialVersionList {
+  task_id: number;
+  versions: { version: number; created_at: string; room_count: number; scale_status: SpatialDocument["scale_status"] }[];
+  next_before_version: number | null;
 }

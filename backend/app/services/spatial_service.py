@@ -46,6 +46,42 @@ def get_space(db: Session, task_id: int) -> SpatialResponse:
     )
 
 
+def get_version(db: Session, task_id: int, version: int) -> SpatialResponse:
+    record = db.scalar(
+        select(DesignSpaceVersion).where(
+            DesignSpaceVersion.task_id == task_id,
+            DesignSpaceVersion.version == version,
+        )
+    )
+    if record is None:
+        raise LookupError("空间版本不存在")
+    return _response(record)
+
+
+def list_versions(db: Session, task_id: int, before_version: int | None, limit: int):
+    query = select(DesignSpaceVersion).where(DesignSpaceVersion.task_id == task_id)
+    if before_version is not None:
+        query = query.where(DesignSpaceVersion.version < before_version)
+    records = db.scalars(
+        query.order_by(DesignSpaceVersion.version.desc()).limit(limit + 1)
+    ).all()
+    return {
+        "task_id": task_id,
+        "versions": [
+            {
+                "version": row.version,
+                "created_at": row.created_at,
+                "room_count": len(row.document_json["rooms"]),
+                "scale_status": row.document_json["scale_status"],
+            }
+            for row in records[:limit]
+        ],
+        "next_before_version": records[limit - 1].version
+        if len(records) > limit
+        else None,
+    }
+
+
 def save_space(
     db: Session, *, task_id: int, session_id: str, payload: SpatialSaveRequest
 ) -> SpatialResponse:
@@ -88,10 +124,12 @@ def save_space(
     if (
         source_id is not None
         and db.scalar(
-            select(UploadedImage.id).where(
+            select(UploadedImage.id)
+            .where(
                 UploadedImage.id == source_id,
                 UploadedImage.task_id == task_id,
-            ).with_for_update()
+            )
+            .with_for_update()
         )
         is None
     ):

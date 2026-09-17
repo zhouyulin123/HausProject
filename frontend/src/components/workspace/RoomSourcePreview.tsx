@@ -2,15 +2,20 @@ import { useState } from "react";
 import { Maximize2 } from "lucide-react";
 import type { RoomSource } from "@/types/roomModel";
 
-export default function RoomSourcePreview({ source }: { source: RoomSource | null }) {
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  if (!source) return null;
-  const rawUrl = source.image_url;
+export function roomSourceUrl(source: RoomSource | null | undefined): string | null {
+  const rawUrl = source?.image_url;
   let imageUrl: string | null = null;
   if (rawUrl?.startsWith("/uploads/") && !rawUrl.includes("\\")) {
     const parsed = new URL(rawUrl, "https://local.invalid");
     if (parsed.pathname.startsWith("/uploads/")) imageUrl = parsed.pathname + parsed.search;
   }
+  return imageUrl;
+}
+
+export default function RoomSourcePreview({ source }: { source: RoomSource | null }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  if (!source) return null;
+  const imageUrl = roomSourceUrl(source);
   const title = source.file_name || "空间原图";
   return (
     <section className="mt-4" aria-label="空间原图">

@@ -6,7 +6,7 @@ import type {
 } from "@/types/furniture";
 import type { ImageAnalysis, UserRequirement } from "@/types/requirement";
 import type { RoomModel, RoomSource } from "@/types/roomModel";
-import type { SpatialResponse, SpatialSaveRequest } from "@/types/spatial";
+import type { SpatialResponse, SpatialSaveRequest, SpatialVersionList } from "@/types/spatial";
 import type {
   AgentExecutionEvent,
   AgentExitReason,
@@ -1233,6 +1233,24 @@ export async function addOpenGeometryToScene(
 
 export async function getTaskSpace(taskId: number): Promise<SpatialResponse> {
   return request<SpatialResponse>(`/api/design/tasks/${taskId}/space`);
+}
+
+export async function getTaskSpaceVersions(taskId: number, beforeVersion?: number): Promise<SpatialVersionList> {
+  const query = new URLSearchParams({ limit: "20" });
+  if (beforeVersion !== undefined) query.set("before_version", String(beforeVersion));
+  return request<SpatialVersionList>(`/api/design/tasks/${taskId}/space/versions?${query}`);
+}
+
+export async function getTaskSpaceVersion(taskId: number, version: number): Promise<SpatialResponse> {
+  return request<SpatialResponse>(`/api/design/tasks/${taskId}/space/versions/${version}`);
+}
+
+export async function getTaskSpaceSource(taskId: number, version: number): Promise<RoomSource | null> {
+  return request<RoomSource | null>(`/api/design/tasks/${taskId}/space/versions/${version}/source`);
+}
+
+export async function getTaskSpaceDraftSource(taskId: number, imageId: number): Promise<RoomSource> {
+  return request<RoomSource>(`/api/design/tasks/${taskId}/space/sources/${imageId}`);
 }
 
 /** 幂等键由调用方保存并在同次修改重试时复用；版本冲突交由工作台处理。 */
