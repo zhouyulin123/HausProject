@@ -1996,6 +1996,94 @@ def test_agent_checkpoint_contains_cold_start_project_seed(agent_api_context):
 
 
 @pytest.mark.integration
+def test_checkpoint_restores_source_from_same_validated_room_model(agent_api_context):
+    client, factory, owner_id, _, task_id = agent_api_context
+    room_model = {
+        "rooms": [{
+            "id": "bedroom",
+            "name": "卧室",
+            "floorPolygon": [
+                {"x": 0, "z": 0}, {"x": 1, "z": 0}, {"x": 1, "z": 1},
+            ],
+        }],
+    }
+    with factory() as db:
+        image = UploadedImage(
+            task_id=task_id,
+            file_url="/uploads/room-source.png",
+            file_name="真实户型.png",
+            analysis_json={"room_model": room_model},
+        )
+        db.add(image)
+        db.flush()
+        image_id = image.id
+        db.add(UploadedImage(
+            task_id=task_id,
+            file_url="/uploads/newer-invalid.png",
+            analysis_json={"room_model": {"rooms": []}},
+        ))
+        task = db.get(DesignTask, task_id)
+        task.agent_state_json = {
+            "room_model": {"rooms": []},
+            "room_source": {"image_id": 999999, "image_url": "/uploads/stale.png"},
+        }
+        db.commit()
+
+    response = client.get(
+        f"/api/design/tasks/{task_id}/agent-state",
+        headers={"X-Session-ID": owner_id},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["room_model"]["rooms"][0]["id"] == "bedroom"
+    assert payload["room_source"] == {
+        "image_id": image_id,
+        "image_url": "/uploads/room-source.png",
+        "file_name": "真实户型.png",
+    }
+
+
+@pytest.mark.integration
+def test_checkpoint_without_valid_model_does_not_reuse_foreign_source(agent_api_context):
+    client, factory, owner_id, stranger_id, task_id = agent_api_context
+    with factory() as db:
+        foreign_task = DesignTask(status="draft")
+        db.add(foreign_task)
+        db.flush()
+        db.add(UploadedImage(
+            task_id=foreign_task.id,
+            file_url="/uploads/foreign.png",
+            analysis_json={"room_model": {"rooms": [{
+                "id": "foreign", "name": "他人的房间",
+                "floorPolygon": [
+                    {"x": 0, "z": 0}, {"x": 1, "z": 0}, {"x": 1, "z": 1},
+                ],
+            }]}},
+        ))
+        db.add(UploadedImage(
+            task_id=task_id,
+            file_url="/uploads/analysis-failed.png",
+            analysis_json={"source": "placeholder"},
+        ))
+        db.commit()
+
+    response = client.get(
+        f"/api/design/tasks/{task_id}/agent-state",
+        headers={"X-Session-ID": owner_id},
+    )
+    assert response.status_code == 200
+    assert response.json()["room_model"] is None
+    assert response.json()["room_source"] is None
+    forbidden = client.get(
+        f"/api/design/tasks/{task_id}/agent-state",
+        headers={"X-Session-ID": stranger_id},
+    )
+    assert forbidden.status_code in (403, 404)
+    assert "foreign.png" not in forbidden.text
+
+
+@pytest.mark.integration
 def test_plan_refine_runs_as_metering_aware_agent_tool(
     agent_api_context,
     monkeypatch,
