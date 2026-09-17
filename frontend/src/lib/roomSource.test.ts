@@ -35,6 +35,16 @@ describe("空间模型与原图恢复", () => {
     expect(useDesignProjectStore.getState().projects[42].roomSource).toBeNull();
   });
 
+  it("较早的上传响应和失败识别不得替换已有有效空间", () => {
+    const store = useDesignProjectStore.getState();
+    store.registerProject(42, "room_reconstruction", { requirement: emptyRequirement, roomModel: model, roomSource: source });
+    store.setRoomContext(42, { roomModel: model, roomSource: { ...source, image_id: 7 } });
+    expect(useDesignProjectStore.getState().projects[42].roomSource).toEqual(source);
+    store.setRoomContext(42, { roomModel: null, roomSource: null });
+    expect(useDesignProjectStore.getState().projects[42].roomSource).toEqual(source);
+    expect(useDesignProjectStore.getState().projects[42].roomModel).toEqual(model);
+  });
+
   it("旧缓存迁移补齐空来源，不猜测图片地址", () => {
     const project = createDesignProject("room_reconstruction", { requirement: emptyRequirement, roomModel: model }, { id: 42 });
     const { roomSource: _source, ...legacy } = project;
