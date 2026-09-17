@@ -44,6 +44,15 @@ describe("任务级整屋空间接口", () => {
     expect(await api.getTaskSpace(42)).toEqual(response);
   });
 
+  it("分页读取历史并按精确版本恢复，不把历史当当前版本", async () => {
+    const fetchMock = setup(200, { task_id: 42, versions: [], next_before_version: null });
+    const api = await import("./designApi");
+    await api.getTaskSpaceVersions(42, 7);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/design/tasks/42/space/versions?limit=20&before_version=7");
+    await api.getTaskSpaceVersion(42, 3);
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/design/tasks/42/space/versions/3");
+  });
+
   it("保存原始文档、基准版本和调用方幂等键，同请求重试不换键", async () => {
     const response = { task_id: 42, version: 4, document };
     const fetchMock = setup(200, response);
