@@ -60,14 +60,21 @@ def save_space(
         ).encode("utf-8")
     ).hexdigest()
     # MySQL 默认 REPEATABLE READ：归属预检可能已经建立旧快照，锁后必须使用当前读。
-    current = db.scalar(select(DesignSpace).where(DesignSpace.task_id == task_id)
-                        .with_for_update().execution_options(populate_existing=True))
+    current = db.scalar(
+        select(DesignSpace)
+        .where(DesignSpace.task_id == task_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     version_number = current.current_version if current else 0
     replay = db.scalar(
-        select(DesignSpaceVersion).where(
+        select(DesignSpaceVersion)
+        .where(
             DesignSpaceVersion.task_id == task_id,
             DesignSpaceVersion.client_mutation_id == payload.client_mutation_id,
-        ).with_for_update().execution_options(populate_existing=True)
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if replay:
         if replay.mutation_digest != digest:
@@ -81,11 +88,11 @@ def save_space(
     if (
         source_id is not None
         and db.scalar(
-        select(UploadedImage.id).where(
+            select(UploadedImage.id).where(
                 UploadedImage.id == source_id,
                 UploadedImage.task_id == task_id,
-            )
-        ).with_for_update()
+            ).with_for_update()
+        )
         is None
     ):
         raise SpatialSourceError("空间原图不存在或不属于当前任务")

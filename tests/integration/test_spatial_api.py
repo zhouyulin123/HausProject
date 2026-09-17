@@ -192,14 +192,20 @@ def test_saved_state_queries_use_current_reads_after_parent_lock(context, monkey
 
     def record(execute_state):
         if execute_state.is_select:
-            statements.append(str(execute_state.statement.compile(dialect=mysql.dialect())))
+            statements.append(
+                str(execute_state.statement.compile(dialect=mysql.dialect()))
+            )
 
     event.listen(Session, "do_orm_execute", record)
     try:
         assert client.put(url, headers=headers, json=request()).status_code == 200
     finally:
         event.remove(Session, "do_orm_execute", record)
-    reads = [sql for sql in statements if "FROM design_spaces" in sql or "FROM design_space_versions" in sql]
+    reads = [
+        sql
+        for sql in statements
+        if "FROM design_spaces" in sql or "FROM design_space_versions" in sql
+    ]
     assert reads and all("FOR UPDATE" in sql for sql in reads)
 
 
