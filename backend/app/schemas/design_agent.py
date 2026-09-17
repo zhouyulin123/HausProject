@@ -161,11 +161,18 @@ class AgentTurnResponse(BaseModel):
     partial_completion: bool = Field(default=False, alias="partialCompletion")
 
 
+class RoomSourceResponse(BaseModel):
+    image_id: int = Field(gt=0)
+    image_url: str | None = None
+    file_name: str | None = None
+
+
 class AgentCheckpointResponse(BaseModel):
     task_id: int
     state_version: int
     confirmed_requirement: dict[str, Any] = Field(default_factory=dict)
     room_model: dict[str, Any] | None = None
+    room_source: RoomSourceResponse | None = None
     status: str
     active_mode: ActiveMode
     active_room_id: str | None = None

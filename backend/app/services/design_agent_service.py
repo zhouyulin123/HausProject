@@ -2685,6 +2685,7 @@ def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
     generation_run_service.synchronize_agent_checkpoint(db, task=task)
     state = _checkpoint_state(task)
     room_model = None
+    room_source = None
     images = db.scalars(
         select(UploadedImage)
         .where(UploadedImage.task_id == task.id)
@@ -2701,6 +2702,11 @@ def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
             )
         except (TypeError, ValueError):
             continue
+        room_source = {
+            "image_id": image.id,
+            "image_url": image.file_url,
+            "file_name": image.file_name,
+        }
         break
     messages = db.scalars(
         select(ChatLog)
@@ -2729,8 +2735,9 @@ def get_checkpoint(db: Session, task: DesignTask) -> dict[str, Any]:
         "task_id": task.id,
         "state_version": task.agent_state_version or 0,
         "confirmed_requirement": deepcopy(task.confirmed_requirement_json or {}),
-        "room_model": room_model,
         **state,
+        "room_model": room_model,
+        "room_source": room_source,
         "custom_furniture_draft_ref": draft_ref,
         "messages": [
             {
