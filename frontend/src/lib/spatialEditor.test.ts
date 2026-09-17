@@ -15,6 +15,14 @@ describe("整屋编辑操作", () => {
     expect(scaled.scale_status).toBe("unconfirmed");
     expect(doc.rooms[0].polygon[1].x).toBe(4);
   });
+
+  it("校准同时缩放底图坐标框，不改变图片身份",()=>{
+    const doc=document();doc.source_image_id=8;
+    Object.assign(doc,{image_reference:{origin:{x:1,z:2},width:10,depth:8}});
+    const scaled=scaleSpatialDocument(doc,2) as SpatialDocument & {image_reference:{origin:{x:number;z:number};width:number;depth:number}};
+    expect(scaled.image_reference).toEqual({origin:{x:2,z:4},width:20,depth:16});
+    expect(scaled.source_image_id).toBe(8);
+  });
   it("相邻房间共用墙体，删除房间不会丢失另一侧引用", () => {
     let doc=document(); doc.rooms.push(rectangleRoom("r2","卧室",4,0,3,3,2.8));
     doc=buildRoomWalls(buildRoomWalls(doc,"r1",0.12),"r2",0.12);

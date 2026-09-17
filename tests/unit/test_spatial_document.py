@@ -226,6 +226,16 @@ def test_narrow_crossing_is_not_lost_by_orientation_product_tolerance():
         SpatialDocument.model_validate(payload)
 
 
+def test_image_reference_requires_source_and_valid_metric_frame():
+    payload = document()
+    payload["source_image_id"] = 8
+    payload["image_reference"] = {"origin": {"x": 0, "z": 0}, "width": 10, "depth": 8}
+    assert SpatialDocument.model_validate(payload).image_reference.width == 10
+    payload["source_image_id"] = None
+    with pytest.raises(ValidationError):
+        SpatialDocument.model_validate(payload)
+
+
 def test_small_self_crossing_polygon_with_nonzero_signed_area_is_rejected():
     payload = document()
     payload["rooms"] = [room(points=[(0, 0), (0.006, 0.004), (0.006, 0), (0, 0.006)])]
