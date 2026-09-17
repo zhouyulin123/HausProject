@@ -283,13 +283,20 @@ export const useDesignProjectStore = create<DesignProjectState>()(
         set((state) =>
           updateProject(state, projectId, (project) => {
             if (checkpoint.stateVersion < project.stateVersion) return project;
+            // 上传记录只追加，服务端按最新有效图片 ID 选择空间上下文。
+            const incomingRoom = checkpoint.roomContext;
+            const roomContext = incomingRoom && (
+              !project.roomSource
+              || (incomingRoom.roomSource
+                && incomingRoom.roomSource.image_id >= project.roomSource.image_id)
+            ) ? incomingRoom : undefined;
             return {
               ...project,
-              ...(checkpoint.roomContext ? {
-                roomModel: checkpoint.roomContext.roomModel
-                  ? structuredClone(checkpoint.roomContext.roomModel) : null,
-                roomSource: checkpoint.roomContext.roomModel && checkpoint.roomContext.roomSource
-                  ? structuredClone(checkpoint.roomContext.roomSource) : null,
+              ...(roomContext ? {
+                roomModel: roomContext.roomModel
+                  ? structuredClone(roomContext.roomModel) : null,
+                roomSource: roomContext.roomModel && roomContext.roomSource
+                  ? structuredClone(roomContext.roomSource) : null,
               } : {}),
               status: checkpoint.status,
               mode: checkpoint.activeMode,
