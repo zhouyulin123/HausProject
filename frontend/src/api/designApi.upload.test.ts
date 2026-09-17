@@ -33,6 +33,7 @@ describe("项目级房间上传", () => {
       .mockResolvedValueOnce(
         jsonResponse({
           image_id: 8,
+          image_url: "/uploads/8-room.png",
           analysis: { findings: [], source: "vl", room_model: null },
         }),
       );
@@ -40,7 +41,8 @@ describe("项目级房间上传", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { analyzeRoomImage } = await import("./designApi");
-    await analyzeRoomImage(new File(["image"], "客厅.png", { type: "image/png" }), 42);
+    const result = await analyzeRoomImage(new File(["image"], "客厅.png", { type: "image/png" }), 42);
+    expect(result.imageUrl).toBe("/uploads/8-room.png");
 
     const body = fetchMock.mock.calls[1]?.[1]?.body;
     const headers = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
