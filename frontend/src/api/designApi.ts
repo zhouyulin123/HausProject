@@ -6,6 +6,7 @@ import type {
 } from "@/types/furniture";
 import type { ImageAnalysis, UserRequirement } from "@/types/requirement";
 import type { RoomModel, RoomSource } from "@/types/roomModel";
+import type { SpatialResponse, SpatialSaveRequest } from "@/types/spatial";
 import type {
   AgentExecutionEvent,
   AgentExitReason,
@@ -1228,6 +1229,21 @@ export async function addOpenGeometryToScene(
       body: JSON.stringify(payload),
     },
   );
+}
+
+export async function getTaskSpace(taskId: number): Promise<SpatialResponse> {
+  return request<SpatialResponse>(`/api/design/tasks/${taskId}/space`);
+}
+
+/** 幂等键由调用方保存并在同次修改重试时复用；版本冲突交由工作台处理。 */
+export async function saveTaskSpace(
+  taskId: number,
+  payload: SpatialSaveRequest,
+): Promise<SpatialResponse> {
+  return request<SpatialResponse>(`/api/design/tasks/${taskId}/space`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
 }
 
 /** 基于已知版本保存场景；服务端会拒绝过期版本，避免静默覆盖。 */

@@ -1441,6 +1441,31 @@ class DesignPlanVersion(Base):
     )
 
 
+class DesignSpace(Base):
+    """任务级整屋空间当前版本指针，先于商品方案存在。"""
+
+    __tablename__ = "design_spaces"
+    task_id = Column(Integer, ForeignKey("design_tasks.id", ondelete="CASCADE"), primary_key=True)
+    current_version = Column(Integer, nullable=False)
+
+
+class DesignSpaceVersion(Base):
+    """整屋空间追加式历史；每个成功请求保留原响应版本。"""
+
+    __tablename__ = "design_space_versions"
+    __table_args__ = (
+        UniqueConstraint("task_id", "version", name="uq_space_task_version"),
+        UniqueConstraint("task_id", "client_mutation_id", name="uq_space_task_mutation"),
+    )
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("design_spaces.task_id", ondelete="CASCADE"), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    document_json = Column(JSON, nullable=False)
+    client_mutation_id = Column(String(100), nullable=False)
+    mutation_digest = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class DesignScene(Base):
     """一套方案当前正在编辑的 3D 场景。"""
 

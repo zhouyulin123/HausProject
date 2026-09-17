@@ -16,6 +16,7 @@ from app.api.routes import (
     real_world_governance,
     render,
     scenes,
+    spatial,
     sessions,
     shares,
     shop,
@@ -28,6 +29,7 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
 api_router.include_router(upload.router, prefix="/upload", tags=["upload"])
 api_router.include_router(tasks.router, prefix="/design/tasks", tags=["design_tasks"])
+api_router.include_router(spatial.router, prefix="/design/tasks", tags=["design_space"])
 api_router.include_router(
     design_agent.router,
     prefix="/design/tasks",
