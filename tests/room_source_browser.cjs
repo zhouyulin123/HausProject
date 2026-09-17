@@ -43,6 +43,7 @@ async function main() {
       page.on('pageerror', error => errors.push(error.message));
       let current = structuredClone(checkpoint);
       let brokenImage = false;
+      let uploadMode = 'new';
       await context.route('**/uploads/*', route => brokenImage
         ? route.fulfill({ status: 404, body: '' })
         : route.fulfill({ contentType: 'image/png', body: image }));
@@ -61,6 +62,8 @@ async function main() {
         else if (pathname === '/api/shop') json = { shop_name: '豪斯', phone: null, wechat: null, address: null, slogan: null, logo_url: null };
         else if (pathname === '/api/products') json = { products: [{ id: 1, sku: 'TEST', name: '测试家具', price_text: '待报价', eligibility: { eligible: false, reason_codes: ['development_fixture'] } }] };
         else if (pathname === '/api/upload/image') {
+          if (uploadMode === 'failed') return route.fulfill({ json: { image_id: 10, analysis: { findings: [], source: 'placeholder', room_model: null } } });
+          if (uploadMode === 'replay') return route.fulfill({ json: { image_id: 8, image_url: '/uploads/8-source.png', analysis: { findings: [], source: 'vl', room_model: model } } });
           current = { ...current, room_source: { image_id: 9, image_url: '/uploads/9-source.png', file_name: '更新户型.png' } };
           json = { image_id: 9, image_url: '/uploads/9-source.png', analysis: { findings: [], source: 'vl', room_model: model } };
         } else {
@@ -87,13 +90,14 @@ async function main() {
         const img = document.querySelector('section[aria-label="空间原图"] img');
         return img?.complete && img.naturalWidth > 0;
       });
+      if (width !== 390) await page.waitForFunction(() => [...document.querySelectorAll('span')].some(node => /^\d+\.\d+ m$/.test(node.textContent.trim())));
       assert.equal(await original.getAttribute('href'), '/uploads/8-source.png');
       assert(await page.evaluate(() => {
         const panel = document.getElementById('room-workspace-tools');
         const rect = panel.getBoundingClientRect();
         const labels = [...document.querySelectorAll('div, span')].filter(node =>
           node.children.length === 0 && /^\d+\.\d+ m$/.test(node.textContent.trim()));
-        if (!labels.length) return false;
+        if (!labels.length) return innerWidth < 1024;
         return labels.every(label => {
           const box = label.getBoundingClientRect();
           const x = box.x + box.width / 2;
@@ -101,12 +105,20 @@ async function main() {
           if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom || y >= innerHeight) return true;
           return panel.contains(document.elementFromPoint(x, y));
         });
-      }), '3D 尺寸标签不得遮挡房间资料工具');
+      }), `3D 尺寸标签不得遮挡房间资料工具：${width}`);
       await page.screenshot({ path: `${output}/source-${width}.png`, fullPage: true });
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
 
       await page.locator('input[type=file]').setInputFiles({ name: '更新户型.png', mimeType: 'image/png', buffer: image });
       await page.getByRole('link', { name: '查看原图：更新户型.png', exact: true }).waitFor();
+      uploadMode = 'failed';
+      await page.locator('input[type=file]').setInputFiles({ name: '识别失败.png', mimeType: 'image/png', buffer: image });
+      await page.getByRole('alert').filter({ hasText: '已有空间已保留' }).waitFor();
+      assert.equal(await page.getByRole('link', { name: '查看原图：更新户型.png', exact: true }).getAttribute('href'), '/uploads/9-source.png');
+      uploadMode = 'replay';
+      await page.locator('input[type=file]').setInputFiles({ name: '户型原图.png', mimeType: 'image/png', buffer: image });
+      await page.getByRole('alert').filter({ hasText: '当前较新的空间已保留' }).waitFor();
+      assert.equal(await page.getByRole('link', { name: '查看原图：更新户型.png', exact: true }).getAttribute('href'), '/uploads/9-source.png');
       await page.evaluate(() => localStorage.removeItem('ai-home-design-projects'));
       await page.reload();
       await showRoom();
@@ -135,7 +147,7 @@ async function main() {
       await page.getByText('原图暂不可用', { exact: true }).waitFor();
       assert.deepEqual(errors, []);
       assert.deepEqual(unexpected, []);
-      report.checks.push({ width, coldRestore: true, upload: true, cacheLossRestore: true, imageFailure: true, canvasPixels: true, canvasRotation: true, overflow: false });
+      report.checks.push({ width, coldRestore: true, upload: true, failedUploadPreserved: true, oldUploadReplayRejected: true, cacheLossRestore: true, imageFailure: true, canvasPixels: true, canvasRotation: true, overflow: false });
       await context.close();
     }
     await fs.writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));

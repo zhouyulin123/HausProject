@@ -202,12 +202,16 @@ export const useDesignProjectStore = create<DesignProjectState>()(
           })),
         ),
       setRoomContext: (projectId, context) =>
-        set((state) => updateProject(state, projectId, (project) => ({
-          ...project,
-          roomModel: context.roomModel ? structuredClone(context.roomModel) : null,
-          roomSource: context.roomModel && context.roomSource
-            ? structuredClone(context.roomSource) : null,
-        }))),
+        set((state) => updateProject(state, projectId, (project) => {
+          if (!context.roomModel || (project.roomSource && (
+            !context.roomSource || context.roomSource.image_id < project.roomSource.image_id
+          ))) return project;
+          return {
+            ...project,
+            roomModel: structuredClone(context.roomModel),
+            roomSource: context.roomSource ? structuredClone(context.roomSource) : null,
+          };
+        })),
       setSceneReference: (projectId, sceneRef) =>
         set((state) =>
           updateProject(state, projectId, (project) => {

@@ -5,7 +5,7 @@ import type {
   Furniture3DSpec,
 } from "@/types/furniture";
 import type { ImageAnalysis, UserRequirement } from "@/types/requirement";
-import type { RoomModel } from "@/types/roomModel";
+import type { RoomModel, RoomSource } from "@/types/roomModel";
 import type {
   AgentExecutionEvent,
   AgentExitReason,
@@ -377,6 +377,7 @@ export async function analyzeRoomImage(
     const idempotencyKey = await uploadIdempotencyKey(file, taskId);
     const data = await request<{
       image_id: number;
+      image_url?: string | null;
       analysis: {
         findings: string[];
         suggestions?: string[];
@@ -396,6 +397,7 @@ export async function analyzeRoomImage(
       fileName: file.name,
       fileSize: sizeText,
       imageId: data.image_id,
+      imageUrl: data.image_url ?? null,
       findings: data.analysis.findings,
       suggestions: data.analysis.suggestions ?? [],
       spaceType: data.analysis.space_type,
@@ -1625,6 +1627,7 @@ export interface DesignAgentStateResponse {
   state_version: number;
   confirmed_requirement: Record<string, unknown>;
   room_model: RoomModel | null;
+  room_source?: RoomSource | null;
   status: AgentTaskStatus;
   active_mode: AgentActiveMode;
   active_room_id: string | null;

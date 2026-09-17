@@ -51,6 +51,7 @@ export interface ImageAnalysis {
   fileSize: string;
   /** 后端图片 id，用于尺寸校准等后续操作 */
   imageId?: number;
+  imageUrl?: string | null;
   findings: string[];
   suggestions?: string[];
   spaceType?: string;
