@@ -2,7 +2,7 @@ import type { ChatMessage } from "@/types/chat";
 import type { DesignPlan } from "@/types/design";
 import type { FurnitureItem } from "@/types/furniture";
 import type { UserRequirement } from "@/types/requirement";
-import type { RoomModel } from "@/types/roomModel";
+import type { RoomModel, RoomSource } from "@/types/roomModel";
 import type { DesignScene } from "@/types/scene";
 import type {
   AgentExecutionState,
@@ -47,6 +47,7 @@ export interface DesignProject {
   updatedAt: string;
   requirement: UserRequirement;
   roomModel: RoomModel | null;
+  roomSource: RoomSource | null;
   messages: ChatMessage[];
   selectedFurnitureIds: string[];
   activeRoomId: string | null;
@@ -70,6 +71,7 @@ export interface DesignProject {
 export interface DesignProjectSeed {
   requirement: UserRequirement;
   roomModel: RoomModel | null;
+  roomSource?: RoomSource | null;
 }
 
 export interface DesignEntryMode {
@@ -148,6 +150,7 @@ export function restoreDesignProjectSeed(input: {
   confirmedRequirement: Record<string, unknown>;
   facts: Record<string, unknown>;
   roomModel: RoomModel | null;
+  roomSource?: RoomSource | null;
 }): DesignProjectSeed {
   const source = input.confirmedRequirement;
   const rooms = stringList(source.rooms);
@@ -193,6 +196,7 @@ export function restoreDesignProjectSeed(input: {
       extraNotes: stringValue(source.extraNotes, emptyRequirement.extraNotes),
     },
     roomModel: input.roomModel ? structuredClone(input.roomModel) : null,
+    roomSource: input.roomModel && input.roomSource ? structuredClone(input.roomSource) : null,
   };
 }
 
@@ -225,6 +229,7 @@ export function createDesignProject(
     updatedAt: now,
     requirement: cloneRequirement(seed.requirement),
     roomModel: seed.roomModel ? structuredClone(seed.roomModel) : null,
+    roomSource: seed.roomModel && seed.roomSource ? structuredClone(seed.roomSource) : null,
     messages: [{ id: `opening-${options.id}`, role: "ai", content: entry.opening }],
     selectedFurnitureIds: [],
     activeRoomId: seed.roomModel?.rooms[0]?.id ?? null,

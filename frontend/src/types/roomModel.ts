@@ -5,6 +5,13 @@ export interface RoomModelPoint {
   z: number;
 }
 
+/** 与服务端已校验房间模型绑定的原始图片记录。 */
+export interface RoomSource {
+  image_id: number;
+  image_url: string | null;
+  file_name: string | null;
+}
+
 export interface RoomModelPolygon {
   id: string;
   name: string;

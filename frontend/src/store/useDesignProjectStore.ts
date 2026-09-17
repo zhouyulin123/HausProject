@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { ChatMessage } from "@/types/chat";
-import type { RoomModel } from "@/types/roomModel";
+import type { RoomModel, RoomSource } from "@/types/roomModel";
 import type { DesignScene } from "@/types/scene";
 import type {
   AgentExecutionState,
@@ -40,6 +40,10 @@ interface DesignProjectState {
     targetFurnitureId: string,
   ) => boolean;
   setRoomModel: (projectId: number, roomModel: RoomModel | null) => void;
+  setRoomContext: (
+    projectId: number,
+    context: { roomModel: RoomModel | null; roomSource: RoomSource | null },
+  ) => void;
   setSceneReference: (
     projectId: number,
     sceneRef: AgentSceneReference | null,
@@ -66,6 +70,7 @@ interface DesignProjectState {
       pendingQuestions: AgentPendingQuestion[];
       facts?: Record<string, unknown>;
       factEvidence?: Record<string, Record<string, unknown>>;
+      roomContext?: { roomModel: RoomModel | null; roomSource: RoomSource | null };
       sceneRef: AgentSceneReference | null;
       exitReason: AgentExitReason | null;
       activeRoomId?: string | null;
@@ -92,6 +97,7 @@ export function migrateDesignProjectState(persisted: unknown, _version?: number)
           messages: [],
           facts: project.facts ?? {},
           factEvidence: project.factEvidence ?? {},
+          roomSource: project.roomModel ? project.roomSource ?? null : null,
           customFurnitureSpec: null,
           customFurnitureResult: null,
           authoritativeScene: null,
@@ -192,8 +198,16 @@ export const useDesignProjectStore = create<DesignProjectState>()(
           updateProject(state, projectId, (project) => ({
             ...project,
             roomModel: roomModel ? structuredClone(roomModel) : null,
+            roomSource: null,
           })),
         ),
+      setRoomContext: (projectId, context) =>
+        set((state) => updateProject(state, projectId, (project) => ({
+          ...project,
+          roomModel: context.roomModel ? structuredClone(context.roomModel) : null,
+          roomSource: context.roomModel && context.roomSource
+            ? structuredClone(context.roomSource) : null,
+        }))),
       setSceneReference: (projectId, sceneRef) =>
         set((state) =>
           updateProject(state, projectId, (project) => {
@@ -271,6 +285,12 @@ export const useDesignProjectStore = create<DesignProjectState>()(
             if (checkpoint.stateVersion < project.stateVersion) return project;
             return {
               ...project,
+              ...(checkpoint.roomContext ? {
+                roomModel: checkpoint.roomContext.roomModel
+                  ? structuredClone(checkpoint.roomContext.roomModel) : null,
+                roomSource: checkpoint.roomContext.roomModel && checkpoint.roomContext.roomSource
+                  ? structuredClone(checkpoint.roomContext.roomSource) : null,
+              } : {}),
               status: checkpoint.status,
               mode: checkpoint.activeMode,
               stateVersion: checkpoint.stateVersion,
@@ -314,7 +334,7 @@ export const useDesignProjectStore = create<DesignProjectState>()(
     }),
     {
       name: "ai-home-design-projects",
-      version: 5,
+      version: 6,
       migrate: migrateDesignProjectState,
       partialize: (state) => ({
         projects: Object.fromEntries(
