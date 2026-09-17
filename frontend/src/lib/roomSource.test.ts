@@ -41,4 +41,26 @@ describe("空间模型与原图恢复", () => {
     const migrated = migrateDesignProjectState({ projects: { 42: legacy }, currentProjectId: 42 }, 5);
     expect(migrated.projects[42].roomSource).toBeNull();
   });
+
+  it("上传后迟到的旧 checkpoint 不得清空或回退原图与模型", () => {
+    const store = useDesignProjectStore.getState();
+    store.registerProject(42, "room_reconstruction", { requirement: emptyRequirement, roomModel: model, roomSource: source });
+    const base = {
+      stateVersion: 0, status: "draft" as const, activeMode: "room_reconstruction" as const,
+      pendingQuestions: [], sceneRef: null, exitReason: null,
+    };
+    for (const roomContext of [
+      { roomModel: null, roomSource: null },
+      { roomModel: model, roomSource: { ...source, image_id: 7 } },
+    ]) {
+      store.applyAgentState(42, { ...base, roomContext });
+      expect(useDesignProjectStore.getState().projects[42].roomSource).toEqual(source);
+      expect(useDesignProjectStore.getState().projects[42].roomModel).toEqual(model);
+    }
+    store.applyAgentState(42, { ...base, stateVersion: 1,
+      roomContext: { roomModel: model, roomSource: { ...source, image_id: 9 } } });
+    expect(useDesignProjectStore.getState().projects[42].roomSource?.image_id).toBe(9);
+    store.applyAgentState(42, { ...base, roomContext: { roomModel: model, roomSource: source } });
+    expect(useDesignProjectStore.getState().projects[42].roomSource?.image_id).toBe(9);
+  });
 });
