@@ -79,6 +79,17 @@ def turn(key="one"):
     }
 
 
+def test_agent_private_responses_disable_shared_caching(context):
+    client, url, headers, stranger, *_ = context
+    for response in (
+        client.post(url, headers=headers, json=turn("cache-success")),
+        client.get(url, headers=headers),
+        client.get(url, headers={"X-Session-ID": stranger}),
+    ):
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["vary"].lower() == "x-session-id"
+
+
 @pytest.mark.integration
 def test_agent_context_includes_only_normalized_confirmed_requirements(context):
     client, url, headers, _, calls, _, _, factory = context

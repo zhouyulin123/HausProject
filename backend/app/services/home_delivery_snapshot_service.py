@@ -7,6 +7,7 @@ import json
 import secrets
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import load_only
 from app.db.models import (
     HomeDeliverySnapshot,
@@ -420,29 +421,38 @@ def create_share(db, task_id, session_id, delivery_id, payload):
     _quota(db, HomeDeliveryShare, task_id, 100)
     public = checked_size(public_projection(snapshot))
     PublicSnapshot.model_validate(public)
-    token = secrets.token_urlsafe(32)
-    row = HomeDeliveryShare(
-        task_id=task_id,
-        delivery_id=delivery_id,
-        client_mutation_id=payload.client_mutation_id,
-        request_digest=request_digest,
-        consent_json=dict(
-            consent_public=True,
-            include_private_models=False,
-            include_source_image=False,
-            disclosure_version="home-share-consent/1.0",
-        ),
-        token_digest=sha256(token.encode()).hexdigest(),
-        snapshot_json=public,
-        content_digest=digest(public),
-        expires_at=datetime.now(timezone.utc)
-        + timedelta(hours=payload.expires_in_hours),
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        hours=payload.expires_in_hours
     )
-    db.add(row)
-    db.flush()
-    result = share_response(row, token)
-    db.commit()
-    return result
+    for _ in range(3):
+        token = secrets.token_urlsafe(32)
+        row = HomeDeliveryShare(
+            task_id=task_id,
+            delivery_id=delivery_id,
+            client_mutation_id=payload.client_mutation_id,
+            request_digest=request_digest,
+            consent_json=dict(
+                consent_public=True,
+                include_private_models=False,
+                include_source_image=False,
+                disclosure_version="home-share-consent/1.0",
+            ),
+            token_digest=sha256(token.encode()).hexdigest(),
+            snapshot_json=public,
+            content_digest=digest(public),
+            expires_at=expires_at,
+        )
+        try:
+            with db.begin_nested():
+                db.add(row)
+                db.flush()
+        except IntegrityError:
+            continue
+        result = share_response(row, token)
+        db.commit()
+        return result
+    db.rollback()
+    raise DeliveryError("无法生成唯一分享凭证")
 
 
 def revoke(db, task_id, session_id, share_id):

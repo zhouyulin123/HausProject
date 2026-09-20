@@ -9,7 +9,7 @@ async function main() {
   const api = process.env.HAUS_SPATIAL_TEST_API || "http://127.0.0.1:8083";
   const output = path.resolve("outputs/v2-representative-journey");
   await fs.mkdir(output, { recursive: true });
-  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  const browser = await chromium.launch({ headless: true });
   const checks = [];
   try {
     for (const width of [1440, 390]) {

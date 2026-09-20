@@ -3,7 +3,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import SessionIdHeader, require_owned_design_task
+from app.api.dependencies import (
+    SessionIdHeader,
+    private_session_headers,
+    protect_private_http_exception,
+    require_owned_design_task,
+    set_private_session_headers,
+)
 from app.db.database import get_db
 from app.schemas.home_design_agent import (
     HomeDesignAgentRequest,
@@ -17,7 +23,7 @@ router = APIRouter()
 
 
 def _error(exc):
-    headers = {"Cache-Control": "no-store"}
+    headers = private_session_headers()
     if exc.retry_after is not None:
         headers["Retry-After"] = str(exc.retry_after)
     return HTTPException(
@@ -37,7 +43,7 @@ def create_turn(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    response.headers["Cache-Control"] = "no-store"
+    set_private_session_headers(response)
     try:
         require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
         return service.create_turn(
@@ -47,14 +53,13 @@ def create_turn(
         db.rollback()
         raise _error(exc) from exc
     except HTTPException as exc:
-        exc.headers = {**(exc.headers or {}), "Cache-Control": "no-store"}
-        raise
+        raise protect_private_http_exception(exc) from exc
     except AggregateLockBusy as exc:
         db.rollback()
         raise HTTPException(
             409,
             detail={"code": "home_agent_busy", "message": "设计正在更新，请稍后重试"},
-            headers={"Cache-Control": "no-store"},
+            headers=private_session_headers(),
         ) from exc
 
 
@@ -67,12 +72,11 @@ def history(
     limit: int = Query(default=20, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
-    response.headers["Cache-Control"] = "no-store"
+    set_private_session_headers(response)
     try:
         require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
         return service.history(db, task_id=task_id, before_id=before_id, limit=limit)
     except service.HomeAgentError as exc:
         raise _error(exc) from exc
     except HTTPException as exc:
-        exc.headers = {**(exc.headers or {}), "Cache-Control": "no-store"}
-        raise
+        raise protect_private_http_exception(exc) from exc

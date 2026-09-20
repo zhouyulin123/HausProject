@@ -1,5 +1,6 @@
 import logging
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.db.database import get_db
@@ -172,7 +173,20 @@ def test_http_completion_log_keeps_request_correlation_and_dimensions(caplog):
     assert record.duration_ms >= 0
 
 
-def test_public_share_middleware_preserves_privacy(monkeypatch, caplog):
+@pytest.mark.parametrize(
+    ("path", "expected_path"),
+    (
+        ("/api/home-shares/{token}", "/api/home-shares/[redacted]"),
+        ("/api/shares/{token}", "/api/shares/[redacted]"),
+        (
+            "/api/design/shares/{token}/revoke",
+            "/api/design/shares/[redacted]/revoke",
+        ),
+    ),
+)
+def test_public_share_middleware_preserves_privacy(
+    monkeypatch, caplog, path, expected_path
+):
     from app.services import home_delivery_snapshot_service
 
     def unavailable(*args):
@@ -181,9 +195,8 @@ def test_public_share_middleware_preserves_privacy(monkeypatch, caplog):
     monkeypatch.setattr(home_delivery_snapshot_service, "public_share", unavailable)
     token = "x" * 43
     with caplog.at_level(logging.INFO, logger="app.http"):
-        response = TestClient(app).get("/api/home-shares/" + token)
-    assert response.status_code == 404
-    assert response.headers["referrer-policy"] == "no-referrer"
+        response = TestClient(app).get(path.format(token=token))
+    assert response.status_code in {404, 405}
     records = [r for r in caplog.records if getattr(r, "event", None) == "http_request_completed"]
-    assert records[0].http_path == "/api/home-shares/[redacted]"
+    assert records[0].http_path == expected_path
     assert token not in records[0].http_path

@@ -3,7 +3,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import SessionIdHeader, require_owned_design_task
+from app.api.dependencies import (
+    SessionIdHeader,
+    private_session_headers,
+    protect_private_http_exception,
+    require_owned_design_task,
+    set_private_session_headers,
+)
 from app.db.database import get_db
 from app.services.home_design_delivery import compare_deliveries, get_delivery
 from app.schemas.home_quote import HomeQuoteRequest
@@ -21,8 +27,11 @@ def create_quote(
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
-    response.headers["Cache-Control"] = "no-store"
+    set_private_session_headers(response)
+    try:
+        require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
+    except HTTPException as exc:
+        raise protect_private_http_exception(exc) from exc
     try:
         return home_quote_service.create_quote(
             db, task_id=task_id, session_id=x_session_id, payload=payload
@@ -30,18 +39,23 @@ def create_quote(
     except (home_quote_service.HomeQuoteConflict, AggregateLockBusy) as exc:
         db.rollback()
         raise HTTPException(
-            409, detail={"code": "home_quote_conflict", "message": str(exc)}
+            409,
+            detail={"code": "home_quote_conflict", "message": str(exc)},
+            headers=private_session_headers(),
         ) from exc
     except LookupError as exc:
         db.rollback()
         raise HTTPException(
-            404, detail={"code": "home_quote_missing", "message": str(exc)}
+            404,
+            detail={"code": "home_quote_missing", "message": str(exc)},
+            headers=private_session_headers(),
         ) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(
             422,
             detail={"code": "home_quote_invalid", "message": "方案无法形成可信估价"},
+            headers=private_session_headers(),
         ) from exc
 
 
@@ -55,15 +69,20 @@ def quotes(
     limit: int = Query(default=10, ge=1, le=20),
     db: Session = Depends(get_db),
 ):
-    require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
-    response.headers["Cache-Control"] = "no-store"
+    set_private_session_headers(response)
+    try:
+        require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
+    except HTTPException as exc:
+        raise protect_private_http_exception(exc) from exc
     try:
         return home_quote_service.list_quotes(
             db, task_id, home_version, before_id, limit
         )
     except home_quote_service.HomeQuoteConflict as exc:
         raise HTTPException(
-            409, detail={"code": "home_quote_conflict", "message": str(exc)}
+            409,
+            detail={"code": "home_quote_conflict", "message": str(exc)},
+            headers=private_session_headers(),
         ) from exc
 
 
@@ -75,17 +94,24 @@ def quote(
     quote_id: int = Path(ge=1),
     db: Session = Depends(get_db),
 ):
-    require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
-    response.headers["Cache-Control"] = "no-store"
+    set_private_session_headers(response)
+    try:
+        require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
+    except HTTPException as exc:
+        raise protect_private_http_exception(exc) from exc
     try:
         return home_quote_service.read_quote(db, task_id, quote_id)
     except home_quote_service.HomeQuoteConflict as exc:
         raise HTTPException(
-            409, detail={"code": "home_quote_conflict", "message": str(exc)}
+            409,
+            detail={"code": "home_quote_conflict", "message": str(exc)},
+            headers=private_session_headers(),
         ) from exc
     except LookupError as exc:
         raise HTTPException(
-            404, detail={"code": "home_quote_missing", "message": str(exc)}
+            404,
+            detail={"code": "home_quote_missing", "message": str(exc)},
+            headers=private_session_headers(),
         ) from exc
 
 
@@ -94,7 +120,9 @@ def _snapshot(db, task_id, version):
         return get_delivery(db, task_id, version)
     except LookupError as exc:
         raise HTTPException(
-            404, detail={"code": "home_delivery_version_missing", "message": str(exc)}
+            404,
+            detail={"code": "home_delivery_version_missing", "message": str(exc)},
+            headers=private_session_headers(),
         ) from exc
     except ValueError as exc:
         raise HTTPException(
@@ -103,6 +131,7 @@ def _snapshot(db, task_id, version):
                 "code": "home_delivery_invalid",
                 "message": "该历史版本的空间或家装数据无法形成可信清单",
             },
+            headers=private_session_headers(),
         ) from exc
 
 
@@ -114,8 +143,11 @@ def delivery(
     version: int = Path(ge=1),
     db: Session = Depends(get_db),
 ):
-    require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
-    response.headers["Cache-Control"] = "no-store"
+    set_private_session_headers(response)
+    try:
+        require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
+    except HTTPException as exc:
+        raise protect_private_http_exception(exc) from exc
     return _snapshot(db, task_id, version)
 
 
@@ -128,8 +160,11 @@ def compare(
     to_version: int = Query(ge=1),
     db: Session = Depends(get_db),
 ):
-    require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
-    response.headers["Cache-Control"] = "no-store"
+    set_private_session_headers(response)
+    try:
+        require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
+    except HTTPException as exc:
+        raise protect_private_http_exception(exc) from exc
     return compare_deliveries(
         _snapshot(db, task_id, from_version), _snapshot(db, task_id, to_version)
     )

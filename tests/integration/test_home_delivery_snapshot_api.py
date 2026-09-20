@@ -41,16 +41,18 @@ def test_snapshot_share_replay_and_revoke(delivery_context):
     payload = dict(home_version=1, client_mutation_id="delivery")
     result = client.post(url + "/deliveries", headers=headers, json=payload)
     assert result.status_code == 200, result.text
+    assert result.headers["cache-control"] == "no-store"
+    assert result.headers["vary"].lower() == "x-session-id"
     saved = result.json()
     assert (
         client.post(url + "/deliveries", headers=headers, json=payload).json() == saved
     )
-    assert (
-        client.get(
-            url + f"/deliveries/{saved['id']}", headers={"X-Session-Id": stranger}
-        ).status_code
-        == 404
+    foreign = client.get(
+        url + f"/deliveries/{saved['id']}", headers={"X-Session-Id": stranger}
     )
+    assert foreign.status_code == 404
+    assert foreign.headers["cache-control"] == "no-store"
+    assert foreign.headers["vary"].lower() == "x-session-id"
     path = url + f"/deliveries/{saved['id']}/shares"
     share = dict(
         client_mutation_id="share",
@@ -78,6 +80,27 @@ def test_snapshot_share_replay_and_revoke(delivery_context):
     expired = client.get("/api/home-shares/" + token)
     assert expired.status_code == 404
     assert expired.headers["cache-control"] == "no-store"
+
+
+def test_share_token_collision_retries_without_losing_task_lock(
+    delivery_context, monkeypatch
+):
+    from app.services import home_delivery_snapshot_service as service
+
+    first_delivery = freeze(delivery_context, "delivery-collision-a").json()
+    first = share(delivery_context, first_delivery["id"], "share-collision-a")
+    assert first.status_code == 200
+    duplicate = first.json()["token"]
+    unique = "u" * 43
+    tokens = iter((duplicate, unique))
+    monkeypatch.setattr(service.secrets, "token_urlsafe", lambda _size: next(tokens))
+
+    second_delivery = freeze(delivery_context, "delivery-collision-b").json()
+    second = share(delivery_context, second_delivery["id"], "share-collision-b")
+
+    assert second.status_code == 200, second.text
+    assert second.json()["token"] == unique
+    assert delivery_context[0].get("/api/home-shares/" + unique).status_code == 200
 
 
 def freeze(ctx, key="delivery"):

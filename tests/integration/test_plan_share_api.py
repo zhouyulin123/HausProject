@@ -245,6 +245,8 @@ def test_unknown_expired_revoked_and_foreign_revoke_are_indistinguishable():
             first = _create_share(client, owner_id, plan_version_id).json()
             token = first["token"]
             unknown = client.get("/api/shares/not-a-real-share-token")
+            assert unknown.headers["cache-control"] == "no-store"
+            assert unknown.headers["referrer-policy"] == "no-referrer"
             foreign = client.post(
                 f"/api/design/shares/{token}/revoke",
                 headers={"X-Session-ID": stranger_id},
@@ -288,6 +290,30 @@ def test_unknown_expired_revoked_and_foreign_revoke_are_indistinguishable():
             )
             assert tampered_response.status_code == 404
             assert tampered_response.json()["detail"] == UNAVAILABLE_DETAIL
+    finally:
+        engine.dispose()
+
+
+def test_public_share_database_failure_is_sanitized(monkeypatch):
+    from sqlalchemy.exc import SQLAlchemyError
+
+    engine, factory, *_ = _context()
+
+    def unavailable(*_args, **_kwargs):
+        raise SQLAlchemyError("sensitive database detail")
+
+    monkeypatch.setattr(share_service, "get_available_share", unavailable)
+    try:
+        with _client(factory) as client:
+            response = client.get("/api/shares/opaque-token")
+        assert response.status_code == 503
+        assert response.json()["detail"] == {
+            "code": "share_unavailable",
+            "message": "分享服务暂不可用",
+        }
+        assert "sensitive database detail" not in response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["referrer-policy"] == "no-referrer"
     finally:
         engine.dispose()
 

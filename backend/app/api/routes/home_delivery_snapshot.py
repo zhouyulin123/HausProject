@@ -3,7 +3,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from app.api.dependencies import SessionIdHeader, require_owned_design_task
+from app.api.dependencies import (
+    SessionIdHeader,
+    private_session_headers,
+    require_owned_design_task,
+)
 from app.db.database import get_db
 from app.db.models import (
     HomeDeliveryConfirmation,
@@ -21,37 +25,38 @@ from app.services.home_quote_service import HomeQuoteConflict
 
 router = APIRouter()
 public_router = APIRouter()
-HEADERS = {
+PUBLIC_HEADERS = {
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
     "X-Robots-Tag": "noindex, nofollow",
 }
 
 
-def _run(response, action):
-    response.headers.update(HEADERS)
+def _run(response, action, *, private=True):
+    headers = private_session_headers(PUBLIC_HEADERS) if private else PUBLIC_HEADERS
+    response.headers.update(headers)
     try:
         return action()
     except HTTPException as exc:
-        exc.headers = {**(exc.headers or {}), **HEADERS}
+        exc.headers = {**(exc.headers or {}), **headers}
         raise
     except LookupError as exc:
         raise HTTPException(
             404,
             detail={"code": "home_delivery_unavailable", "message": str(exc)},
-            headers=HEADERS,
+            headers=headers,
         ) from exc
     except (service.DeliveryError, HomeQuoteConflict, AggregateLockBusy) as exc:
         raise HTTPException(
             409,
             detail={"code": "home_delivery_conflict", "message": str(exc)},
-            headers=HEADERS,
+            headers=headers,
         ) from exc
     except ValueError as exc:
         raise HTTPException(
             422,
             detail={"code": "home_delivery_invalid", "message": "交付数据无法校验"},
-            headers=HEADERS,
+            headers=headers,
         ) from exc
 
 
@@ -238,11 +243,11 @@ def revoke(
 @public_router.get("/{token}")
 def public(token: str, response: Response, db: Session = Depends(get_db)):
     try:
-        return _run(response, lambda: service.public_share(db, token))
+        return _run(response, lambda: service.public_share(db, token), private=False)
     except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(
             503,
             detail={"code": "home_share_unavailable", "message": "分享服务暂不可用"},
-            headers=HEADERS,
+            headers=PUBLIC_HEADERS,
         ) from exc

@@ -90,6 +90,19 @@ def test_private_home_reads_disable_shared_caching_for_owner_and_stranger(contex
             assert response.headers["cache-control"] == "no-store"
             assert response.headers["vary"].lower() == "x-session-id"
 
+    mutations = (
+        client.post(url + "/validate", headers=headers, json=document()),
+        client.put(url, headers=headers, json=payload(base=1, key="conflict")),
+        client.put(
+            url,
+            headers={"X-Session-Id": stranger},
+            json=payload(base=1, key="foreign"),
+        ),
+    )
+    for response in mutations:
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["vary"].lower() == "x-session-id"
+
 
 def test_invalid_reference_does_not_advance_and_geometry_is_reported(context):
     client, url, headers, _, _, _ = context

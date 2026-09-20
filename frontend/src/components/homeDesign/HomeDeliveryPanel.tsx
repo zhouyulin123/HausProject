@@ -62,6 +62,19 @@ export function DeliverySummary({ delivery }: { delivery: HomeDelivery }) {
     </section>
   );
 }
+export function homeDeliveryLoadResult(
+  versions: PromiseSettledResult<HomeVersionList>,
+  delivery: PromiseSettledResult<HomeDelivery | null>,
+) {
+  return {
+    versions: versions.status === "fulfilled" ? versions.value : null,
+    delivery: delivery.status === "fulfilled" ? delivery.value : null,
+    versionError:
+      versions.status === "rejected" ? "版本历史读取失败，请重试。" : "",
+    deliveryError:
+      delivery.status === "rejected" ? "当前清单读取失败，请重试。" : "",
+  };
+}
 export default function HomeDeliveryPanel({
   taskId,
   version,
@@ -77,33 +90,41 @@ export default function HomeDeliveryPanel({
     [from, setFrom] = useState(""),
     [to, setTo] = useState(String(version)),
     [error, setError] = useState(""),
+    [versionError, setVersionError] = useState(""),
+    [deliveryError, setDeliveryError] = useState(""),
     [busy, setBusy] = useState(false);
   const generation = useRef(0);
   const load = async () => {
     const key = ++generation.current;
     setBusy(true);
     setError("");
-    setDelivery(null);
-    setComparison(null);
-    try {
-      const list = await getHomeDesignVersions(taskId);
-      const result =
-        version > 0 ? await getHomeDelivery(taskId, version) : null;
-      if (key !== generation.current) return;
+    setVersionError("");
+    setDeliveryError("");
+    const [versionsResult, deliveryResult] = await Promise.allSettled([
+      getHomeDesignVersions(taskId),
+      version > 0 ? getHomeDelivery(taskId, version) : Promise.resolve(null),
+    ]);
+    if (key !== generation.current) return;
+    const result = homeDeliveryLoadResult(versionsResult, deliveryResult);
+    setVersionError(result.versionError);
+    setDeliveryError(result.deliveryError);
+    if (versionsResult.status === "fulfilled") {
+      const list = result.versions!;
       setVersions(list);
-      setDelivery(result);
       setTo(String(version));
       setFrom(
         String(list.versions.find((v) => v.version !== version)?.version ?? ""),
       );
-    } catch {
-      if (key === generation.current)
-        setError("清单读取失败，可能无权限、版本不存在或网络异常。请重试。");
-    } finally {
-      if (key === generation.current) setBusy(false);
     }
+    if (deliveryResult.status === "fulfilled") setDelivery(result.delivery);
+    setBusy(false);
   };
   useEffect(() => {
+    setDelivery(null);
+    setVersions(null);
+    setComparison(null);
+    setVersionError("");
+    setDeliveryError("");
     void load();
     return () => {
       generation.current++;
@@ -128,6 +149,7 @@ export default function HomeDeliveryPanel({
     if (!versions?.next_before_version) return;
     const key = ++generation.current;
     setError("");
+    setVersionError("");
     setBusy(true);
     try {
       const result = await getHomeDesignVersions(
@@ -140,7 +162,7 @@ export default function HomeDeliveryPanel({
         versions: [...versions.versions, ...result.versions],
       });
     } catch {
-      if (key === generation.current) setError("历史列表读取失败，请重试");
+      if (key === generation.current) setVersionError("历史列表读取失败，请重试");
     } finally {
       if (key === generation.current) setBusy(false);
     }
@@ -172,6 +194,8 @@ export default function HomeDeliveryPanel({
         重新读取
       </button>
       {error && <p role="alert">{error}</p>}
+      {deliveryError && <p role="alert">{deliveryError}</p>}
+      {versionError && <p role="alert">{versionError}</p>}
       {busy && <p role="status">正在读取…</p>}
       {delivery && (
         <>

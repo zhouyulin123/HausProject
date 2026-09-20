@@ -120,6 +120,15 @@ def _cohort_datasets(
         ("backend/app/services/layout_repair.py", "rules"),
         ("backend/data/public_products_ikea_cn_2026-08-30.json", "data"),
         ("backend/app/services/catalog_service.py", "data"),
+        ("backend/app/services/spatial_service.py", "spatial"),
+        ("frontend/src/lib/spatialGeometry.ts", "spatial"),
+        ("backend/app/services/home_design_agent_service.py", "home_design"),
+        ("backend/app/services/home_design_validation.py", "home_design"),
+        ("backend/app/services/home_quote_service.py", "home_design"),
+        ("backend/app/services/home_delivery_snapshot_service.py", "home_design"),
+        ("backend/app/schemas/home_design_agent.py", "home_design"),
+        ("frontend/src/lib/homeDesignEditor.ts", "home_design"),
+        ("frontend/src/types/homeDesign.ts", "home_design"),
         ("backend/evals/release_change_detection.py", "release"),
     ],
 )
@@ -132,6 +141,21 @@ def test_sensitive_path_changes_require_real_world_regression(path, category):
 
 def test_unrelated_docs_change_does_not_claim_a_quality_pass():
     changes = classify_release_sensitive_paths(["docs/operator-guide.md"])
+
+    assert changes.required is False
+    assert changes.status == "not_required"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "frontend/src/pages/HomeDesignPage.tsx",
+        "frontend/src/components/home/HeroSection.tsx",
+        "tests/unit/test_home_design.py",
+    ],
+)
+def test_non_contract_home_design_files_do_not_overtrigger_release_gate(path):
+    changes = classify_release_sensitive_paths([path])
 
     assert changes.required is False
     assert changes.status == "not_required"

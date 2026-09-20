@@ -61,6 +61,8 @@ def test_quote_is_immutable_and_replay_keeps_price(assets_context):
     payload = dict(home_version=1, region="CN-SH", client_mutation_id="quote")
     response = client.post(url + "/quotes", headers=headers, json=payload)
     assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["vary"].lower() == "x-session-id"
     quote = response.json()
     assert quote["snapshot"]["known_subtotal"] == 100
     assert quote["snapshot"]["pending_count"] == 0
@@ -80,12 +82,12 @@ def test_quote_is_immutable_and_replay_keeps_price(assets_context):
     assert pending["pending_count"] == 1
     assert pending["total_price"] is None
     assert pending["lines"][0]["unit_price"] is None
-    assert (
-        client.post(
-            url + "/quotes", headers=headers, json={**payload, "region": "CN-BJ"}
-        ).status_code
-        == 409
+    conflict = client.post(
+        url + "/quotes", headers=headers, json={**payload, "region": "CN-BJ"}
     )
+    assert conflict.status_code == 409
+    assert conflict.headers["cache-control"] == "no-store"
+    assert conflict.headers["vary"].lower() == "x-session-id"
 
 
 def test_quote_unknown_prices_and_permissions(assets_context):

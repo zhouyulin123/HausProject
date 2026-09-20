@@ -54,6 +54,10 @@ async def add_security_headers(request: Request, call_next):
     log_path = request.url.path
     if log_path.startswith("/api/home-shares/"):
         log_path = "/api/home-shares/[redacted]"
+    elif log_path.startswith("/api/shares/"):
+        log_path = "/api/shares/[redacted]"
+    elif log_path.startswith("/api/design/shares/"):
+        log_path = "/api/design/shares/[redacted]/revoke"
     started_at = perf_counter()
     with bind_request_id(request_id):
         try:

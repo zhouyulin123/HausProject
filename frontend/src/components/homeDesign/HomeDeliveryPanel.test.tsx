@@ -1,8 +1,35 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it, expect } from "vitest";
-import { DeliverySummary } from "./HomeDeliveryPanel";
-import type { HomeDelivery } from "@/types/homeDesign";
+import { DeliverySummary, homeDeliveryLoadResult } from "./HomeDeliveryPanel";
+import type { HomeDelivery, HomeVersionList } from "@/types/homeDesign";
 describe("版本交付边界", () => {
+  it("版本历史失败时仍交付当前清单，反向失败也保留版本比较", () => {
+    const delivery = { home_version: 3 } as HomeDelivery;
+    const versions = { versions: [{ version: 3 }] } as HomeVersionList;
+
+    expect(
+      homeDeliveryLoadResult(
+        { status: "rejected", reason: Error("断网") },
+        { status: "fulfilled", value: delivery },
+      ),
+    ).toEqual({
+      versions: null,
+      delivery,
+      versionError: "版本历史读取失败，请重试。",
+      deliveryError: "",
+    });
+    expect(
+      homeDeliveryLoadResult(
+        { status: "fulfilled", value: versions },
+        { status: "rejected", reason: Error("服务异常") },
+      ),
+    ).toEqual({
+      versions,
+      delivery: null,
+      versionError: "",
+      deliveryError: "当前清单读取失败，请重试。",
+    });
+  });
   it("显示冻结家具来源版本，不将来源当商业报价", () => {
     const delivery = {home_version:3,space_version:1,validation:{valid:true,issues:[]},gaps:[],limitations:[],lines:[{id:"f",entity_type:"object",room_name:"客厅",name:"沙发",material:{name:"织物"},quantity:1,unit:"piece",quantity_status:"counted",asset:{kind:"product",source_id:5,source_version:8}}]} as unknown as HomeDelivery;
     const html=renderToStaticMarkup(<DeliverySummary delivery={delivery}/>);

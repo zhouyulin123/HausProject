@@ -46,19 +46,18 @@ def space_impact(
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    response.headers["Cache-Control"] = "no-store"
     _owned_asset_task(db, x_session_id, task_id, response)
     try:
         return impact.preview_impact(db, task_id, payload)
     except LookupError as exc:
         raise HTTPException(
-            404, detail=str(exc), headers={"Cache-Control": "no-store"}
+            404, detail=str(exc), headers=private_session_headers()
         ) from exc
     except ValueError as exc:
         raise HTTPException(
             422,
             detail={"code": "home_design_space_impact_invalid", "message": str(exc)},
-            headers={"Cache-Control": "no-store"},
+            headers=private_session_headers(),
         ) from exc
 
 
@@ -72,7 +71,6 @@ def asset_options(
     limit: int = Query(default=20, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
-    response.headers["Cache-Control"] = "no-store"
     task = _owned_asset_task(db, x_session_id, task_id, response)
     return assets.list_options(db, task, kind, after_id, limit)
 
@@ -85,7 +83,6 @@ def get_asset(
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    response.headers["Cache-Control"] = "no-store"
     _owned_asset_task(db, x_session_id, task_id, response)
     try:
         return assets.get_asset(db, task_id, asset_id)
@@ -105,7 +102,6 @@ def create_asset(
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    response.headers["Cache-Control"] = "no-store"
     _owned_asset_task(db, x_session_id, task_id, response)
     try:
         return assets.create_asset(
@@ -116,14 +112,14 @@ def create_asset(
         raise HTTPException(
             exc.status,
             detail={"code": exc.code, "message": str(exc)},
-            headers={"Cache-Control": "no-store"},
+            headers=private_session_headers(),
         ) from exc
     except AggregateLockBusy as exc:
         db.rollback()
         raise HTTPException(
             409,
             detail={"code": "home_asset_busy", "message": str(exc)},
-            headers={"Cache-Control": "no-store"},
+            headers=private_session_headers(),
         ) from exc
 
 
@@ -174,15 +170,18 @@ def get_version(
 def validate(
     task_id: int,
     payload: HomeDesignDocument,
+    response: Response,
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
+    _owned_asset_task(db, x_session_id, task_id, response)
     try:
         return service.validate_document(db, task_id, payload)
     except ValueError as exc:
         raise HTTPException(
-            422, detail={"code": "home_design_reference_invalid", "message": str(exc)}
+            422,
+            detail={"code": "home_design_reference_invalid", "message": str(exc)},
+            headers=private_session_headers(),
         ) from exc
 
 
@@ -190,10 +189,11 @@ def validate(
 def save(
     task_id: int,
     payload: HomeDesignSaveRequest,
+    response: Response,
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
+    _owned_asset_task(db, x_session_id, task_id, response)
     try:
         return service.save_design(
             db, task_id=task_id, session_id=x_session_id, payload=payload
@@ -207,17 +207,22 @@ def save(
                 "current_version": exc.current_version,
                 "message": "家装版本已变化或请求标识被复用",
             },
+            headers=private_session_headers(),
         ) from exc
     except AggregateLockBusy as exc:
         db.rollback()
         raise HTTPException(
-            409, detail={"code": "home_design_busy", "message": str(exc)}
+            409,
+            detail={"code": "home_design_busy", "message": str(exc)},
+            headers=private_session_headers(),
         ) from exc
     except LookupError as exc:
         db.rollback()
-        raise HTTPException(404, detail=str(exc)) from exc
+        raise HTTPException(404, detail=str(exc), headers=private_session_headers()) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(
-            422, detail={"code": "home_design_reference_invalid", "message": str(exc)}
+            422,
+            detail={"code": "home_design_reference_invalid", "message": str(exc)},
+            headers=private_session_headers(),
         ) from exc
