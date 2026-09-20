@@ -53,7 +53,7 @@ describe("开放几何家具面板", () => {
       <OpenGeometryPanel taskId={42} state={emptyState} onCheckpointRefresh={vi.fn()} />,
     );
     expect(html).toContain("对话式自由造型");
-    expect(html).toContain("左侧对话");
+    expect(html).toContain("尚未关联房间");
     expect(html).toContain("撤销开放几何修改");
     expect(html).not.toContain("textarea");
     expect(html).not.toContain("生成并校验");
@@ -83,8 +83,8 @@ describe("开放几何家具面板", () => {
       <OpenGeometryPanel taskId={42} state={state} onCheckpointRefresh={vi.fn()} />,
     );
 
-    expect(html).toContain('data-placement-ready="false"');
-    expect(html).toContain("当前没有已恢复的服务端房间场景");
+    expect(html).not.toContain('type="number"');
+    expect(html).toContain("尚未关联房间");
   });
 
   it("已有版本展示稳定部件数和材质数，且不再展示旁路 patch 快捷入口", () => {

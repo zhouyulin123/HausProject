@@ -160,6 +160,24 @@ def test_unknown_task_and_missing_session_are_not_readable(context):
     assert client.get("/api/design/tasks/1/space").status_code == 422
 
 
+def test_private_space_reads_disable_shared_caching_for_owner_and_stranger(context):
+    client, _, url, headers, stranger = context
+    assert client.put(url, headers=headers, json=request()).status_code == 200
+    paths = [
+        url,
+        url + "/versions",
+        url + "/versions/1",
+        url + "/versions/1/source",
+        url + "/versions/1/rooms/r1/scene",
+        url + "/sources/999",
+    ]
+    for path in paths:
+        for request_headers in (headers, {"X-Session-Id": stranger}):
+            response = client.get(path, headers=request_headers)
+            assert response.headers["cache-control"] == "no-store"
+            assert response.headers["vary"].lower() == "x-session-id"
+
+
 def test_busy_lock_is_a_retryable_conflict(context, monkeypatch):
     from app.services.aggregate_lock_service import AggregateLockBusy
 
@@ -222,7 +240,12 @@ def test_space_migration_and_readiness_are_consistent(tmp_path):
     spec = importlib.util.spec_from_file_location("spatial_migration", path)
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
-    assert expected_migration_heads() == (migration.revision,)
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(root / "backend/alembic.ini")))
+    assert len(expected_migration_heads()) == 1
+    assert migration.revision in {entry.revision for entry in script.walk_revisions()}
     engine = create_engine(
         f"sqlite+pysqlite:///{(tmp_path / 'migration.db').as_posix()}"
     )

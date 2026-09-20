@@ -1,4 +1,4 @@
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas } from "@react-three/fiber";
 import { ContactShadows, OrbitControls } from "@react-three/drei";
 import type { Furniture3DSpec } from "@/types/furniture";
 import FurnitureModel3D from "./FurnitureModel3D";
@@ -38,9 +38,6 @@ function estimateTargetHeight(spec: Furniture3DSpec): number {
 }
 
 function ViewerControls({ radius, targetHeight, enableZoom }: { radius: number; targetHeight: number; enableZoom: boolean }) {
-  const { size } = useThree();
-  if (size.width < 640) return null;
-
   return (
     <OrbitControls
       makeDefault
@@ -74,7 +71,7 @@ export default function FurnitureModelViewer({
       gl={{ antialias: true }}
       camera={{ position: [distance * 0.75, targetHeight + distance * 0.55, distance], fov: 40 }}
     >
-      <color attach="background" args={["#EFE8DB"]} />
+      <color attach="background" args={["#EEF1F0"]} />
       <ambientLight intensity={lighting.ambientIntensity} />
       <hemisphereLight
         args={["#FFF8EC", "#746A5E", lighting.hemisphereIntensity]}

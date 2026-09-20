@@ -607,7 +607,7 @@ function QuoteRulesPanel({
   });
 
   const add = async () => {
-    if (!draft.project_name.trim() || !draft.unit_price) return;
+    if (!draft.project_name.trim() || !draft.material_grade.trim() || !draft.unit_price) return;
     const { region_codes_input: _, ...payload } = draft;
     await saveQuoteRule({
       ...payload,
@@ -661,7 +661,7 @@ function QuoteRulesPanel({
             <option key={u}>{u}</option>
           ))}
         </select>
-        <Button onClick={() => void add()} disabled={!draft.project_name.trim() || !draft.unit_price}>
+        <Button onClick={() => void add()} disabled={!draft.project_name.trim() || !draft.material_grade.trim() || !draft.unit_price}>
           <Plus className="h-4 w-4" />
           添加
         </Button>
@@ -760,7 +760,7 @@ function QuoteRulesPanel({
                   <button
                     type="button"
                     onClick={async () => {
-                      await deleteQuoteRule(r.id);
+                      await deleteQuoteRule(r.id, r.record_version);
                       void onChanged();
                     }}
                     className="text-stone-400 hover:text-terra-600"

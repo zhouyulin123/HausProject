@@ -11,10 +11,9 @@ describe("房间原图预览", () => {
     }
   });
 
-  it("使用完整原图比例并提供可访问的放大入口", () => {
+  it("读取鉴权原图前不暴露旧静态地址", () => {
     const html = renderToStaticMarkup(<RoomSourcePreview source={{ image_id: 8, image_url: "/uploads/8-room.png", file_name: "户型.png" }} />);
-    expect(html).toContain('src="/uploads/8-room.png"');
-    expect(html).toContain('aria-label="查看原图：户型.png"');
-    expect(html).toContain("object-contain");
+    expect(html).not.toContain('src="/uploads/8-room.png"');
+    expect(html).toContain("正在读取原图");
   });
 });

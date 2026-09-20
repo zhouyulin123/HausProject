@@ -20,7 +20,13 @@ from app.services import design_agent_service
 
 
 @pytest.fixture
-def concurrent_agent_context(tmp_path):
+def concurrent_agent_context(tmp_path, monkeypatch):
+    # 并发契约只验证任务锁与持久化，不能依赖外部模型的响应时间。
+    monkeypatch.setattr(
+        design_agent_service.llm_service,
+        "_chat_json",
+        lambda *args, **kwargs: {"patch": {}, "evidence": {}},
+    )
     database_path = tmp_path / "design-agent-concurrency.db"
     engine = create_engine(
         f"sqlite+pysqlite:///{database_path}",

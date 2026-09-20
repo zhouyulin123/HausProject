@@ -20,6 +20,18 @@ function jsonResponse(body: unknown): Response {
 }
 
 describe("项目级房间上传", () => {
+  it("读取原图只使用鉴权请求，不把会话放进地址", async () => {
+    const sessionId = "f5f4de50-783f-4d0d-86d9-d5963775505c";
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({session_id: sessionId}))
+      .mockResolvedValueOnce(new Response(new Blob(['image'], {type: 'image/png'}), {headers: {'Content-Type':'image/png'}}));
+    vi.stubGlobal('window', {localStorage: createLocalStorage()});
+    vi.stubGlobal('fetch', fetchMock);
+    const {fetchUploadedImageContent} = await import('./designApi');
+    expect((await fetchUploadedImageContent(8)).type).toBe('image/png');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/upload/images/8/content');
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get('X-Session-ID')).toBe(sessionId);
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.resetModules();

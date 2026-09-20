@@ -1466,6 +1466,125 @@ class DesignSpaceVersion(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class HomeDesign(Base):
+    """任务级家装当前版本。"""
+
+    __tablename__ = "home_designs"
+    task_id = Column(Integer, ForeignKey("design_tasks.id", ondelete="CASCADE"), primary_key=True)
+    current_version = Column(Integer, nullable=False)
+
+
+class HomeDesignVersion(Base):
+    """绑定不可变空间版本的家装历史及原始校验结果。"""
+
+    __tablename__ = "home_design_versions"
+    __table_args__ = (
+        UniqueConstraint("task_id", "version", name="uq_home_design_task_version"),
+        UniqueConstraint("task_id", "client_mutation_id", name="uq_home_design_task_mutation"),
+    )
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("home_designs.task_id", ondelete="CASCADE"), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    document_json = Column(JSON, nullable=False)
+    validation_json = Column(JSON, nullable=False)
+    client_mutation_id = Column(String(100), nullable=False)
+    mutation_digest = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class HomeDesignAsset(Base):
+    """任务私有、不可变的家具模型快照。"""
+
+    __tablename__ = "home_design_assets"
+    __table_args__ = (UniqueConstraint("task_id", "client_mutation_id", name="uq_home_asset_task_mutation"),)
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("design_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    client_mutation_id = Column(String(100), nullable=False)
+    request_digest = Column(String(64), nullable=False)
+    snapshot_json = Column(JSON, nullable=False)
+    content_digest = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class HomeDesignQuote(Base):
+    """绑定精确家装版本的不可变分项估价。"""
+
+    __tablename__ = "home_design_quotes"
+    __table_args__ = (UniqueConstraint("task_id", "client_mutation_id", name="uq_home_quote_task_mutation"),)
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("design_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    home_version = Column(Integer, nullable=False)
+    client_mutation_id = Column(String(100), nullable=False)
+    request_digest = Column(String(64), nullable=False)
+    snapshot_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class HomeDeliverySnapshot(Base):
+    __tablename__ = "home_delivery_snapshots"
+    __table_args__ = (UniqueConstraint("task_id", "client_mutation_id", name="uq_home_delivery_mutation"),)
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("design_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    home_version = Column(Integer, nullable=False)
+    space_version = Column(Integer, nullable=False)
+    quote_id = Column(Integer, ForeignKey("home_design_quotes.id", ondelete="RESTRICT"), nullable=True)
+    client_mutation_id = Column(String(100), nullable=False)
+    request_digest = Column(String(64), nullable=False)
+    snapshot_json = Column(JSON, nullable=False)
+    content_digest = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class HomeDeliveryConfirmation(Base):
+    __tablename__ = "home_delivery_confirmations"
+    __table_args__ = (UniqueConstraint("task_id", "client_mutation_id", name="uq_home_confirmation_mutation"),)
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("design_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    delivery_id = Column(Integer, ForeignKey("home_delivery_snapshots.id", ondelete="CASCADE"), nullable=False, index=True)
+    client_mutation_id = Column(String(100), nullable=False)
+    request_digest = Column(String(64), nullable=False)
+    snapshot_digest = Column(String(64), nullable=False)
+    decision = Column(String(30), nullable=False)
+    actor_session_id = Column(String(36), nullable=False)
+    note = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class HomeDeliveryShare(Base):
+    __tablename__ = "home_delivery_shares"
+    __table_args__ = (UniqueConstraint("task_id", "client_mutation_id", name="uq_home_share_mutation"),)
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("design_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    delivery_id = Column(Integer, ForeignKey("home_delivery_snapshots.id", ondelete="CASCADE"), nullable=False, index=True)
+    client_mutation_id = Column(String(100), nullable=False)
+    request_digest = Column(String(64), nullable=False)
+    token_digest = Column(String(64), nullable=False, unique=True, index=True)
+    consent_json = Column(JSON, nullable=False)
+    snapshot_json = Column(JSON, nullable=False)
+    content_digest = Column(String(64), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class HomeDesignAgentTurn(Base):
+    """整屋建议调用的幂等预留及不可变终态，独立于设计版本。"""
+
+    __tablename__ = "home_design_agent_turns"
+    __table_args__ = (UniqueConstraint("task_id", "client_turn_id", name="uq_home_agent_task_turn"),)
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("design_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    client_turn_id = Column(String(100), nullable=False)
+    request_digest = Column(String(64), nullable=False)
+    request_json = Column(JSON, nullable=False)
+    response_json = Column(JSON, nullable=True)
+    status = Column(String(20), nullable=False)
+    error_code = Column(String(100), nullable=True)
+    retry_after_seconds = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class DesignScene(Base):
     """一套方案当前正在编辑的 3D 场景。"""
 

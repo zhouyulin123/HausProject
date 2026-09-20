@@ -27,6 +27,8 @@ TimelineSource = Literal[
 BillingStatus = Literal["metered", "not_billable", "unknown"]
 
 EVENT_SUMMARIES = {
+    "agent.home_design.completed": "整屋设计建议已检查，尚未应用",
+    "agent.home_design.failed": "整屋设计建议未能完成",
     "agent.turn.completed": "智能体本轮已完成",
     "agent.turn.failed": "智能体本轮失败",
     "agent.turn.waiting_user": "智能体等待用户确认",

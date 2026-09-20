@@ -146,11 +146,23 @@ async function getAnonymousSessionId(): Promise<string> {
   return sessionPromise;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const sessionId = await getAnonymousSessionId();
   const headers = new Headers(init?.headers);
   headers.set("X-Session-ID", sessionId);
   return rawRequest<T>(path, { ...init, headers });
+}
+
+export async function fetchUploadedImageContent(imageId: number, signal?: AbortSignal): Promise<Blob> {
+  if (!Number.isSafeInteger(imageId) || imageId <= 0) throw new Error("原图编号无效");
+  const sessionId = await getAnonymousSessionId();
+  const response = await fetch(`/api/upload/images/${imageId}/content`, {
+    headers: { "X-Session-ID": sessionId }, signal, cache: "no-store",
+  });
+  if (!response.ok) throw new ApiError("原图读取失败", response.status);
+  const content = await response.blob();
+  if (!/^image\/(png|jpeg|webp|gif|avif)$/.test(content.type)) throw new Error("原图内容类型无效");
+  return content;
 }
 
 async function factoryRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -810,9 +822,10 @@ export async function saveQuoteRule(
   rule: Partial<QuoteRule> & { project_name: string; unit_price: number },
 ): Promise<void> {
   if (rule.id) {
+    const { record_version, ...changes } = rule;
     await factoryRequest(`/api/products/quote-rules/${rule.id}`, {
       method: "PATCH",
-      body: JSON.stringify(rule),
+      body: JSON.stringify({ ...changes, expected_record_version: record_version }),
     });
   } else {
     await factoryRequest("/api/products/quote-rules", {
@@ -822,8 +835,8 @@ export async function saveQuoteRule(
   }
 }
 
-export async function deleteQuoteRule(id: number): Promise<void> {
-  await factoryRequest(`/api/products/quote-rules/${id}`, { method: "DELETE" });
+export async function deleteQuoteRule(id: number, expectedRecordVersion: number): Promise<void> {
+  await factoryRequest(`/api/products/quote-rules/${id}?expected_record_version=${expectedRecordVersion}`, { method: "DELETE" });
 }
 
 // ---------------------------------------------------------------- 店铺设置

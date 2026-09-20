@@ -2126,11 +2126,11 @@ def _run_turn(
         turn_id=turn.id,
     )
 
-    def defer_after_side_effect(callback):
+    def defer_before_side_effect(callback):
         def execute(state):
-            result = callback(state)
+            # 先等待在途检查点写入结束，防止独立事务干扰业务未提交写入。
             checkpoint_saver.defer()
-            return result
+            return callback(state)
 
         return execute
 
@@ -2198,14 +2198,14 @@ def _run_turn(
     registry.register("catalog_search", _catalog_tool(db))
     registry.register(
         "design_generation",
-        defer_after_side_effect(
+        defer_before_side_effect(
             _design_tool(db, task, next_state_version=next_state_version)
         ),
     )
     registry.register(
         "scene_edit",
         preserve_model_call_capture(
-            defer_after_side_effect(
+            defer_before_side_effect(
                 _scene_tool(
                     db,
                     task,
@@ -2220,7 +2220,7 @@ def _run_turn(
     registry.register(
         "plan_refine",
         preserve_model_call_capture(
-            defer_after_side_effect(
+            defer_before_side_effect(
                 _plan_refine_tool(
                     db,
                     task,
@@ -2238,7 +2238,7 @@ def _run_turn(
     registry.register(
         "action_plan",
         preserve_model_call_capture(
-            defer_after_side_effect(
+            defer_before_side_effect(
                 _action_plan_tool(
                     db,
                     task,
@@ -2643,10 +2643,11 @@ def run_turn(
     task: DesignTask,
     payload: AgentTurnRequest,
 ) -> dict[str, Any]:
+    task_id = task.id
     with (
         model_call_governance_service.govern_task_model_calls(
             db,
-            task_id=task.id,
+            task_id=task_id,
             operation_key=f"agent-turn:{payload.client_turn_id}",
         ),
         llm_service.capture_model_call() as model_capture,
@@ -2669,12 +2670,12 @@ def run_turn(
         except Exception as exc:
             logger.exception(
                 "Design Agent turn 执行失败: task_id=%s client_turn_id=%s",
-                task.id,
+                task_id,
                 payload.client_turn_id,
             )
             return _persist_failed_turn(
                 db,
-                task_id=task.id,
+                task_id=task_id,
                 payload=payload,
                 error=exc,
                 model_capture=model_capture,

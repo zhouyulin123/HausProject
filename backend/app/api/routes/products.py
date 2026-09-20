@@ -9,7 +9,15 @@ from typing import Annotated, Literal, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -913,11 +921,13 @@ def review_product_model(
 
 
 class QuoteRuleCreate(BaseModel):
-    project_name: str
-    category: str
-    pricing_unit: str
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str = Field(min_length=1, max_length=100)
+    category: str = Field(min_length=1, max_length=50)
+    pricing_unit: str = Field(min_length=1, max_length=20)
     unit_price: int = Field(gt=0)
-    material_grade: Optional[str] = None
+    material_grade: str = Field(min_length=1, max_length=50)
     region_codes: list[str] = Field(default_factory=list, max_length=100)
     waste_rate_bps: int = Field(default=0, ge=0, le=10000)
     minimum_quantity: float = Field(default=0, ge=0)
@@ -929,6 +939,9 @@ class QuoteRuleCreate(BaseModel):
 
 
 class QuoteRuleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_record_version: int = Field(ge=1, strict=True)
     project_name: Optional[str] = None
     category: Optional[str] = None
     pricing_unit: Optional[str] = None
@@ -942,6 +955,16 @@ class QuoteRuleUpdate(BaseModel):
     tax_rate_bps: Optional[int] = Field(default=None, ge=0, le=10000)
     data_version: Optional[str] = Field(default=None, min_length=1, max_length=100)
     description: Optional[str] = None
+
+    @model_validator(mode="after")
+    def reject_null_business_fields(self):
+        for field_name in self.model_fields_set - {
+            "expected_record_version",
+            "description",
+        }:
+            if getattr(self, field_name) is None:
+                raise ValueError(f"{field_name} cannot be null")
+        return self
 
 
 def _normalize_quote_rule(rule: CustomQuoteRule) -> None:
@@ -975,26 +998,59 @@ def update_quote_rule(
     _user: User = Depends(require_factory),
     db: Session = Depends(get_db),
 ):
-    rule = db.get(CustomQuoteRule, rule_id)
+    rule = db.scalar(
+        select(CustomQuoteRule)
+        .where(CustomQuoteRule.id == rule_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if not rule:
         raise HTTPException(status_code=404, detail="Quote rule not found")
-    for k, v in data.model_dump(exclude_unset=True).items():
+    if rule.record_version != data.expected_record_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "record_version_conflict",
+                "message": "报价规则已被其他操作更新，请刷新后重试",
+                "current_record_version": rule.record_version,
+            },
+        )
+    for k, v in data.model_dump(
+        exclude_unset=True,
+        exclude={"expected_record_version"},
+    ).items():
         setattr(rule, k, v)
     _normalize_quote_rule(rule)
     rule.record_version = (rule.record_version or 1) + 1
     db.commit()
-    return {"id": rule.id, "status": "ok"}
+    return {"id": rule.id, "status": "ok", "record_version": rule.record_version}
 
 
 @router.delete("/quote-rules/{rule_id}")
 def deactivate_quote_rule(
     rule_id: int,
+    expected_record_version: int = Query(ge=1),
     _user: User = Depends(require_factory),
     db: Session = Depends(get_db),
 ):
-    rule = db.get(CustomQuoteRule, rule_id)
+    rule = db.scalar(
+        select(CustomQuoteRule)
+        .where(CustomQuoteRule.id == rule_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if not rule:
         raise HTTPException(status_code=404, detail="Quote rule not found")
+    if rule.record_version != expected_record_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "record_version_conflict",
+                "message": "报价规则已被其他操作更新，请刷新后重试",
+                "current_record_version": rule.record_version,
+            },
+        )
     rule.is_active = False
+    rule.record_version = (rule.record_version or 1) + 1
     db.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "record_version": rule.record_version}

@@ -8,7 +8,6 @@ from time import perf_counter
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -18,6 +17,7 @@ from app.core.request_context import bind_request_id, normalize_request_id
 from app.db.database import get_db
 from app.db.schema_readiness import database_schema_is_current
 from app.services import worker_presence_service
+from app.services.private_image_service import ProtectedUploadFiles
 
 
 _BUILD_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -44,13 +44,16 @@ app.include_router(api_router, prefix="/api")
 
 # 本地上传文件的静态访问
 Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
+app.mount("/uploads", ProtectedUploadFiles(directory=settings.upload_dir), name="uploads")
 
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     request_id = normalize_request_id(request.headers.get("X-Request-ID"))
     request.state.request_id = request_id
+    log_path = request.url.path
+    if log_path.startswith("/api/home-shares/"):
+        log_path = "/api/home-shares/[redacted]"
     started_at = perf_counter()
     with bind_request_id(request_id):
         try:
@@ -62,7 +65,7 @@ async def add_security_headers(request: Request, call_next):
                     "event": "http_request_completed",
                     "request_id": request_id,
                     "http_method": request.method,
-                    "http_path": request.url.path,
+                    "http_path": log_path,
                     "status_code": 500,
                     "duration_ms": round((perf_counter() - started_at) * 1000, 3),
                 },
@@ -74,7 +77,7 @@ async def add_security_headers(request: Request, call_next):
                 "event": "http_request_completed",
                 "request_id": request_id,
                 "http_method": request.method,
-                "http_path": request.url.path,
+                "http_path": log_path,
                 "status_code": response.status_code,
                 "duration_ms": round((perf_counter() - started_at) * 1000, 3),
             },
@@ -82,7 +85,8 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if "Referrer-Policy" not in response.headers:
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     build_digest = os.getenv("APP_BUILD_DIGEST", "").strip()
     if _BUILD_DIGEST_PATTERN.fullmatch(build_digest):
         response.headers["X-App-Build-Digest"] = build_digest

@@ -1,9 +1,15 @@
 """任务级整屋空间 API。"""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import SessionIdHeader, require_owned_design_task
+from app.api.dependencies import (
+    SessionIdHeader,
+    private_session_headers,
+    protect_private_http_exception,
+    require_owned_design_task,
+    set_private_session_headers,
+)
 from app.db.database import get_db
 from app.db.models import UploadedImage
 from app.schemas.spatial import SpatialResponse, SpatialSaveRequest
@@ -15,23 +21,34 @@ from app.services.aggregate_lock_service import AggregateLockBusy
 router = APIRouter()
 
 
-def _owned_version(db, task_id, version, session_id):
-    require_owned_design_task(db, session_id=session_id, task_id=task_id)
+def _owned_task(db, task_id, session_id, response):
+    set_private_session_headers(response)
+    try:
+        return require_owned_design_task(db, session_id=session_id, task_id=task_id)
+    except HTTPException as exc:
+        raise protect_private_http_exception(exc) from exc
+
+
+def _owned_version(db, task_id, version, session_id, response):
+    _owned_task(db, task_id, session_id, response)
     try:
         return spatial_service.get_version(db, task_id, version)
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404, detail=str(exc), headers=private_session_headers()
+        ) from exc
 
 
 @router.get("/{task_id}/space/versions")
 def list_space_versions(
     task_id: int,
+    response: Response,
     x_session_id: SessionIdHeader,
     before_version: int | None = Query(default=None, ge=1),
     limit: int = Query(default=20, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
-    require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
+    _owned_task(db, task_id, x_session_id, response)
     return spatial_service.list_versions(db, task_id, before_version, limit)
 
 
@@ -39,20 +56,22 @@ def list_space_versions(
 def get_space_version(
     task_id: int,
     version: int,
+    response: Response,
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    return _owned_version(db, task_id, version, x_session_id)
+    return _owned_version(db, task_id, version, x_session_id, response)
 
 
 @router.get("/{task_id}/space/versions/{version}/source")
 def get_space_source(
     task_id: int,
     version: int,
+    response: Response,
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    snapshot = _owned_version(db, task_id, version, x_session_id)
+    snapshot = _owned_version(db, task_id, version, x_session_id, response)
     image_id = snapshot.document.source_image_id
     image = db.get(UploadedImage, image_id) if image_id else None
     if image is None or image.task_id != task_id:
@@ -69,16 +88,21 @@ def get_room_projection(
     task_id: int,
     version: int,
     room_id: str,
+    response: Response,
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    snapshot = _owned_version(db, task_id, version, x_session_id)
+    snapshot = _owned_version(db, task_id, version, x_session_id, response)
     try:
         scene = project_room(snapshot.document, room_id)
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404, detail=str(exc), headers=private_session_headers()
+        ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=422, detail=str(exc), headers=private_session_headers()
+        ) from exc
     return {
         "task_id": task_id,
         "space_version": version,
@@ -91,13 +115,18 @@ def get_room_projection(
 def get_draft_source(
     task_id: int,
     image_id: int,
+    response: Response,
     x_session_id: SessionIdHeader,
     db: Session = Depends(get_db),
 ):
-    require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
+    _owned_task(db, task_id, x_session_id, response)
     image = db.get(UploadedImage, image_id)
     if image is None or image.task_id != task_id:
-        raise HTTPException(status_code=404, detail="原图不存在")
+        raise HTTPException(
+            status_code=404,
+            detail="原图不存在",
+            headers=private_session_headers(),
+        )
     return {
         "image_id": image.id,
         "image_url": image.file_url,
@@ -107,9 +136,12 @@ def get_draft_source(
 
 @router.get("/{task_id}/space", response_model=SpatialResponse)
 def get_space(
-    task_id: int, x_session_id: SessionIdHeader, db: Session = Depends(get_db)
+    task_id: int,
+    response: Response,
+    x_session_id: SessionIdHeader,
+    db: Session = Depends(get_db),
 ):
-    require_owned_design_task(db, session_id=x_session_id, task_id=task_id)
+    _owned_task(db, task_id, x_session_id, response)
     return spatial_service.get_space(db, task_id)
 
 

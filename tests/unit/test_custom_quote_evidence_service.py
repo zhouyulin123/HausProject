@@ -85,6 +85,19 @@ def test_custom_quote_evidence_binds_quote_priced_at():
 
 
 @pytest.mark.unit
+def test_custom_quote_evidence_accepts_empty_region_codes_as_global_scope():
+    evidence = _evidence()
+    evidence["ruleRegionCodes"] = []
+
+    verified = custom_quote_evidence_service.verify_evidence(
+        evidence,
+        expected_region="CN-SH",
+    )
+
+    assert verified.rule_id == 7
+
+
+@pytest.mark.unit
 def test_custom_quote_money_uses_the_same_frozen_quantity_as_evidence():
     rule = CustomQuoteRule(
         id=7,

@@ -17,7 +17,7 @@ from app.api.dependencies import (
 )
 from app.core.config import settings
 from app.db.database import get_db
-from app.db.models import UploadedImage
+from app.db.models import UploadedImage, AnonymousSessionImage
 from app.schemas.room_model import RoomModel, RoomModelCalibrationRequest
 from app.services import (
     anonymous_session_service,
@@ -29,17 +29,48 @@ from app.services import (
 )
 from app.services.llm_service import LLMUnavailable
 from app.services.upload_validation import UploadValidationError, validate_image_upload
+from app.services.private_image_service import private_image_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,100}$")
 
 
+@router.get("/images/{image_id}/content")
+def read_image_content(
+    image_id: int, x_session_id: SessionIdHeader, db: Session = Depends(get_db)
+):
+    return private_image_response(
+        db, image_id=image_id, session_id=x_session_id, directory=settings.upload_dir
+    )
+
+
 def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w.一-鿿-]", "_", name or "upload")
 
 
+def _register_owner(db: Session, image: UploadedImage, session_id: str) -> None:
+    require_active_session(db, session_id)
+    if image.task_id is not None:
+        require_owned_design_task(db, session_id=session_id, task_id=image.task_id)
+    relation = db.scalar(
+        select(AnonymousSessionImage).where(AnonymousSessionImage.image_id == image.id)
+    )
+    if relation is not None and relation.session_id != session_id:
+        raise HTTPException(404, detail="图片不存在或不属于当前会话")
+    if relation is None:
+        db.add(AnonymousSessionImage(session_id=session_id, image_id=image.id))
+
+
 def _upload_response(image: UploadedImage) -> dict:
+    if image.analysis_json is None:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "upload_not_completed",
+                "message": "原图已登记，但识别尚未完成；本次重试不会重复调用模型",
+            },
+        )
     analysis = image.analysis_json or {}
     room_model = analysis.get("room_model")
     return {
@@ -95,19 +126,22 @@ async def upload_image(
     ):
         raise HTTPException(status_code=422, detail="Idempotency-Key 格式无效")
     content_digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
-    request_digest = "sha256:" + hashlib.sha256(
-        json.dumps(
-            {
-                "content_digest": content_digest,
-                "content_type": file.content_type or "",
-                "file_name": file.filename or "",
-                "task_id": task_id,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    request_digest = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                {
+                    "content_digest": content_digest,
+                    "content_type": file.content_type or "",
+                    "file_name": file.filename or "",
+                    "task_id": task_id,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    )
     operation_key = (
         "sha256:"
         + hashlib.sha256(
@@ -128,6 +162,8 @@ async def upload_image(
                     status_code=409,
                     detail="Idempotency-Key 已用于不同的图片上传输入",
                 )
+            _register_owner(db, existing, x_session_id)
+            db.commit()
             return _upload_response(existing)
 
     image = UploadedImage(
@@ -156,13 +192,18 @@ async def upload_image(
                 status_code=409,
                 detail="Idempotency-Key 已用于不同的图片上传输入",
             ) from exc
+        _register_owner(db, existing, x_session_id)
+        db.commit()
         return _upload_response(existing)
 
-    # 保存到本地 uploads 目录，通过 /uploads 静态路由访问
+    # 原图登记与会话归属先原子提交，再写文件，防止识别期间暴露静态直链。
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
     safe_stem = _safe_filename(Path(file.filename or "upload").stem)
     stored_name = f"{image.id}_{safe_stem}.{validated.extension}"
+    image.file_url = f"/uploads/{stored_name}"
+    _register_owner(db, image, x_session_id)
+    db.commit()
     (upload_dir / stored_name).write_bytes(content)
 
     # Qwen3-VL 输出统一空间事实模型 RoomModel；不可用或结构无效时降级占位
@@ -233,8 +274,10 @@ async def upload_image(
             task_id=task_id,
             image=image,
         )
+    require_active_session(db, x_session_id)
+    if image.task_id is not None:
+        require_owned_design_task(db, session_id=x_session_id, task_id=image.task_id)
     db.commit()
-    anonymous_session_service.attach_image(db, x_session_id, image.id)
 
     return _upload_response(image)
 
@@ -248,9 +291,7 @@ def calibrate_image_room_model(
 ):
     """用户校准 VL 识别出的主空间真实尺寸，写回该图片的 RoomModel。"""
     require_active_session(db, x_session_id)
-    if not anonymous_session_service.session_owns_images(
-        db, x_session_id, [image_id]
-    ):
+    if not anonymous_session_service.session_owns_images(db, x_session_id, [image_id]):
         raise HTTPException(status_code=404, detail="图片不存在或不属于当前会话")
 
     image = db.get(UploadedImage, image_id)

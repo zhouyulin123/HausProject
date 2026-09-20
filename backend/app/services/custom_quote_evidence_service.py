@@ -105,7 +105,7 @@ def verify_evidence(
             priced_at = expected_priced_at
         if priced_at.tzinfo is None or evidence.checked_at != priced_at:
             raise CustomRuleEvidenceError("custom_rule_policy_mismatch")
-    if evidence.region is not None and (
+    if evidence.region is not None and evidence.rule_region_codes and (
         "*" not in evidence.rule_region_codes
         and evidence.region not in evidence.rule_region_codes
     ):

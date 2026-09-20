@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
@@ -19,6 +19,8 @@ if not defined PYTHON_CMD (
 )
 
 if /i "%~1"=="--check" goto check
+if /i "%~1"=="--stop" goto stop
+if /i "%~1"=="--status" goto status
 
 if not defined PYTHON_CMD (
     echo [失败] 未找到包含 FastAPI/Alembic 依赖的 Python。可设置 HAUS_PYTHON 或创建 backend\.venv。
@@ -30,67 +32,18 @@ echo    豪斯 AI 家装定制助手 - 一键启动
 echo ============================================
 echo.
 
-REM 检查前端依赖是否已安装
-if not exist "frontend\node_modules" (
-    echo [首次启动] 正在安装前端依赖，请稍候...
-    call npm --prefix frontend install
-    echo.
-)
-
-echo [准备] 检查并升级数据库结构...
-pushd backend
-%PYTHON_CMD% -m alembic upgrade head
-set "MIGRATION_EXIT=%ERRORLEVEL%"
-popd
-if not "%MIGRATION_EXIT%"=="0" (
-    echo [失败] 数据库迁移未完成，未启动任何服务。
-    exit /b %MIGRATION_EXIT%
-)
-
-echo [1/5] 启动后端服务 ^(端口 8081^)...
-start "豪斯-后端" cmd /k "cd /d backend && %PYTHON_CMD% -m app.run_api --port 8081"
-
-echo [2/5] 启动方案生成 Worker...
-start "豪斯-方案生成Worker" cmd /k "cd /d backend && %PYTHON_CMD% -m app.workers.generation_worker"
-
-echo [3/5] 启动效果图 Worker...
-start "豪斯-效果图Worker" cmd /k "cd /d backend && %PYTHON_CMD% -m app.workers.effect_render_worker"
-
-echo [4/5] 启动 Blender Worker...
-start "豪斯-Blender Worker" cmd /k "cd /d backend && %PYTHON_CMD% -m app.workers.blender_worker"
-
-echo [5/5] 启动前端服务 ^(端口 8080^)...
-start "豪斯-前端" cmd /k "npm --prefix frontend run dev"
-
-echo.
-echo 正在等待前后端服务就绪...
-call :wait_for_url "http://127.0.0.1:8081/ready" 45 "后端服务"
-if errorlevel 1 exit /b 1
-call :wait_for_url "http://127.0.0.1:8080/" 45 "前端服务"
-if errorlevel 1 exit /b 1
-start http://127.0.0.1:8080
-
-echo.
-echo ============================================
-echo   已启动完成！
-echo   - 网页地址: http://127.0.0.1:8080
-echo   - 关闭服务: 直接关掉弹出的五个命令行窗口
-echo ============================================
-echo.
-echo 本窗口可以关闭（不影响服务运行）。
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0manageHaus.ps1" -Action start
+set "LAUNCH_EXIT=%ERRORLEVEL%"
 pause
-exit /b 0
+exit /b %LAUNCH_EXIT%
 
-:wait_for_url
-for /l %%I in (1,1,%~2) do (
-    powershell.exe -NoProfile -Command "$ProgressPreference = 'SilentlyContinue'; try { $response = Invoke-WebRequest -UseBasicParsing -Uri '%~1' -TimeoutSec 2; if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) { exit 0 } } catch {}; exit 1" >nul 2>nul && (
-        echo [就绪] %~3
-        exit /b 0
-    )
-    timeout /t 1 /nobreak >nul
-)
-echo [失败] %~3 在 %~2 秒内未就绪，请查看对应服务窗口中的错误信息。
-exit /b 1
+:stop
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0manageHaus.ps1" -Action stop
+exit /b %ERRORLEVEL%
+
+:status
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0manageHaus.ps1" -Action status
+exit /b %ERRORLEVEL%
 
 :check
 echo [自检] 当前目录: %CD%

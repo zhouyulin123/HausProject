@@ -66,6 +66,27 @@ import type { CustomFurniturePreviewResult } from "@/types/customFurniture";
 import type { DesignScene } from "@/types/scene";
 
 describe("统一设计工作台", () => {
+  it.each(["catalog_design", "room_reconstruction"] as const)("%s 使用方案双视图且空方案不提供确认", (mode) => {
+    testState.project = createDesignProject(mode, { requirement: { ...emptyRequirement }, roomModel: null }, { id: 42 });
+    const html = renderToStaticMarkup(<MemoryRouter><DesignWorkspacePage /></MemoryRouter>);
+    expect(html).toContain("当前方案");
+    expect(html).toContain("房间资料");
+    expect(html).not.toContain("上下文");
+    expect(html).not.toContain("确认当前方案");
+    expect(html).not.toContain("LOCAL DRAFT");
+  });
+  it("家具工作台默认只有对话与当前作品，不混入整屋反馈和模板表单", () => {
+    testState.project = createDesignProject("custom_furniture", {
+      requirement: { ...emptyRequirement }, roomModel: null,
+    }, { id: 42 });
+    const html = renderToStaticMarkup(<MemoryRouter><DesignWorkspacePage /></MemoryRouter>);
+    expect(html).toContain("当前作品");
+    expect(html).toContain("lg:grid-cols-[clamp(420px,38%,600px)_minmax(0,1fr)]");
+    expect(html).toContain("模板定制");
+    expect(html).not.toContain("确认当前方案");
+    expect(html).not.toContain("主卧定制衣柜");
+    expect(html).not.toContain("LOCAL DRAFT");
+  });
   beforeEach(() => {
     testState.moveHandler = undefined;
     testState.submit.mockReset();
@@ -145,8 +166,8 @@ describe("统一设计工作台", () => {
       </MemoryRouter>,
     );
 
-    expect(html).toContain("正在从服务端恢复设计项目");
-    expect(html).not.toContain("找不到这个设计项目");
+    expect(html).toContain("正在载入你的设计");
+    expect(html).not.toContain("暂时找不到这份设计");
   });
 
   it("Agent 响应中的开放几何立即成为 3D 权威状态", () => {

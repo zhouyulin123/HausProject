@@ -4,9 +4,17 @@ import {
   LEGACY_DESIGN_PATHS,
   parseDesignProjectId,
   WORKSPACE_CATALOG_OPTIONS,
+  isFullScreenDesignPath,
 } from "./designWorkspaceRouting";
 
 describe("统一设计工作台路由", () => {
+  it("整屋户型与家装编辑使用全屏工作区，普通页面保留页脚", () => {
+    expect(isFullScreenDesignPath('/design/42/space')).toBe(true);
+    expect(isFullScreenDesignPath('/design/42/home-design/')).toBe(true);
+    expect(isFullScreenDesignPath('/design/new')).toBe(false);
+    expect(isFullScreenDesignPath('/design/42')).toBe(false);
+    expect(isFullScreenDesignPath('/design/42/home-design/other')).toBe(false);
+  });
   it("入口路径稳定且只接受正整数 DesignTask 编号", () => {
     expect(DESIGN_START_PATH).toBe("/design/new");
     expect(LEGACY_DESIGN_PATHS).toEqual([

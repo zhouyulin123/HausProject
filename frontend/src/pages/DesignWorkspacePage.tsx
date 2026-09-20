@@ -6,13 +6,17 @@ import {
   Box,
   CircleDot,
   MessageSquareText,
-  PanelRight,
   Plus,
+  X,
+  Map,
+  CircleDollarSign,
+  Upload,
 } from "lucide-react";
 import ChatPanel from "@/components/chat/ChatPanel";
 import RoomView3D from "@/components/design/RoomView3D";
 import CustomFurniturePanel from "@/components/workspace/CustomFurniturePanel";
 import OpenGeometryPanel from "@/components/workspace/OpenGeometryPanel";
+import FurnitureDesignWorkspace from "@/components/workspace/FurnitureDesignWorkspace";
 import DesignWorkspaceInspector from "@/components/workspace/DesignWorkspaceInspector";
 import WorkspaceFeedbackControls from "@/components/workspace/WorkspaceFeedbackControls";
 import AgentExecutionPanel from "@/components/workspace/AgentExecutionPanel";
@@ -147,6 +151,7 @@ export default function DesignWorkspacePage() {
     project ? "ready" : projectId ? "checking" : "missing",
   );
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("conversation");
+  const [roomTool, setRoomTool] = useState<"room" | "catalog" | "budget" | null>(null);
   const [satisfaction, setSatisfaction] = useState<1 | 2 | 3 | 4 | 5 | null>(null);
   const [approvals, setApprovals] = useState<AgentApproval[]>([]);
   const [approvalsLoading, setApprovalsLoading] = useState(false);
@@ -312,6 +317,10 @@ export default function DesignWorkspacePage() {
       pendingQuestions: checkpoint.pending_questions,
       facts: checkpoint.facts,
       factEvidence: checkpoint.fact_evidence,
+      roomContext: checkpoint.room_source === undefined ? undefined : {
+        roomModel: checkpoint.room_model,
+        roomSource: checkpoint.room_source,
+      },
       sceneRef: checkpoint.scene_ref,
       exitReason: checkpoint.exit_reason,
       activeRoomId: checkpoint.active_room_id,
@@ -374,6 +383,7 @@ export default function DesignWorkspacePage() {
             confirmedRequirement: checkpoint.confirmed_requirement,
             facts: checkpoint.facts,
             roomModel: checkpoint.room_model,
+            roomSource: checkpoint.room_source ?? null,
           }),
         );
         setProjectRecovery("ready");
@@ -433,6 +443,10 @@ export default function DesignWorkspacePage() {
           pendingQuestions: checkpoint.pending_questions,
           facts: checkpoint.facts,
           factEvidence: checkpoint.fact_evidence,
+          roomContext: checkpoint.room_source === undefined ? undefined : {
+            roomModel: checkpoint.room_model,
+            roomSource: checkpoint.room_source,
+          },
           sceneRef: checkpoint.scene_ref,
           exitReason: checkpoint.exit_reason,
           activeRoomId: checkpoint.active_room_id,
@@ -509,6 +523,10 @@ export default function DesignWorkspacePage() {
           pendingQuestions: checkpoint.pending_questions,
           facts: checkpoint.facts,
           factEvidence: checkpoint.fact_evidence,
+          roomContext: checkpoint.room_source === undefined ? undefined : {
+            roomModel: checkpoint.room_model,
+            roomSource: checkpoint.room_source,
+          },
           sceneRef: checkpoint.scene_ref,
           exitReason: checkpoint.exit_reason,
           activeRoomId: checkpoint.active_room_id,
@@ -675,6 +693,10 @@ export default function DesignWorkspacePage() {
         pendingQuestions: checkpoint.pending_questions,
         facts: checkpoint.facts,
         factEvidence: checkpoint.fact_evidence,
+        roomContext: checkpoint.room_source === undefined ? undefined : {
+          roomModel: checkpoint.room_model,
+          roomSource: checkpoint.room_source,
+        },
         sceneRef: checkpoint.scene_ref,
         exitReason: checkpoint.exit_reason,
         activeRoomId: checkpoint.active_room_id,
@@ -828,7 +850,7 @@ export default function DesignWorkspacePage() {
   if (!project && projectRecovery === "checking") {
     return (
       <div className="flex min-h-[70vh] items-center justify-center bg-[#111713] px-5 text-center text-[#e5e8e1]">
-        <p className="text-sm text-[#9ca69d]">正在从服务端恢复设计项目...</p>
+        <p className="text-sm text-[#9ca69d]">正在载入你的设计…</p>
       </div>
     );
   }
@@ -838,10 +860,10 @@ export default function DesignWorkspacePage() {
       <div className="flex min-h-[70vh] items-center justify-center bg-[#111713] px-5 text-center text-[#e5e8e1]">
         <div>
           <AlertTriangle className="mx-auto h-8 w-8 text-[#f1c08b]" />
-          <h1 className="mt-5 text-2xl !text-white">找不到这个设计项目</h1>
-          <p className="mt-3 max-w-sm text-sm leading-6 text-[#8f9a90]">请从项目入口恢复当前会话中的设计任务。</p>
+          <h1 className="mt-5 text-2xl !text-white">暂时找不到这份设计</h1>
+          <p className="mt-3 max-w-sm text-sm leading-6 text-[#8f9a90]">你可以返回设计首页，选择最近的设计继续。</p>
           <Link to="/design/new" className="mt-5 inline-flex items-center gap-2 text-sm text-[#d5ff67]">
-            <ArrowLeft className="h-4 w-4" /> 返回项目入口
+            <ArrowLeft className="h-4 w-4" /> 返回设计首页
           </Link>
         </div>
       </div>
@@ -856,22 +878,57 @@ export default function DesignWorkspacePage() {
     unavailable: "智能体暂未连接",
   }[agentConnection];
 
+  if (project.mode === "custom_furniture") {
+    return <FurnitureDesignWorkspace
+      key={project.id}
+      title={project.title}
+      connection={connectionLabel}
+      name={activeCustomFurnitureName}
+      source={customFurniturePreviewSource ?? "open_geometry"}
+      onSourceChange={setCustomFurniturePreviewSource}
+      versionLabel={activeOpenGeometryPreview
+        ? `V${activeOpenGeometryPreview.version} · 已保存至服务端`
+        : activeStructuredFurniturePreview ? "参数预览 · 报价与草稿状态见模板参数" : "尚无作品"}
+      chat={<ChatPanel key={project.id} workspace projectId={project.id} activeMode={project.mode}
+        activeRoomId={activeRoomId} sceneId={project.sceneRef?.scene_id} baseSceneVersion={project.sceneRef?.version}
+        baseStateVersion={project.stateVersion} initialMessages={project.messages} pendingQuestions={project.pendingQuestions}
+        onMessagesChange={(messages) => setMessages(project.id, messages)} onAgentResponse={applyWorkspaceAgentResponse}
+        onAgentStateConflict={refreshAgentCheckpointAfterConflict} />}
+      preview={activeCustomFurnitureModelSpec
+        ? <Suspense fallback={<p className="p-6 text-sm">正在加载模型…</p>}><FurnitureModelViewer spec={activeCustomFurnitureModelSpec} /></Suspense>
+        : <div className="flex h-full min-h-[360px] items-center justify-center text-center"><div><Box className="mx-auto mb-3 h-8 w-8 text-[#68796e]" /><p className="text-sm">尚无家具作品</p></div></div>}
+      geometryTools={openGeometryState
+        ? <OpenGeometryPanel taskId={project.id} state={openGeometryState} sceneReference={project.sceneRef}
+            authoritativeScene={project.authoritativeScene} onCheckpointRefresh={applyRefreshedAgentCheckpoint} onSceneApplied={handleAuthoritativeScene} />
+        : <p className="p-4 text-xs">正在读取作品状态…</p>}
+      templateTools={<CustomFurniturePanel taskId={project.id} stateVersion={project.stateVersion}
+        initialSpec={project.customFurnitureSpec} preview={project.customFurnitureResult} approvalRequired={project.approvalRequired}
+        pendingQuestions={project.pendingQuestions} sceneReference={project.sceneRef} savedDraftReference={project.customFurnitureDraftReference}
+        onDraftSaved={handleCustomDraftSaved} onSceneApplied={handleAuthoritativeScene} onAgentResponse={applyWorkspaceAgentResponse}
+        onAgentStateConflict={refreshAgentCheckpointAfterConflict} onConversationTurn={appendConversationTurn} />}
+      activity={<AgentExecutionPanel status={project.status} exitReason={project.exitReason} execution={project.execution}
+        timeline={timeline} timelineLoading={timelineLoading} onLoadMore={() => { void refreshTimeline("older"); }} />}
+      approvals={<AgentApprovalPanel approvals={approvals} loading={approvalsLoading} error={approvalsError}
+        decidingId={decidingApprovalId} onDecision={(approval, decision, conclusion) => { void handleApprovalDecision(approval, decision, conclusion); }} />}
+    />;
+  }
+
   return (
-    <div className="min-h-[calc(100vh-4rem)] bg-[#0f1511] px-3 py-3 text-[#e4e8e1] sm:px-5 lg:px-6">
-      <div className="mx-auto max-w-[1920px]">
-        <header className="mb-3 flex min-h-14 flex-wrap items-center justify-between gap-3 border border-[#293229] bg-[#171e18] px-4 py-3">
+    <div className="min-h-[calc(100dvh-4rem)] bg-[#f4f6f5] text-[#26372e]">
+      <div className="mx-auto w-full">
+        <header className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-[#d5dbd7] bg-[#f4f6f5] px-4 py-3">
           <div className="flex min-w-0 items-center gap-3">
             <Link
               to="/design/new"
-              title="返回项目列表"
-              className="flex h-8 w-8 shrink-0 items-center justify-center border border-white/12 text-[#9ca69d] transition-colors hover:border-[#d5ff67] hover:text-[#d5ff67]"
+              title="返回设计首页"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-[#d5dbd7] text-[#53655a] hover:bg-[#e1eae4]"
             >
               <ArrowLeft className="h-4 w-4" />
             </Link>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <CircleDot className={`h-3.5 w-3.5 shrink-0 ${agentConnection === "connected" ? "text-[#d5ff67]" : "text-[#f1c08b]"}`} />
-                <h1 className="truncate text-sm font-medium !text-[#edf0e9]">{project.title}</h1>
+                <h1 className="truncate text-sm font-medium !text-[#26372e]">{project.title}</h1>
               </div>
               <p className="mt-1 truncate font-mono text-[9px] tracking-[0.12em] text-[#778278] uppercase">
                 {entry.shortTitle} / TASK {project.id} / {connectionLabel}
@@ -879,15 +936,20 @@ export default function DesignWorkspacePage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Link to={`/design/${project.id}/space`} className="inline-flex min-h-9 items-center gap-1.5 rounded border border-[#304e40] bg-[#304e40] px-3 text-xs text-white">
+              <Map className="h-3.5 w-3.5" /> 整屋户型
+            </Link>
             <Link
               to="/design/new"
-              className="inline-flex min-h-9 items-center gap-1.5 border border-white/12 px-3 text-xs text-[#aeb7af] transition-colors hover:border-[#d5ff67] hover:text-[#d5ff67]"
+              className="inline-flex min-h-9 items-center gap-1.5 rounded border border-[#d5dbd7] px-3 text-xs text-[#53655a] hover:bg-[#e1eae4]"
             >
-              <Plus className="h-3.5 w-3.5" /> 新项目
+              <Plus className="h-3.5 w-3.5" /> 新建设计
             </Link>
           </div>
         </header>
 
+        <details className="border-b border-[#d5dbd7] text-xs">
+        <summary className="cursor-pointer px-4 py-2 text-[#53655a]">执行记录 · {connectionLabel}</summary>
         <AgentExecutionPanel
           status={project.status}
           exitReason={project.exitReason}
@@ -896,6 +958,7 @@ export default function DesignWorkspacePage() {
           timelineLoading={timelineLoading}
           onLoadMore={() => { void refreshTimeline("older"); }}
         />
+        </details>
 
         <AgentApprovalPanel
           approvals={approvals}
@@ -907,16 +970,16 @@ export default function DesignWorkspacePage() {
           }}
         />
 
-        <WorkspaceFeedbackControls
+        {planVersionId && <WorkspaceFeedbackControls
           planVersionId={planVersionId}
           satisfaction={satisfaction}
           delivery={feedback.deliveries[0] ?? null}
           onSatisfactionChange={setSatisfaction}
           onConfirm={confirmCurrentPlan}
           onRetry={feedback.retry}
-        />
+        />}
 
-        {project.mode !== "custom_furniture" && catalogError && (
+        {catalogError && (
           <p role="alert" className="mb-3 border border-[#8f7040] bg-[#2b2718] px-4 py-3 text-xs text-[#f0d39e]">{catalogError}</p>
         )}
 
@@ -932,11 +995,10 @@ export default function DesignWorkspacePage() {
           </p>
         )}
 
-        <nav aria-label="移动端工作台视图" className="mb-3 grid grid-cols-3 border border-[#293229] bg-[#171e18] xl:hidden">
+        <nav aria-label="移动端工作台视图" className="grid grid-cols-2 border-b border-[#d5dbd7] bg-white lg:hidden">
           {[
             { id: "conversation" as const, label: "对话", icon: MessageSquareText },
-            { id: "scene" as const, label: "3D", icon: Box },
-            { id: "context" as const, label: "上下文", icon: PanelRight },
+            { id: "scene" as const, label: "当前方案", icon: Box },
           ].map((item) => {
             const Icon = item.icon;
             return (
@@ -944,7 +1006,8 @@ export default function DesignWorkspacePage() {
                 key={item.id}
                 type="button"
                 onClick={() => setMobilePanel(item.id)}
-                className={`flex min-h-11 items-center justify-center gap-2 text-xs font-medium ${mobilePanel === item.id ? "bg-[#d5ff67] text-[#111713]" : "text-[#9ca69d]"}`}
+                aria-pressed={mobilePanel === item.id}
+                className={`flex min-h-11 items-center justify-center gap-2 text-xs font-medium ${mobilePanel === item.id ? "bg-[#e1eae4] text-[#304e40]" : "text-[#68796e]"}`}
               >
                 <Icon className="h-4 w-4" />
                 {item.label}
@@ -953,8 +1016,8 @@ export default function DesignWorkspacePage() {
           })}
         </nav>
 
-        <div className="grid items-start gap-3 xl:grid-cols-[minmax(270px,300px)_minmax(0,1fr)_minmax(320px,360px)]">
-          <div className={mobilePanel === "conversation" ? "block" : "hidden xl:block"}>
+        <div className="grid min-w-0 lg:grid-cols-[clamp(420px,38%,600px)_minmax(0,1fr)]">
+          <section aria-label="空间设计对话" className={`min-w-0 border-r border-[#d5dbd7] lg:sticky lg:top-16 lg:h-[calc(100dvh-11rem)] lg:min-h-[540px] ${mobilePanel === "conversation" ? "flex" : "hidden lg:flex"} flex-col`}>
             <ChatPanel
               key={project.id}
               workspace
@@ -970,42 +1033,45 @@ export default function DesignWorkspacePage() {
               onAgentResponse={applyWorkspaceAgentResponse}
               onAgentStateConflict={refreshAgentCheckpointAfterConflict}
             />
-          </div>
+          </section>
 
-          <main className={`min-w-0 rounded-lg border border-[#293229] bg-[#d9d5ca] p-2 ${mobilePanel === "scene" ? "block" : "hidden xl:block"}`}>
-            <div className="mb-2 flex min-h-9 items-center justify-between gap-3 border-b border-[#1d241f]/15 px-2 pb-2 text-[#303831]">
+          <main aria-label="当前空间方案" className={`relative min-w-0 bg-[#eef1f0] ${mobilePanel === "scene" ? "block" : "hidden lg:block"}`}>
+            <div className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-[#d5dbd7] bg-white px-4 py-3 text-[#303831]">
               <div>
                 <p className="font-mono text-[9px] tracking-[0.14em] text-[#69736a] uppercase">
-                  {project.mode === "custom_furniture" ? "Parameter preview" : "Live scene"}
+                  当前方案 · {project.mode === "room_reconstruction" ? "房间设计" : "家具搭配"}
                 </p>
                 <p className="mt-0.5 text-xs font-medium">
-                  {project.mode === "custom_furniture"
-                    ? activeCustomFurnitureName
-                    : `${roomType} · ${selectedFurniture.length} 件家具`}
+                  {`${roomType} · ${selectedFurniture.length} 件家具`}
                 </p>
               </div>
               <span className="text-[10px] text-[#69736a]">
-                {!plan.planVersionId ? "LOCAL DRAFT" : `VERSION ${plan.planVersionId}`}
+                {plan.planVersionId ? `方案版本 ${plan.planVersionId}` : project.roomModel ? "空间草案 · 尚未生成搭配方案" : "等待空间需求"}
               </span>
             </div>
-            {project.mode === "custom_furniture" && !plan.planVersionId ? (
-              activeCustomFurnitureModelSpec ? (
-                <div className="h-[540px] min-h-[420px] overflow-hidden border border-[#1d241f]/15 bg-[#efe8db]">
-                  <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-[#69736a]">正在加载确定性模型…</div>}>
-                    <FurnitureModelViewer spec={activeCustomFurnitureModelSpec} />
-                  </Suspense>
+            <div className="flex flex-wrap gap-2 border-b border-[#d5dbd7] bg-white px-4 py-2" aria-label="方案工具栏">
+              {([{id: 'room', label: '房间资料', icon: Map}, {id: 'catalog', label: '家具清单', icon: Box}, {id: 'budget', label: '预算明细', icon: CircleDollarSign}] as const).map(({id, label, icon: Icon}) => (
+                <button key={id} type="button" aria-expanded={roomTool === id} aria-controls="room-workspace-tools" onClick={() => setRoomTool(roomTool === id ? null : id)}
+                  className={`inline-flex min-h-10 items-center gap-2 rounded border px-3 text-xs ${roomTool === id ? 'border-[#304e40] bg-[#304e40] text-white' : 'border-[#d5dbd7] text-[#53655a]'}`}><Icon size={16} />{label}</button>
+              ))}
+            </div>
+            <div id="room-workspace-tools" hidden={!roomTool} className="border-b border-[#d5dbd7] bg-[#f4f6f5] p-3 lg:absolute lg:right-0 lg:top-32 lg:z-30 lg:w-[360px] lg:max-w-full lg:shadow-lg">
+              <div className="mb-2 flex justify-end"><button type="button" title="收起工具" aria-label="收起工具" onClick={() => setRoomTool(null)} className="flex h-9 w-9 items-center justify-center rounded border border-[#d5dbd7]"><X size={16} /></button></div>
+              <DesignWorkspaceInspector project={project} catalog={catalog} catalogLoading={catalogLoading} plan={plan}
+                activeTab={roomTool ?? (project.mode === 'room_reconstruction' ? 'room' : 'catalog')}
+                onTabChange={setRoomTool} onPlanMutation={handlePlanMutation} />
+            </div>
+            {!project.roomModel && !planVersionId ? (
+              <div className="flex min-h-[440px] items-center justify-center px-6 text-center">
+                <div className="max-w-sm">
+                  <Map className="mx-auto mb-4 h-10 w-10 text-[#68796e]" />
+                  <h2 className="text-xl !text-[#304e40]">{project.mode === 'room_reconstruction' ? '从你的房间开始' : '为你的空间搭配家具'}</h2>
+                  <button type="button" onClick={() => setRoomTool('room')} className="mt-6 inline-flex min-h-11 items-center gap-2 rounded bg-[#304e40] px-4 text-sm text-white"><Upload size={17} />导入户型图或房间照片</button>
                 </div>
-              ) : (
-                <div className="flex h-[540px] min-h-[420px] items-center justify-center border border-dashed border-[#69736a]/40 bg-[#e4dfd3] px-8 text-center">
-                  <div className="max-w-sm">
-                    <Box className="mx-auto h-8 w-8 text-[#69736a]" />
-                    <p className="mt-4 text-sm font-medium text-[#303831]">尚无可验证的 3D 参数预览</p>
-                    <p className="mt-2 text-xs leading-5 text-[#69736a]">提交右侧结构化参数后，仅在服务端返回确定性模型规则时显示本地草案。当前内容不代表施工图、已保存方案或已核价结果。</p>
-                  </div>
-                </div>
-              )
-            ) : (
+              </div>
+            ) : <div className="relative isolate z-0 p-3 sm:p-4">
               <RoomView3D
+                workspace
                 key={sceneKey}
                 plan={plan}
                 roomType={roomType}
@@ -1014,50 +1080,8 @@ export default function DesignWorkspacePage() {
                 onSceneReferenceChange={handleSceneReferenceChange}
                 authoritativeScene={project.authoritativeScene}
               />
-            )}
+              </div>}
           </main>
-
-          <div className={mobilePanel === "context" ? "block" : "hidden xl:block"}>
-            {project.mode === "custom_furniture" ? (
-              <div className="space-y-3">
-                {openGeometryState && (
-                  <OpenGeometryPanel
-                    key={`open-geometry-${project.id}`}
-                    taskId={project.id}
-                    state={openGeometryState}
-                    sceneReference={project.sceneRef}
-                    authoritativeScene={project.authoritativeScene}
-                    onCheckpointRefresh={applyRefreshedAgentCheckpoint}
-                    onSceneApplied={handleAuthoritativeScene}
-                  />
-                )}
-                <CustomFurniturePanel
-                  key={`structured-furniture-${project.id}`}
-                  taskId={project.id}
-                  stateVersion={project.stateVersion}
-                  initialSpec={project.customFurnitureSpec}
-                  preview={project.customFurnitureResult}
-                  approvalRequired={project.approvalRequired}
-                  pendingQuestions={project.pendingQuestions}
-                  sceneReference={project.sceneRef}
-                  savedDraftReference={project.customFurnitureDraftReference}
-                  onDraftSaved={handleCustomDraftSaved}
-                  onSceneApplied={handleAuthoritativeScene}
-                  onAgentResponse={applyWorkspaceAgentResponse}
-                  onAgentStateConflict={refreshAgentCheckpointAfterConflict}
-                  onConversationTurn={appendConversationTurn}
-                />
-              </div>
-            ) : (
-              <DesignWorkspaceInspector
-                project={project}
-                catalog={catalog}
-                catalogLoading={catalogLoading}
-                plan={plan}
-                onPlanMutation={handlePlanMutation}
-              />
-            )}
-          </div>
         </div>
       </div>
     </div>

@@ -15,16 +15,19 @@ import { useRoomModelStore } from "@/store/useRoomModelStore";
 
 const visuals = {
   catalog_design: {
+    actionLabel: "开始搭配",
     icon: Box,
     image: "/case_image/modern-minimal-1.webp",
     accent: "#d5ff67",
   },
   custom_furniture: {
+    actionLabel: "开始设计家具",
     icon: MessageSquareText,
     image: "/case_image/wood-tone-2.webp",
     accent: "#f1c08b",
   },
   room_reconstruction: {
+    actionLabel: "开始设计房间",
     icon: ScanLine,
     image: "/case_image/nordic-2.webp",
     accent: "#b8d8cf",
@@ -51,7 +54,7 @@ export default function DesignStartPage() {
       registerProject(taskId, mode, { requirement, roomModel });
       navigate(designWorkspacePath(taskId));
     } catch {
-      setCreateError("无法连接设计任务服务，项目尚未创建。请检查后端后重试。");
+      setCreateError("暂时无法开始设计，请稍后重试。");
     } finally {
       setCreatingMode(null);
     }
@@ -63,15 +66,12 @@ export default function DesignStartPage() {
         <header className="grid gap-8 border-b border-white/12 pb-10 lg:grid-cols-[1fr_440px] lg:items-end">
           <div>
             <p className="font-mono text-[10px] tracking-[0.2em] text-[#d5ff67] uppercase">
-              New design project
+              开始新的设计
             </p>
             <h1 className="mt-5 max-w-3xl font-display text-4xl leading-[1.08] font-medium !text-[#f2f0e9] sm:text-5xl">
-              先选择这次要完成的设计任务。
+              这次，你想设计什么？
             </h1>
           </div>
-          <p className="text-sm leading-7 text-[#9ba69c]">
-            每个入口都会建立真实设计任务。房间事实、商品选择、对话和场景版本将在同一个工作台中持续保存。
-          </p>
         </header>
 
         {createError && (
@@ -112,7 +112,7 @@ export default function DesignStartPage() {
                     onClick={() => void start(entry.id)}
                     className="mt-auto flex min-h-11 items-center justify-between border-t border-white/12 pt-5 text-sm font-medium text-[#d9ded7] transition-colors hover:text-[#d5ff67] disabled:cursor-wait disabled:opacity-50"
                   >
-                    {creating ? "正在建立任务" : "建立项目"}
+                    {creating ? "正在准备…" : visual.actionLabel}
                     {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />}
                   </button>
                 </div>
@@ -124,8 +124,8 @@ export default function DesignStartPage() {
         {projects.length > 0 && (
           <section className="mt-12 border-t border-white/12 pt-7">
             <div className="flex items-center justify-between gap-4">
-              <h2 className="text-sm font-medium !text-[#d9ddd6]">最近项目</h2>
-              <span className="font-mono text-[10px] text-[#778278]">{projects.length} PROJECTS</span>
+              <h2 className="text-sm font-medium !text-[#d9ddd6]">最近的设计</h2>
+              <span className="font-mono text-[10px] text-[#778278]">{projects.length} 个设计</span>
             </div>
             <div className="mt-4 divide-y divide-white/10 border-y border-white/10">
               {projects.slice(0, 4).map((project) => (

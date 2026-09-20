@@ -1,0 +1,11 @@
+.hdelivery{max-width:1200px;margin:0 auto;padding:24px;color:#243c35;background:#fff;min-height:100dvh;letter-spacing:0}
+.hdelivery h1{font-size:28px;margin:18px 0 8px}.hdelivery h2{font-size:20px;margin:0 0 14px}.hdelivery h3{font-size:16px;margin:16px 0 8px}
+.hdelivery p,.hdelivery li{line-height:1.7;overflow-wrap:anywhere}.hdelivery section{border-top:1px solid #d4dfe0;padding:24px 0}
+.hdelivery-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0}.hdelivery button,.hdelivery select,.hdelivery input,.hdelivery textarea{border:1px solid #b7c9c5;border-radius:4px;padding:8px 12px;max-width:100%;background:white;color:inherit}.hdelivery button:disabled{opacity:.5}.hdelivery button[aria-pressed=true]{background:#dbece5}
+.hdelivery label{display:grid;gap:8px}.hdelivery-scene{height:440px;position:relative;background:#eef2f2}.hdelivery-scene>svg,.hdelivery-plan>svg{width:100%;height:100%}.hdelivery-plan{height:280px;background:#f4f7f6;position:relative;margin-bottom:16px}
+.hdelivery-table{overflow-x:auto}.hdelivery table{border-collapse:collapse;width:100%;text-align:left}.hdelivery th,.hdelivery td{padding:10px;border-bottom:1px solid #d4dfe0;overflow-wrap:anywhere}.hdelivery caption{text-align:left;font-size:16px;margin:12px 0}
+.hdelivery-scene>.hd-3d{width:100%;height:100%;min-width:0;min-height:0}
+.hdelivery-actions{display:grid;gap:14px}.hdelivery-actions input[type=checkbox]{width:18px;height:18px}.hdelivery-actions a{overflow-wrap:anywhere;text-decoration:underline}.hdelivery-actions article{padding:12px 0;border-bottom:1px solid #d4dfe0}
+.hdelivery td>small{display:block;color:#61747b}.hdelivery .hd-quote-evidence{display:grid;gap:4px;margin-top:8px;padding:8px;border-left:2px solid #8ba69b;background:#f5f8f7}.hdelivery .hd-quote-evidence small{display:block;overflow-wrap:anywhere;line-height:1.5}
+@media(max-width:640px){.hdelivery{padding:16px}.hdelivery h1{font-size:24px}.hdelivery-scene{height:340px}.hdelivery th,.hdelivery td{padding:6px;font-size:13px}}
+@media print{.hdelivery{max-width:none;padding:0;color:#000}.hdelivery-controls,.hdelivery-actions,.hdelivery-scene,.hdelivery-nav{display:none!important}.hdelivery-room{break-before:page}.hdelivery-plan{height:75mm}.hdelivery tr{break-inside:avoid}.hdelivery section{overflow:visible}.hdelivery-table{overflow:visible}}

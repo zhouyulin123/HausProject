@@ -19,6 +19,7 @@ import type { DesignPlan } from "@/types/design";
 import { useRoomModelStore } from "@/store/useRoomModelStore";
 import type { FurnitureItem } from "@/types/furniture";
 import { getFurnitureDataOriginLabel } from "@/lib/furnitureDataOrigin";
+import RoomSourcePreview from "./RoomSourcePreview";
 
 type InspectorTab = "room" | "catalog" | "budget";
 
@@ -75,18 +76,22 @@ export default function DesignWorkspaceInspector({
   catalogLoading,
   plan,
   onPlanMutation,
+  activeTab,
+  onTabChange,
 }: {
   project: DesignProject;
   catalog: FurnitureItem[];
   catalogLoading: boolean;
   plan: DesignPlan;
+  activeTab?: InspectorTab;
+  onTabChange?: (tab: InspectorTab) => void;
   onPlanMutation: (mutation: {
     action: PlanMutationAction;
     sourceSku?: string;
     targetSku?: string;
   }) => Promise<void>;
 }) {
-  const [tab, setTab] = useState<InspectorTab>(
+  const [localTab, setLocalTab] = useState<InspectorTab>(
     project.mode === "room_reconstruction" ? "room" : "catalog",
   );
   const [query, setQuery] = useState("");
@@ -96,11 +101,13 @@ export default function DesignWorkspaceInspector({
   const [mutationPending, setMutationPending] = useState(false);
   const [mutationError, setMutationError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
-  const setProjectRoomModel = useDesignProjectStore((state) => state.setRoomModel);
+  const setRoomContext = useDesignProjectStore((state) => state.setRoomContext);
 
   const selectedItems = catalog.filter((item) =>
     project.selectedFurnitureIds.includes(item.id),
   );
+  const tab = activeTab ?? localTab;
+  const setTab = onTabChange ?? setLocalTab;
   const factRows = workspaceFactRows(project);
   const quote = workspaceQuotePresentation(plan);
   const filteredCatalog = catalog
@@ -158,11 +165,24 @@ export default function DesignWorkspaceInspector({
     setUploadError("");
     try {
       const analysis = await analyzeRoomImage(file, project.id);
-      setProjectRoomModel(project.id, analysis.roomModel ?? null);
-      useRoomModelStore.getState().setRoomModel(analysis.roomModel ?? null);
       if (!analysis.roomModel) {
-        setUploadError("识别结果缺少可用空间模型，请更换清晰图片。");
+        setUploadError("识别结果缺少可用空间模型，请更换清晰图片。已有空间已保留。");
+        return;
       }
+      const currentSource = useDesignProjectStore.getState().projects[project.id]?.roomSource;
+      if (currentSource && (!analysis.imageId || analysis.imageId < currentSource.image_id)) {
+        setUploadError("该图片已有上传记录，当前较新的空间已保留。");
+        return;
+      }
+      setRoomContext(project.id, {
+        roomModel: analysis.roomModel ?? null,
+        roomSource: analysis.roomModel && analysis.imageId ? {
+          image_id: analysis.imageId,
+          image_url: analysis.imageUrl ?? null,
+          file_name: analysis.fileName,
+        } : null,
+      });
+      useRoomModelStore.getState().setRoomModel(analysis.roomModel ?? null);
     } catch {
       setUploadError("房间识别失败，请检查服务后重试。");
     } finally {
@@ -177,7 +197,7 @@ export default function DesignWorkspaceInspector({
   ];
 
   return (
-    <aside className="overflow-hidden rounded-lg border border-[#293229] bg-[#171e18] text-[#e3e7df] xl:h-[calc(100vh-8.5rem)] xl:min-h-[620px]">
+    <aside aria-label="方案工具" className="overflow-hidden border border-[#293229] bg-[#171e18] text-[#e3e7df]">
       <div className="grid grid-cols-3 border-b border-white/10">
         {tabs.map((item) => {
           const Icon = item.icon;
@@ -199,9 +219,10 @@ export default function DesignWorkspaceInspector({
         })}
       </div>
 
-      <div className="thin-scrollbar h-[620px] overflow-y-auto p-4 xl:h-[calc(100%-3rem)]">
+      <div className="thin-scrollbar max-h-[65dvh] overflow-y-auto p-4">
         {tab === "room" && (
           <div>
+            <RoomSourcePreview source={project.roomSource} />
             <div className="flex items-center justify-between">
               <p className="font-mono text-[10px] tracking-[0.16em] text-[#7f8b81] uppercase">Room facts</p>
               <span className={`h-2 w-2 rounded-full ${project.roomModel ? "bg-[#d5ff67]" : "bg-[#667168]"}`} />

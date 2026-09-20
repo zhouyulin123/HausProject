@@ -4,10 +4,11 @@ import Header from "./Header";
 import Footer from "./Footer";
 import { useShopStore } from "@/store/useShopStore";
 import { useAuthStore } from "@/store/useAuthStore";
+import { isFullScreenDesignPath } from "@/lib/designWorkspaceRouting";
 
 export default function Layout() {
   const { pathname } = useLocation();
-  const spatialWorkspace = /^\/design\/\d+\/space\/?$/.test(pathname);
+  const spatialWorkspace = isFullScreenDesignPath(pathname);
   const loadShop = useShopStore((s) => s.load);
   const initAuth = useAuthStore((s) => s.init);
 

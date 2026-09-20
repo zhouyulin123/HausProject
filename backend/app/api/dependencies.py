@@ -1,6 +1,8 @@
 from typing import Annotated, Optional
 
-from fastapi import Cookie, Depends, Header, HTTPException
+from collections.abc import Mapping
+
+from fastapi import Cookie, Depends, Header, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -23,6 +25,28 @@ AuthorizationHeader = Annotated[
     Optional[str],
     Header(alias="Authorization", description="Bearer <JWT>"),
 ]
+
+
+def private_session_headers(
+    existing: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """禁止缓存会话私有响应，并让中间缓存区分匿名会话。"""
+    headers = dict(existing or {})
+    headers["Cache-Control"] = "no-store"
+    vary = [item.strip() for item in headers.get("Vary", "").split(",") if item.strip()]
+    if not any(item.lower() == "x-session-id" for item in vary):
+        vary.append("X-Session-ID")
+    headers["Vary"] = ", ".join(vary)
+    return headers
+
+
+def set_private_session_headers(response: Response) -> None:
+    response.headers.update(private_session_headers(response.headers))
+
+
+def protect_private_http_exception(exc: HTTPException) -> HTTPException:
+    exc.headers = private_session_headers(exc.headers)
+    return exc
 
 
 def get_current_user(

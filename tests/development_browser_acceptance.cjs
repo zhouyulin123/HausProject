@@ -23,9 +23,9 @@ async function main() {
       if (message.type() === 'error') errors.push({ text: message.text(), url: message.location().url });
     });
     async function create(index) {
-      console.log('建立项目', index);
+      console.log('开始设计', index);
       await page.goto(`${base}/design/new`);
-      await page.getByRole('button', { name: '建立项目', exact: true }).nth(index).click();
+      await page.getByRole('button', { name: ['开始搭配', '开始设计家具', '开始设计房间'][index], exact: true }).click();
       await page.waitForURL('**/workspace');
       await page.getByRole('button', { name: '发送', exact: true }).waitFor();
     }

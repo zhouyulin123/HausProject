@@ -17,6 +17,10 @@ from app.api.routes import (
     render,
     scenes,
     spatial,
+    home_design,
+    home_design_delivery,
+    home_design_agent,
+    home_delivery_snapshot,
     sessions,
     shares,
     shop,
@@ -25,11 +29,16 @@ from app.api.routes import (
 )
 
 api_router = APIRouter()
+api_router.include_router(home_delivery_snapshot.router, prefix="/design/tasks", tags=["home_delivery_snapshots"])
+api_router.include_router(home_delivery_snapshot.public_router, prefix="/home-shares", tags=["public_home_shares"])
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
 api_router.include_router(upload.router, prefix="/upload", tags=["upload"])
 api_router.include_router(tasks.router, prefix="/design/tasks", tags=["design_tasks"])
 api_router.include_router(spatial.router, prefix="/design/tasks", tags=["design_space"])
+api_router.include_router(home_design.router, prefix="/design/tasks", tags=["home_design"])
+api_router.include_router(home_design_delivery.router, prefix="/design/tasks", tags=["home_design_delivery"])
+api_router.include_router(home_design_agent.router, prefix="/design/tasks", tags=["home_design_agent"])
 api_router.include_router(
     design_agent.router,
     prefix="/design/tasks",

@@ -370,7 +370,7 @@ class SqlAlchemyCheckpointSaver(BaseCheckpointSaver):
                         raise
 
     def defer(self) -> None:
-        """业务工具产生未提交写入后，暂存后续图检查点直到业务提交。"""
+        """业务工具写入前启用，暂存后续图检查点直到业务提交。"""
         with self._write_lock:
             self._defer_persistence = True
 

@@ -170,3 +170,20 @@ def test_http_completion_log_keeps_request_correlation_and_dimensions(caplog):
     assert record.status_code == 200
     assert isinstance(record.duration_ms, float)
     assert record.duration_ms >= 0
+
+
+def test_public_share_middleware_preserves_privacy(monkeypatch, caplog):
+    from app.services import home_delivery_snapshot_service
+
+    def unavailable(*args):
+        raise LookupError("分享不存在或已失效")
+
+    monkeypatch.setattr(home_delivery_snapshot_service, "public_share", unavailable)
+    token = "x" * 43
+    with caplog.at_level(logging.INFO, logger="app.http"):
+        response = TestClient(app).get("/api/home-shares/" + token)
+    assert response.status_code == 404
+    assert response.headers["referrer-policy"] == "no-referrer"
+    records = [r for r in caplog.records if getattr(r, "event", None) == "http_request_completed"]
+    assert records[0].http_path == "/api/home-shares/[redacted]"
+    assert token not in records[0].http_path

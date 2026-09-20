@@ -289,9 +289,6 @@ export default function OpenGeometryPanel({
           V{state.current_version}
         </span>
       </div>
-      <p className="mt-3 text-[11px] leading-5 text-[#8f9a91]">
-        请通过左侧对话创建或修改家具。校验通过后，3D 预览会自动更新。
-      </p>
       {state.current && (
         <div className="mt-3 border-l-2 border-[#d5ff67] pl-3">
           <p className="text-xs text-[#edf1e9]">{state.current.design.name}</p>
@@ -314,7 +311,7 @@ export default function OpenGeometryPanel({
         {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CornerUpLeft className="h-4 w-4" />}
       </button>
       {error && <p role="alert" className="mt-3 border-l-2 border-[#ff8d78] pl-3 text-[11px] leading-5 text-[#ffb4a5]">{error}</p>}
-      <div
+      {sceneReference ? <div
         className="mt-4 border-t border-white/10 pt-4"
         data-placement-ready={placementReady}
       >
@@ -371,7 +368,7 @@ export default function OpenGeometryPanel({
             {placementError}
           </p>
         )}
-      </div>
+      </div> : <p className="mt-4 border-t border-white/10 pt-4 text-xs text-[#aeb9af]">尚未关联房间</p>}
     </section>
   );
 }

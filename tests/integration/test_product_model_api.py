@@ -887,7 +887,7 @@ def test_quote_rule_cost_factors_round_trip_and_increment_version(product_api):
 
     updated = client.patch(
         f"/api/products/quote-rules/{rule_id}",
-        json={"installation_fee": 360},
+        json={"expected_record_version": 1, "installation_fee": 360},
     )
     assert updated.status_code == 200
 
@@ -898,3 +898,48 @@ def test_quote_rule_cost_factors_round_trip_and_increment_version(product_api):
     assert rule["installation_fee"] == 360
     assert rule["data_version"] == "custom-price-2026-09"
     assert rule["record_version"] == 2
+
+    stale = client.patch(
+        f"/api/products/quote-rules/{rule_id}",
+        json={"expected_record_version": 1, "unit_price": 700},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "record_version_conflict"
+
+    rejected_null = client.patch(
+        f"/api/products/quote-rules/{rule_id}",
+        json={"expected_record_version": 2, "pricing_unit": None},
+    )
+    assert rejected_null.status_code == 422
+
+    stale_delete = client.delete(
+        f"/api/products/quote-rules/{rule_id}?expected_record_version=1"
+    )
+    assert stale_delete.status_code == 409
+
+    deleted = client.delete(
+        f"/api/products/quote-rules/{rule_id}?expected_record_version=2"
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["record_version"] == 3
+
+
+@pytest.mark.integration
+def test_quote_rule_rejects_incomplete_or_unknown_business_fields(product_api):
+    client, _ = product_api
+    base = {
+        "project_name": "地面铺装",
+        "category": "表面材料",
+        "pricing_unit": "㎡",
+        "unit_price": 680,
+        "region_codes": ["CN-SH"],
+    }
+
+    assert client.post("/api/products/quote-rules", json=base).status_code == 422
+    assert (
+        client.post(
+            "/api/products/quote-rules",
+            json={**base, "material_grade": "耐磨地板", "unexpected": True},
+        ).status_code
+        == 422
+    )

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Maximize2 } from "lucide-react";
 import type { RoomSource } from "@/types/roomModel";
+import { usePrivateImage } from "@/lib/usePrivateImage";
 
 export function roomSourceUrl(source: RoomSource | null | undefined): string | null {
   const rawUrl = source?.image_url;
@@ -14,8 +15,9 @@ export function roomSourceUrl(source: RoomSource | null | undefined): string | n
 
 export default function RoomSourcePreview({ source }: { source: RoomSource | null }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const privateImage = usePrivateImage(source?.image_id);
   if (!source) return null;
-  const imageUrl = roomSourceUrl(source);
+  const imageUrl = privateImage.url;
   const title = source.file_name || "空间原图";
   return (
     <section className="mt-4" aria-label="空间原图">
@@ -42,7 +44,7 @@ export default function RoomSourcePreview({ source }: { source: RoomSource | nul
             <Maximize2 className="h-4 w-4" aria-hidden="true" />
           </span>
         </a>
-      ) : <p role="status" className="border border-white/10 p-3 text-xs text-[#b8c0b9]">原图暂不可用</p>}
+      ) : <p role="status" className="border border-white/10 p-3 text-xs text-[#b8c0b9]">{privateImage.failed ? "原图暂不可用" : "正在读取原图…"}</p>}
     </section>
   );
 }

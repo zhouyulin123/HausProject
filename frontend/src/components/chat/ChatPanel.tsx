@@ -264,7 +264,7 @@ export default function ChatPanel({
     <div
       className={`flex flex-col overflow-hidden border border-[#1d241f]/15 bg-[#e2e0d7] shadow-[0_30px_80px_rgb(20_28_22/.12)] ${
         workspace
-          ? "h-[680px] rounded-lg xl:h-[calc(100vh-8.5rem)] xl:min-h-[620px]"
+          ? "h-[calc(100dvh-16rem)] min-h-[360px] !border-0 !bg-[#f8faf9] !shadow-none lg:h-auto lg:min-h-0 lg:flex-1"
           : "h-[calc(100vh-12rem)] min-h-[520px] rounded-[2rem]"
       }`}
     >
@@ -274,7 +274,7 @@ export default function ChatPanel({
           <ChatMessage key={message.id} message={message} />
         ))}
 
-        {showQuickReplies && !loading && (
+        {showQuickReplies && !loading && activeMode !== "custom_furniture" && (
           <div className="flex flex-wrap gap-2 pl-12">
             {quickReplies.map((reply) => (
               <button
@@ -293,7 +293,7 @@ export default function ChatPanel({
           <div className="flex items-center gap-3 pl-12">
             <LoadingAI compact />
             <span className="text-xs text-stone-400">
-              AI 正在分析你的生活方式...
+              {activeMode === "custom_furniture" ? "正在设计家具…" : "AI 正在分析你的生活方式..."}
             </span>
           </div>
         )}
@@ -345,13 +345,20 @@ export default function ChatPanel({
       </div>
 
       {/* 快捷指令 + 输入框 */}
-      <div className="border-t border-[#1d241f]/15 bg-[#f4f1e9]/95 p-4">
-        <QuickActions commands={quickCommands} onSelect={send} disabled={loading} />
+      <div className={`shrink-0 border-t border-[#1d241f]/15 p-4 ${activeMode === "custom_furniture" ? "bg-white" : "bg-[#f4f1e9]/95"}`}>
+        {activeMode === "custom_furniture" ? (
+          <div className="flex flex-wrap gap-2">
+            {["调整尺寸", "修改材质", "修改造型"].map((label) => <button key={label} type="button" disabled={loading}
+              onClick={() => { setInput(`${label}：`); scrollRef.current?.parentElement?.querySelector('textarea')?.focus(); }}
+              className="min-h-8 rounded border border-[#d5dbd7] px-2 text-xs text-[#53655a] hover:bg-[#e8eeea]">{label}</button>)}
+          </div>
+        ) : <QuickActions commands={quickCommands} onSelect={send} disabled={loading} />}
         <div className="mt-3 flex items-end gap-2">
           <textarea
-            rows={1}
+            rows={workspace ? 3 : 1}
             value={input}
-            placeholder="告诉 AI 更多想法，例如「预算降低 20%」…"
+            aria-label="设计需求"
+            placeholder={activeMode === "custom_furniture" ? "描述家具，或继续修改当前作品…" : "告诉 AI 更多想法，例如「预算降低 20%」…"}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -359,7 +366,7 @@ export default function ChatPanel({
                 void send(input);
               }
             }}
-            className="max-h-32 flex-1 resize-none rounded-xl border border-cream-300 bg-white px-4 py-2.5 text-sm text-stone-700 outline-none placeholder:text-stone-300 focus:border-sage-500 focus:ring-2 focus:ring-sage-100"
+            className="min-w-0 max-h-32 flex-1 resize-none rounded border border-[#d5dbd7] bg-white px-3 py-2.5 text-sm text-stone-700 outline-none placeholder:text-stone-400 focus:border-sage-500 focus:ring-2 focus:ring-sage-100"
           />
           <Button onClick={() => void send(input)} disabled={!input.trim() || loading}>
             <Send className="h-4 w-4" />

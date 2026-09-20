@@ -327,6 +327,7 @@ export default function RoomView3D({
   onSceneReferenceChange,
   onSceneSyncChange,
   authoritativeScene,
+  workspace = false,
 }: {
   plan: DesignPlan;
   roomType: string;
@@ -349,6 +350,7 @@ export default function RoomView3D({
     reference: SceneReference | null,
   ) => void;
   authoritativeScene?: DesignScene | null;
+  workspace?: boolean;
 }) {
   const editor = useSceneEditor(
     plan,
@@ -615,7 +617,7 @@ export default function RoomView3D({
         aria-label="3D 空间编辑器"
         tabIndex={0}
         onKeyDown={handleKeyDown}
-        className="relative h-[620px] overflow-hidden rounded-[28px] border border-cream-200 bg-[#ded5c5] shadow-[0_24px_70px_rgba(86,70,47,0.16)] outline-none focus-visible:ring-2 focus-visible:ring-sage-500"
+        className={`relative ${workspace ? "aspect-square h-auto rounded-md lg:aspect-auto lg:h-[620px]" : "h-[620px] rounded-[28px]"} overflow-hidden border border-cream-200 bg-[#ded5c5] outline-none focus-visible:ring-2 focus-visible:ring-sage-500`}
       >
       <Canvas
         shadows
@@ -847,6 +849,7 @@ export default function RoomView3D({
       )}
     </div>
       <section
+        hidden={workspace}
         aria-label="Scene Agent 空间优化"
         className="rounded-2xl border border-cream-200 bg-white/85 p-4 shadow-card"
       >

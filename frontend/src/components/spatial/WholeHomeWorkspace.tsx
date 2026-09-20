@@ -6,7 +6,8 @@ import { SpatialEditor } from "@/lib/spatialEditor";
 import { buildRoomWalls,distance,rectangleRoom,removeRoomWalls,removeSpatialRoom,roomArea,scaleSpatialDocument,spatialBounds,spatialId,validateSpatialDraft,updateSpatialRoom } from "@/lib/spatialGeometry";
 import type { SpatialDocument,SpatialOpening,SpatialPoint,SpatialVersionList } from "@/types/spatial";
 import type { RoomSource } from "@/types/roomModel";
-import RoomSourcePreview,{ roomSourceUrl } from "@/components/workspace/RoomSourcePreview";
+import RoomSourcePreview from "@/components/workspace/RoomSourcePreview";
+import { usePrivateImage } from "@/lib/usePrivateImage";
 import "./spatial.css";
 const SpatialCanvas3D=lazy(() => import("./SpatialCanvas3D"));
 function Tool({ label,children,onClick,disabled,active }: {
@@ -55,6 +56,7 @@ export default function WholeHomeWorkspace({ taskId,title,roomSource }: {
   const [versions,setVersions]=useState<SpatialVersionList|null>(null);
   const [historyBusy,setHistoryBusy]=useState(false);
   const [source,setSource]=useState<RoomSource|null>(null);
+  const privateSource = usePrivateImage(source?.image_id);
   const [sourceError,setSourceError]=useState("");
   const [referenceBusy,setReferenceBusy]=useState(false),[showReference,setShowReference]=useState(true);
   const fileInput=useRef<HTMLInputElement>(null);
@@ -194,7 +196,7 @@ export default function WholeHomeWorkspace({ taskId,title,roomSource }: {
   const registerReference=async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const width=number(new FormData(event.currentTarget),"reference_width");
-    const url=roomSourceUrl(source);
+    const url=privateSource.url;
     if(!url||!source)
       return;
     const before=editor.snapshot;
@@ -271,6 +273,9 @@ export default function WholeHomeWorkspace({ taskId,title,roomSource }: {
       <div className="sp-heading"><Link to={`/design/${taskId}/workspace`} title="返回设计工作台" aria-label="返回设计工作台" className="sp-tool"><ArrowLeft size={18} /></Link><div><h1>{title} · 整屋户型</h1><p role="status">{statusLabel}</p></div></div>
       <div className="sp-actions"><Tool label="撤销" onClick={() => editor.undo()} disabled={!editor.editable||!state.canUndo}><Undo2 size={18} /></Tool><Tool label="重做" onClick={() => editor.redo()} disabled={!editor.editable||!state.canRedo}><Redo2 size={18} /></Tool><Tool label="重新载入" onClick={load} disabled={state.status==="saving"}><RefreshCw size={17} /></Tool><Tool label="下载空间草稿" onClick={() => download(document,taskId,state.version)}><Download size={17} /></Tool>
         <button className="sp-primary" onClick={() => void editor.save()} disabled={!state.dirty||!["ready","invalid","error"].includes(state.status)}>{state.status==="saving"? <Loader2 size={16} className="animate-spin" />:<Save size={16} />}保存</button>
+        {state.version>0&&!state.dirty&&state.status==="ready"&&document.scale_status==="confirmed"?
+          <Link className="sp-secondary" to={`/design/${taskId}/home-design`}>进入家装设计</Link>:
+          <button className="sp-secondary" disabled title="请先确认户型尺度并保存">进入家装设计</button>}
       </div>
     </header>
     {(error||state.message||state.storageWarning)&&<div className={`sp-message ${error||["error","invalid","conflict","load-error"].includes(state.status)? "error":""}`} role={error||state.status!=="ready"? "alert":"status"}>{error||state.message}{state.storageWarning&&<span>{state.storageWarning}</span>}{state.status==="load-error"&&<button onClick={() => void editor.load()}>重试读取</button>}{state.status==="error"&&<button onClick={() => void editor.save()}>重试保存</button>}{state.status==="conflict"&&<button onClick={load}>重新载入</button>}</div>}
@@ -309,7 +314,7 @@ export default function WholeHomeWorkspace({ taskId,title,roomSource }: {
           }} className={drawing? "drawing":""}>
             <defs><pattern id={`sp-grid-${taskId}`} width="1" height="1" patternUnits="userSpaceOnUse"><path d="M 1 0 L 0 0 0 1" fill="none" stroke="#dce3df" strokeWidth={unit*.025} /></pattern></defs>
             <rect x={bounds.minX-padding} y={bounds.minZ-padding} width={bounds.width+padding*2} height={bounds.depth+padding*2} fill={`url(#sp-grid-${taskId})`} />
-            {document.image_reference&&showReference&&roomSourceUrl(source)&&source?.image_id===document.source_image_id&&<image href={roomSourceUrl(source)!} x={document.image_reference.origin.x} y={document.image_reference.origin.z} width={document.image_reference.width} height={document.image_reference.depth} preserveAspectRatio="none" opacity={.6} onError={() => setSourceError("描绘底图暂不可用")} />}
+            {document.image_reference&&showReference&&privateSource.url&&source?.image_id===document.source_image_id&&<image href={privateSource.url} x={document.image_reference.origin.x} y={document.image_reference.origin.z} width={document.image_reference.width} height={document.image_reference.depth} preserveAspectRatio="none" opacity={.6} onError={() => setSourceError("描绘底图暂不可用")} />}
             {document.rooms.map((r,i) => <g key={r.id} onClick={event => {
               if(!drawing) {
                 event.stopPropagation();

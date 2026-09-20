@@ -21,6 +21,7 @@ const lazyPage = (importer: () => Promise<PageModule>) =>
 const DesignDetailPage = lazyPage(() => import("@/pages/DesignDetailPage"));
 const DesignStartPage = lazyPage(() => import("@/pages/DesignStartPage"));
 const WholeHomePage = lazyPage(() => import("@/pages/WholeHomePage"));
+const HomeDesignPage = lazyPage(() => import("@/pages/HomeDesignPage"));
 const DesignWorkspacePage = lazyPage(
   () => import("@/pages/DesignWorkspacePage"),
 );
@@ -36,9 +37,13 @@ const AdminQualityPage = lazyPage(() => import("@/pages/AdminQualityPage"));
 const LoginPage = lazyPage(() => import("@/pages/LoginPage"));
 const Demo3DPage = lazyPage(() => import("@/pages/Demo3DPage"));
 const SharePage = lazyPage(() => import("@/pages/SharePage"));
+const HomeDeliveryPage = lazyPage(() => import("@/pages/HomeDeliveryPage"));
+const HomeSharePage = lazyPage(() => import("@/pages/HomeSharePage"));
 
 export const router = createBrowserRouter(
   [
+    {path:"/home-share/:token",errorElement:<RouteErrorPage/>,element:<Suspense fallback={<div>正在读取方案…</div>}><HomeSharePage/></Suspense>},
+    {path:"/design/:projectId/delivery/:deliveryId",errorElement:<RouteErrorPage/>,element:<Suspense fallback={<div>正在读取交付…</div>}><HomeDeliveryPage/></Suspense>},
     {
       path: "/demo",
       errorElement: <RouteErrorPage />,
@@ -75,6 +80,7 @@ export const router = createBrowserRouter(
         })),
         { path: DESIGN_START_PATH.slice(1), element: <DesignStartPage /> },
         { path: "design/:projectId/space", element: <WholeHomePage /> },
+        { path: "design/:projectId/home-design", element: <HomeDesignPage /> },
         {
           path: "design/:projectId/workspace",
           element: <DesignWorkspacePage />,

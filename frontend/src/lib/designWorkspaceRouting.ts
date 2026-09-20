@@ -1,4 +1,7 @@
 export const DESIGN_START_PATH = "/design/new";
+export function isFullScreenDesignPath(pathname: string): boolean {
+  return /^\/design\/\d+\/(space|home-design)\/?$/.test(pathname);
+}
 export const LEGACY_DESIGN_PATHS = [
   "customize",
   "upload",
