@@ -5,6 +5,8 @@
 
 ## 界面预览
 
+<img width="2560" height="7982" alt="image" src="https://github.com/user-attachments/assets/04d4afe2-01e4-41f5-96ef-b61e875b75f5" />
+
 ### 家装设计工作台
 
 ![家装设计工作台：3D 场景、材料、AI 建议和清单比较](./docs/readme/home-design-workbench.png)
