@@ -10,7 +10,7 @@ async function main() {
   assert(['127.0.0.1', 'localhost'].includes(new URL(base).hostname));
   const output = path.resolve('outputs/v2-room-source');
   await fs.mkdir(output, { recursive: true });
-  const image = await fs.readFile(path.resolve('case_image/户型图1.png'));
+  const image = await fs.readFile(path.resolve('frontend/public/case_image/modern-minimal-1.webp'));
   const model = {
     schemaVersion: '1.0', imageKind: 'floor_plan', spaceType: '客厅',
     rooms: [{ id: 'living', name: '客厅', confidence: 0.8, ceilingHeight: 2.8,
@@ -46,7 +46,7 @@ async function main() {
       let uploadMode = 'new';
       await context.route('**/uploads/*', route => brokenImage
         ? route.fulfill({ status: 404, body: '' })
-        : route.fulfill({ contentType: 'image/png', body: image }));
+        : route.fulfill({ contentType: 'image/webp', body: image }));
       await context.route(url => url.pathname.startsWith('/api/'), async route => {
         const pathname = new URL(route.request().url()).pathname;
         let json;

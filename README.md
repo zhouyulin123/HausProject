@@ -5,10 +5,6 @@
 
 ## 界面预览
 
-### 整屋空间编辑
-
-![整屋空间编辑器：在原户型底图上编辑房间、墙体和门窗](./docs/readme/whole-home-editor.png)
-
 ### 家装设计工作台
 
 ![家装设计工作台：3D 场景、材料、AI 建议和清单比较](./docs/readme/home-design-workbench.png)

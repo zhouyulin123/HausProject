@@ -66,7 +66,10 @@ def create_app(*, stub_home_agent=False):
     temporary = tempfile.TemporaryDirectory(prefix="db-", dir=output)
     uploads = Path(temporary.name) / "uploads"
     uploads.mkdir()
-    shutil.copyfile(root / "case_image" / "户型图1.png", uploads / "spatial-source.png")
+    shutil.copyfile(
+        root / "frontend" / "public" / "case_image" / "modern-minimal-1.webp",
+        uploads / "spatial-source.webp",
+    )
     settings.upload_dir = str(uploads)
     engine = create_engine(
         f"sqlite+pysqlite:///{Path(temporary.name).as_posix()}/test.sqlite",
@@ -115,8 +118,8 @@ def create_app(*, stub_home_agent=False):
         attach_task(db, session_id=owner.id, task_id=task.id)
         image = UploadedImage(
             task_id=task.id,
-            file_url="/uploads/spatial-source.png",
-            file_name="原始户型图.png",
+            file_url="/uploads/spatial-source.webp",
+            file_name="演示空间.webp",
         )
         db.add(image)
         db.commit()
@@ -162,14 +165,14 @@ def create_app(*, stub_home_agent=False):
             attach_task(db, session_id=fixture["session_id"], task_id=task.id)
             image = UploadedImage(
                 task_id=task.id,
-                file_url="/uploads/spatial-source.png",
-                file_name="原始户型图.png",
+                file_url="/uploads/spatial-source.webp",
+                file_name="演示空间.webp",
             )
             db.add(image)
             alternate = UploadedImage(
                 task_id=task.id,
-                file_url="/uploads/spatial-source.png",
-                file_name="修订户型图.png",
+                file_url="/uploads/spatial-source.webp",
+                file_name="修订演示空间.webp",
             )
             db.add(alternate)
             db.commit()

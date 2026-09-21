@@ -1,54 +1,5 @@
 {
   "schema_version": "2.0",
-  "dataset_version": "2026-09-01.1",
-  "cases": [
-    {
-      "id": "local-floorplan-001",
-      "name": "仓库户型图 1（待确认来源）",
-      "split": "unassigned",
-      "origin": "private_real",
-      "asset_path": "case_image/户型图1.png",
-      "consent_status": "pending",
-      "annotation_status": "pending",
-      "label_version": null,
-      "allowed_purposes": [],
-      "failure_tags": ["provenance_pending", "annotation_pending"]
-    },
-    {
-      "id": "local-floorplan-002",
-      "name": "仓库户型图 2（待确认来源）",
-      "split": "unassigned",
-      "origin": "private_real",
-      "asset_path": "case_image/户型图2.png",
-      "consent_status": "pending",
-      "annotation_status": "pending",
-      "label_version": null,
-      "allowed_purposes": [],
-      "failure_tags": ["provenance_pending", "annotation_pending"]
-    },
-    {
-      "id": "local-floorplan-003",
-      "name": "仓库户型图 3（待确认来源）",
-      "split": "unassigned",
-      "origin": "private_real",
-      "asset_path": "case_image/户型图3.png",
-      "consent_status": "pending",
-      "annotation_status": "pending",
-      "label_version": null,
-      "allowed_purposes": [],
-      "failure_tags": ["provenance_pending", "annotation_pending"]
-    },
-    {
-      "id": "local-floorplan-004",
-      "name": "仓库户型图 4（待确认来源）",
-      "split": "unassigned",
-      "origin": "private_real",
-      "asset_path": "case_image/户型图4.png",
-      "consent_status": "pending",
-      "annotation_status": "pending",
-      "label_version": null,
-      "allowed_purposes": [],
-      "failure_tags": ["provenance_pending", "annotation_pending"]
-    }
-  ]
+  "dataset_version": "public-template",
+  "cases": []
 }

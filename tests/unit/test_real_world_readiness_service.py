@@ -135,11 +135,11 @@ def test_build_real_world_readiness_fails_closed_for_missing_manifest(tmp_path):
 def test_default_manifest_uses_project_asset_root():
     result = build_real_world_readiness()
 
-    assert result["total"] == 4
+    assert result["total"] == 0
     assert result["eligible_total"] == 0
     assert result["private_real_eligible_total"] == 0
-    assert result["blocked_total"] == 4
-    assert result["blocker_counts"]["task_input_missing"] == 4
+    assert result["blocked_total"] == 0
+    assert result["blocker_counts"] == {}
 
 
 def test_readiness_fails_closed_when_governance_is_ready_but_task_input_missing(

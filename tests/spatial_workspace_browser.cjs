@@ -10,7 +10,7 @@ async function main(){
   const api=process.env.HAUS_SPATIAL_TEST_API||'http://127.0.0.1:8083';
   for(const url of [base,api])assert(['127.0.0.1','localhost'].includes(new URL(url).hostname));
   const fixture=await (await fetch(`${api}/fixture`,{method:'POST'})).json();
-  assert.equal((await fetch(`${api}/uploads/spatial-source.png`)).status,404);
+  assert.equal((await fetch(`${api}/uploads/spatial-source.webp`)).status,404);
   assert.equal((await fetch(`${api}/api/upload/images/${fixture.image_id}/content`,{headers:{'X-Session-ID':fixture.stranger_session_id}})).status,404);
   const output=path.resolve('outputs/v2-spatial-browser');await fs.mkdir(output,{recursive:true});
   const browser=await chromium.launch({channel:'chrome',headless:true});
@@ -32,7 +32,7 @@ async function main(){
         let json;
         if(pathname.startsWith('/api/sessions'))json={session_id:fixture.session_id};
         else if(pathname==='/api/auth/me')return route.fulfill({status:401,json:{detail:'未登录'}});
-        else if(pathname.endsWith('/agent-state'))json={task_id:fixture.task_id,room_source:{image_id:checkpointImage,image_url:'/uploads/spatial-source.png',file_name:'原始户型图.png'}};
+        else if(pathname.endsWith('/agent-state'))json={task_id:fixture.task_id,room_source:{image_id:checkpointImage,image_url:'/uploads/spatial-source.webp',file_name:'演示空间.webp'}};
         else if(pathname==='/api/shop')json={shop_name:'豪斯',phone:null,wechat:null,address:null,slogan:null,logo_url:null};
         else {unknown.push(pathname);return route.fulfill({status:404,json:{detail:'未定义验收接口'}});}
         return route.fulfill({json});
@@ -49,7 +49,7 @@ async function main(){
           const sourceImage=page.locator('section[aria-label="空间原图"] img');
           assert((await sourceImage.getAttribute('src')).startsWith('blob:'));
           await sourceImage.evaluate(image=>image.decode());
-          const [enlarged]=await Promise.all([context.waitForEvent('page'),page.getByRole('link',{name:'查看原图：原始户型图.png'}).click()]);
+          const [enlarged]=await Promise.all([context.waitForEvent('page'),page.getByRole('link',{name:'查看原图：演示空间.webp'}).click()]);
           await enlarged.waitForLoadState();assert(enlarged.url().startsWith('blob:'));await enlarged.close();
           await page.getByLabel('底图覆盖宽度 (m)',{exact:true}).fill('8');
           await page.getByRole('button',{name:'设置描绘底图',exact:true}).click();
